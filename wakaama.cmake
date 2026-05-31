@@ -100,10 +100,14 @@ set(WAKAAMA_PLATFORM
     NONE
     CACHE STRING "The platform abstraction layer implementation"
 )
-set_property(CACHE WAKAAMA_TRANSPORT PROPERTY STRINGS POSIX NONE)
+set_property(CACHE WAKAAMA_PLATFORM PROPERTY STRINGS POSIX NONE)
 
 # Command line interface
 option(WAKAAMA_CLI "Command line interface library" OFF)
+
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
 
 # Endianess
 add_compile_definitions("$<IF:$<STREQUAL:${CMAKE_C_BYTE_ORDER},BIG_ENDIAN>,LWM2M_BIG_ENDIAN,LWM2M_LITTLE_ENDIAN>")
@@ -277,45 +281,55 @@ function(target_sources_wakaama target)
     target_sources_data(${target})
 endfunction()
 
-# Commandline library
-add_library(wakaama_command_line OBJECT)
-target_sources(wakaama_command_line PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/commandline.c)
-target_include_directories(wakaama_command_line PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
-target_include_directories(wakaama_command_line PUBLIC ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY})
+if(WAKAAMA_CLI OR WAKAAMA_UNIT_TESTS OR WAKAAMA_TRANSPORT STREQUAL POSIX_UDP OR WAKAAMA_TRANSPORT STREQUAL TINYDTLS)
+    # Commandline library
+    add_library(wakaama_command_line OBJECT)
+    target_sources(wakaama_command_line PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/commandline.c)
+    target_include_directories(wakaama_command_line PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
+    target_include_directories(wakaama_command_line PUBLIC ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY})
+endif()
 
-# POSIX platform library
-add_library(wakaama_platform_posix OBJECT)
-target_sources(wakaama_platform_posix PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/platform.c)
-target_include_directories(wakaama_platform_posix PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
-target_compile_definitions(wakaama_platform_posix PRIVATE _POSIX_C_SOURCE=200809)
+if(WAKAAMA_UNIT_TESTS OR WAKAAMA_PLATFORM STREQUAL POSIX)
+    # POSIX platform library
+    add_library(wakaama_platform_posix OBJECT)
+    target_sources(wakaama_platform_posix PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/platform.c)
+    target_include_directories(wakaama_platform_posix PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
+    target_compile_definitions(wakaama_platform_posix PRIVATE _POSIX_C_SOURCE=200809)
+endif()
 
-# Transport UDP (POSIX) implementation library
-add_library(wakaama_transport_posix_udp OBJECT)
-target_sources(wakaama_transport_posix_udp PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/udp/connection.c)
-target_include_directories(wakaama_transport_posix_udp PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/udp/include)
-target_include_directories(wakaama_transport_posix_udp PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
-target_link_libraries(wakaama_transport_posix_udp PRIVATE wakaama_command_line)
-target_compile_definitions(wakaama_transport_posix_udp PRIVATE _POSIX_C_SOURCE=200809)
+if(WAKAAMA_TRANSPORT STREQUAL POSIX_UDP)
+    # Transport UDP (POSIX) implementation library
+    add_library(wakaama_transport_posix_udp OBJECT)
+    target_sources(wakaama_transport_posix_udp PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/udp/connection.c)
+    target_include_directories(wakaama_transport_posix_udp PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/udp/include)
+    target_include_directories(wakaama_transport_posix_udp PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
+    target_link_libraries(wakaama_transport_posix_udp PRIVATE wakaama_command_line)
+    target_compile_definitions(wakaama_transport_posix_udp PRIVATE _POSIX_C_SOURCE=200809)
+endif()
 
-# Transport 'tinydtls' implementation library
-add_library(wakaama_transport_tinydtls OBJECT)
-include(${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/tinydtls.cmake)
-target_sources(wakaama_transport_tinydtls PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/connection.c)
-target_compile_definitions(wakaama_transport_tinydtls PUBLIC WITH_TINYDTLS)
-target_include_directories(
-    wakaama_transport_tinydtls PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/include
-                                      ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/third_party
-)
-target_include_directories(wakaama_transport_tinydtls PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
-target_sources_tinydtls(wakaama_transport_tinydtls)
-target_link_libraries(wakaama_transport_tinydtls PRIVATE wakaama_command_line)
-target_compile_definitions(wakaama_transport_tinydtls PRIVATE _POSIX_C_SOURCE=200809)
+if(WAKAAMA_TRANSPORT STREQUAL TINYDTLS)
+    # Transport 'tinydtls' implementation library
+    add_library(wakaama_transport_tinydtls OBJECT)
+    include(${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/tinydtls.cmake)
+    target_sources(wakaama_transport_tinydtls PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/connection.c)
+    target_compile_definitions(wakaama_transport_tinydtls PUBLIC WITH_TINYDTLS)
+    target_include_directories(
+        wakaama_transport_tinydtls PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/include
+                                          ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/third_party
+    )
+    target_include_directories(wakaama_transport_tinydtls PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
+    target_sources_tinydtls(wakaama_transport_tinydtls)
+    target_link_libraries(wakaama_transport_tinydtls PRIVATE wakaama_command_line)
+    target_compile_definitions(wakaama_transport_tinydtls PRIVATE _POSIX_C_SOURCE=200809)
+endif()
 
-# Transport 'testing' implementation library
-add_library(wakaama_transport_testing_fake OBJECT)
-target_include_directories(wakaama_transport_testing_fake PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/tests/helper/)
-target_include_directories(wakaama_transport_testing_fake PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include/)
-target_sources(wakaama_transport_testing_fake PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/tests/helper/connection.c)
+if(WAKAAMA_UNIT_TESTS)
+    # Transport 'testing' implementation library
+    add_library(wakaama_transport_testing_fake OBJECT)
+    target_include_directories(wakaama_transport_testing_fake PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/tests/helper/)
+    target_include_directories(wakaama_transport_testing_fake PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include/)
+    target_sources(wakaama_transport_testing_fake PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/tests/helper/connection.c)
+endif()
 
 # Static library that users of Wakaama can link against
 #
@@ -339,27 +353,29 @@ if(WAKAAMA_CLI)
     target_link_libraries(wakaama_static PUBLIC wakaama_command_line)
 endif()
 
-# Enforce a certain level of hygiene
-add_compile_options(
-    -Waggregate-return
-    -Wall
-    -Wcast-align
-    -Wextra
-    -Wfloat-equal
-    -Wpointer-arith
-    -Wshadow
-    -Wswitch-default
-    -Wwrite-strings
-    -pedantic
-    # Reduce noise: Unused parameters are common in this ifdef-littered code-base, but of no danger
-    -Wno-unused-parameter
-    # Reduce noise: Too many false positives
-    -Wno-uninitialized
-    # Turn (most) warnings into errors
-    -Werror
-    # Disabled because of existing, non-trivially fixable code
-    -Wno-error=cast-align
-)
+if(NOT MSVC)
+    # Enforce a certain level of hygiene
+    add_compile_options(
+        -Waggregate-return
+        -Wall
+        -Wcast-align
+        -Wextra
+        -Wfloat-equal
+        -Wpointer-arith
+        -Wshadow
+        -Wswitch-default
+        -Wwrite-strings
+        -pedantic
+        # Reduce noise: Unused parameters are common in this ifdef-littered code-base, but of no danger
+        -Wno-unused-parameter
+        # Reduce noise: Too many false positives
+        -Wno-uninitialized
+        # Turn (most) warnings into errors
+        -Werror
+        # Disabled because of existing, non-trivially fixable code
+        -Wno-error=cast-align
+    )
+endif()
 
 # The maximum buffer size that is provided for resource responses and must be respected due to the limited IP buffer.
 # Larger data must be handled by the resource and will be sent chunk-wise through a TCP stream or CoAP blocks. Block

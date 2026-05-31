@@ -93,7 +93,12 @@ set(WAKAAMA_TRANSPORT
     NONE
     CACHE STRING "The transport layer implementation"
 )
-set_property(CACHE WAKAAMA_TRANSPORT PROPERTY STRINGS NONE POSIX_UDP TINYDTLS WIN32_UDP)
+set_property(CACHE WAKAAMA_TRANSPORT PROPERTY STRINGS NONE POSIX_UDP TINYDTLS WIN32_UDP MBEDTLS)
+
+set(WAKAAMA_MBEDTLS_ROOT
+    ""
+    CACHE PATH "Root directory of an mbedTLS installation"
+)
 
 # Platform
 set(WAKAAMA_PLATFORM
@@ -324,6 +329,78 @@ if(WAKAAMA_TRANSPORT STREQUAL "WIN32_UDP")
     target_link_libraries(wakaama_transport_win32_udp PUBLIC ws2_32)
 endif()
 
+if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS")
+    find_package(
+        MbedTLS CONFIG QUIET
+        HINTS ${WAKAAMA_MBEDTLS_ROOT}
+        PATH_SUFFIXES lib/cmake/MbedTLS
+    )
+
+    if(TARGET MbedTLS::mbedtls)
+        set(WAKAAMA_MBEDTLS_LIBRARIES MbedTLS::mbedtls)
+        set(WAKAAMA_MBEDTLS_INCLUDE_DIRS "")
+    else()
+        find_path(
+            WAKAAMA_MBEDTLS_INCLUDE_DIR
+            NAMES mbedtls/ssl.h
+            HINTS ${WAKAAMA_MBEDTLS_ROOT}
+            PATH_SUFFIXES include
+        )
+        find_library(
+            WAKAAMA_MBEDTLS_SSL_LIBRARY
+            NAMES mbedtls libmbedtls
+            HINTS ${WAKAAMA_MBEDTLS_ROOT}
+            PATH_SUFFIXES lib
+        )
+        find_library(
+            WAKAAMA_MBEDTLS_X509_LIBRARY
+            NAMES mbedx509 libmbedx509
+            HINTS ${WAKAAMA_MBEDTLS_ROOT}
+            PATH_SUFFIXES lib
+        )
+        find_library(
+            WAKAAMA_MBEDTLS_CRYPTO_LIBRARY
+            NAMES mbedcrypto libmbedcrypto
+            HINTS ${WAKAAMA_MBEDTLS_ROOT}
+            PATH_SUFFIXES lib
+        )
+
+        if(NOT WAKAAMA_MBEDTLS_INCLUDE_DIR
+           OR NOT WAKAAMA_MBEDTLS_SSL_LIBRARY
+           OR NOT WAKAAMA_MBEDTLS_X509_LIBRARY
+           OR NOT WAKAAMA_MBEDTLS_CRYPTO_LIBRARY
+        )
+            message(
+                FATAL_ERROR
+                    "WAKAAMA_TRANSPORT=MBEDTLS requires mbedTLS headers and libraries. "
+                    "Set WAKAAMA_MBEDTLS_ROOT to an mbedTLS installation prefix."
+            )
+        endif()
+
+        set(WAKAAMA_MBEDTLS_INCLUDE_DIRS ${WAKAAMA_MBEDTLS_INCLUDE_DIR})
+        set(
+            WAKAAMA_MBEDTLS_LIBRARIES
+            ${WAKAAMA_MBEDTLS_SSL_LIBRARY}
+            ${WAKAAMA_MBEDTLS_X509_LIBRARY}
+            ${WAKAAMA_MBEDTLS_CRYPTO_LIBRARY}
+        )
+    endif()
+
+    # Transport 'mbedTLS' DTLS adapter library.
+    add_library(wakaama_transport_mbedtls OBJECT)
+    target_sources(
+        wakaama_transport_mbedtls PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/connection.c
+    )
+    target_include_directories(
+        wakaama_transport_mbedtls PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/include
+    )
+    target_include_directories(
+        wakaama_transport_mbedtls PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include ${WAKAAMA_MBEDTLS_INCLUDE_DIRS}
+    )
+    target_compile_definitions(wakaama_transport_mbedtls PUBLIC WITH_MBEDTLS)
+    target_link_libraries(wakaama_transport_mbedtls PUBLIC ${WAKAAMA_MBEDTLS_LIBRARIES})
+endif()
+
 if(WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     # Transport 'tinydtls' implementation library
     add_library(wakaama_transport_tinydtls OBJECT)
@@ -360,6 +437,8 @@ if(WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_posix_udp)
 elseif(WAKAAMA_TRANSPORT STREQUAL "WIN32_UDP")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_win32_udp ws2_32)
+elseif(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS")
+    target_link_libraries(wakaama_static PUBLIC wakaama_transport_mbedtls)
 elseif(WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_tinydtls)
 endif()

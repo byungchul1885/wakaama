@@ -100,7 +100,7 @@ set(WAKAAMA_PLATFORM
     NONE
     CACHE STRING "The platform abstraction layer implementation"
 )
-set_property(CACHE WAKAAMA_PLATFORM PROPERTY STRINGS POSIX NONE)
+set_property(CACHE WAKAAMA_PLATFORM PROPERTY STRINGS NONE POSIX WIN32)
 
 # Command line interface
 option(WAKAAMA_CLI "Command line interface library" OFF)
@@ -281,7 +281,7 @@ function(target_sources_wakaama target)
     target_sources_data(${target})
 endfunction()
 
-if(WAKAAMA_CLI OR WAKAAMA_UNIT_TESTS OR WAKAAMA_TRANSPORT STREQUAL POSIX_UDP OR WAKAAMA_TRANSPORT STREQUAL TINYDTLS)
+if(WAKAAMA_CLI OR WAKAAMA_UNIT_TESTS OR WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP" OR WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     # Commandline library
     add_library(wakaama_command_line OBJECT)
     target_sources(wakaama_command_line PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/commandline.c)
@@ -289,7 +289,7 @@ if(WAKAAMA_CLI OR WAKAAMA_UNIT_TESTS OR WAKAAMA_TRANSPORT STREQUAL POSIX_UDP OR 
     target_include_directories(wakaama_command_line PUBLIC ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY})
 endif()
 
-if(WAKAAMA_UNIT_TESTS OR WAKAAMA_PLATFORM STREQUAL POSIX)
+if(WAKAAMA_UNIT_TESTS OR WAKAAMA_PLATFORM STREQUAL "POSIX")
     # POSIX platform library
     add_library(wakaama_platform_posix OBJECT)
     target_sources(wakaama_platform_posix PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/platform.c)
@@ -297,7 +297,14 @@ if(WAKAAMA_UNIT_TESTS OR WAKAAMA_PLATFORM STREQUAL POSIX)
     target_compile_definitions(wakaama_platform_posix PRIVATE _POSIX_C_SOURCE=200809)
 endif()
 
-if(WAKAAMA_TRANSPORT STREQUAL POSIX_UDP)
+if(WAKAAMA_PLATFORM STREQUAL "WIN32")
+    # Win32 platform library
+    add_library(wakaama_platform_win32 OBJECT)
+    target_sources(wakaama_platform_win32 PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/platform_win32.c)
+    target_include_directories(wakaama_platform_win32 PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
+endif()
+
+if(WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP")
     # Transport UDP (POSIX) implementation library
     add_library(wakaama_transport_posix_udp OBJECT)
     target_sources(wakaama_transport_posix_udp PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/udp/connection.c)
@@ -307,7 +314,7 @@ if(WAKAAMA_TRANSPORT STREQUAL POSIX_UDP)
     target_compile_definitions(wakaama_transport_posix_udp PRIVATE _POSIX_C_SOURCE=200809)
 endif()
 
-if(WAKAAMA_TRANSPORT STREQUAL TINYDTLS)
+if(WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     # Transport 'tinydtls' implementation library
     add_library(wakaama_transport_tinydtls OBJECT)
     include(${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/tinydtls/tinydtls.cmake)
@@ -339,14 +346,16 @@ add_library(wakaama_static STATIC)
 target_sources_wakaama(wakaama_static)
 target_include_directories(wakaama_static PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include/)
 
-if(WAKAAMA_TRANSPORT STREQUAL POSIX_UDP)
+if(WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_posix_udp)
-elseif(WAKAAMA_TRANSPORT STREQUAL TINYDTLS)
+elseif(WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_tinydtls)
 endif()
 
-if(WAKAAMA_PLATFORM STREQUAL POSIX)
+if(WAKAAMA_PLATFORM STREQUAL "POSIX")
     target_link_libraries(wakaama_static PUBLIC wakaama_platform_posix)
+elseif(WAKAAMA_PLATFORM STREQUAL "WIN32")
+    target_link_libraries(wakaama_static PUBLIC wakaama_platform_win32)
 endif()
 
 if(WAKAAMA_CLI)

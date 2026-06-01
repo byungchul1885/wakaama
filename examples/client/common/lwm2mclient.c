@@ -59,8 +59,10 @@
 #include "lwm2mclient.h"
 #include "commandline.h"
 #include "liblwm2m.h"
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS)
 #include "tinydtls/connection.h"
+#elif defined(WITH_MBEDTLS)
+#include "posix_mbedtls/connection.h"
 #else
 #include "udp/connection.h"
 #endif
@@ -98,8 +100,11 @@ typedef struct {
     lwm2m_object_t *securityObjP;
     lwm2m_object_t *serverObject;
     int sock;
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS)
     lwm2m_dtls_connection_t *connList;
+    lwm2m_context_t *lwm2mH;
+#elif defined(WITH_MBEDTLS)
+    lwm2m_connection_t *connList;
     lwm2m_context_t *lwm2mH;
 #else
     lwm2m_connection_t *connList;
@@ -178,11 +183,15 @@ void handle_value_changed(lwm2m_context_t *lwm2mH, lwm2m_uri_t *uri, const char 
     }
 }
 
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
 void *lwm2m_connect_server(uint16_t secObjInstID, void *userData) {
     client_data_t *dataP;
     lwm2m_list_t *instance;
+#ifdef WITH_TINYDTLS
     lwm2m_dtls_connection_t *newConnP = NULL;
+#else
+    lwm2m_connection_t *newConnP = NULL;
+#endif
     dataP = (client_data_t *)userData;
     lwm2m_object_t *securityObj = dataP->securityObjP;
 
@@ -269,7 +278,12 @@ void lwm2m_close_connection(void *sessionH, void *userData) {
 
     if (targetP == app_data->connList) {
         app_data->connList = targetP->next;
+#ifdef WITH_MBEDTLS
+        targetP->next = NULL;
+        lwm2m_connection_free(targetP);
+#else
         lwm2m_free(targetP);
+#endif
     } else {
 #ifdef WITH_TINYDTLS
         lwm2m_dtls_connection_t *parentP;
@@ -283,7 +297,12 @@ void lwm2m_close_connection(void *sessionH, void *userData) {
         }
         if (parentP != NULL) {
             parentP->next = targetP->next;
+#ifdef WITH_MBEDTLS
+            targetP->next = NULL;
+            lwm2m_connection_free(targetP);
+#else
             lwm2m_free(targetP);
+#endif
         }
     }
 }
@@ -815,7 +834,7 @@ void print_usage(void) {
     fprintf(stdout, "  -c\t\tChange battery level over time.\r\n");
     fprintf(stdout, "  -S BYTES\tCoAP block size. Options: 16, 32, 64, 128, 256, 512, 1024. Default: %" PRIu16 "\r\n",
             (uint16_t)LWM2M_COAP_DEFAULT_BLOCK_SIZE);
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
     fprintf(
         stdout,
         "  -i STRING\tSet the device management or bootstrap server PSK identity. If not set use none secure mode\r\n");
@@ -845,10 +864,10 @@ int main(int argc, char *argv[]) {
 #endif
 
     char *pskId = NULL;
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
     char *psk = NULL;
 #endif
-    uint16_t pskLen = -1;
+    uint16_t pskLen = 0;
     char *pskBuffer = NULL;
 
     /*
@@ -927,7 +946,7 @@ int main(int argc, char *argv[]) {
                 return 0;
             }
             break;
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
         case 'i':
             opt++;
             if (opt >= argc) {
@@ -1020,7 +1039,7 @@ int main(int argc, char *argv[]) {
      * Now the main function fill an array with each object, this list will be later passed to liblwm2m.
      * Those functions are located in their respective object file.
      */
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
     if (psk != NULL) {
         pskLen = strlen(psk) / 2; // NOSONAR
         pskBuffer = malloc(pskLen);
@@ -1050,7 +1069,7 @@ int main(int argc, char *argv[]) {
 
     char serverUri[50];
     int serverId = 123;
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
     sprintf(serverUri, "coaps://%s:%s", server, serverPort); // NOSONAR
 #else
     sprintf(serverUri, "coap://%s:%s", server, serverPort); // NOSONAR
@@ -1132,7 +1151,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "lwm2m_init() failed\r\n");
         return -1;
     }
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
     data.lwm2mH = lwm2mH;
 #endif
 
@@ -1223,6 +1242,7 @@ int main(int argc, char *argv[]) {
             fprintf(stdout, "Unknown...\r\n");
             break;
         }
+        fflush(stdout);
         if (result != 0) {
             fprintf(stderr, "lwm2m_step() failed: 0x%X\r\n", result);
 #ifdef LWM2M_BOOTSTRAP
@@ -1238,6 +1258,17 @@ int main(int argc, char *argv[]) {
         }
 #ifdef LWM2M_BOOTSTRAP
         update_bootstrap_info(&previousState, lwm2mH);
+#endif
+#ifdef WITH_MBEDTLS
+        for (lwm2m_connection_t *connP = data.connList; connP != NULL; connP = connP->next) {
+            int stepResult = lwm2m_connection_step(connP);
+            if (stepResult != 0) {
+                fprintf(stderr, "lwm2m_connection_step() failed: %d\r\n", stepResult);
+            }
+        }
+        if (tv.tv_sec > 1) {
+            tv.tv_sec = 1;
+        }
 #endif
         /*
          * This part will set up an interruption until an event happen on SDTIN or the socket until "tv" timed out (set
@@ -1302,7 +1333,7 @@ int main(int argc, char *argv[]) {
                         /*
                          * Let liblwm2m respond to the query depending on the context
                          */
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
                         result = lwm2m_connection_handle_packet(connP, buffer, numBytes);
                         if (0 != result) {
                             printf("error handling message %d\n", result);
@@ -1351,7 +1382,7 @@ int main(int argc, char *argv[]) {
      * from it
      */
     if (g_quit == 1) {
-#ifdef WITH_TINYDTLS
+#if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
         free(pskBuffer);
 #endif
 

@@ -543,3 +543,36 @@ void lwm2m_connection_free(lwm2m_connection_t *connList)
         connList = nextP;
     }
 }
+
+uint8_t lwm2m_buffer_send(void *sessionH, uint8_t *buffer, size_t length, void *userdata)
+{
+    lwm2m_mbedtls_connection_t *connP = (lwm2m_mbedtls_connection_t *)sessionH;
+    int ret;
+
+    (void)userdata;
+
+    if (connP == NULL || length > INT_MAX)
+    {
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+
+    ret = lwm2m_mbedtls_connection_write(connP, buffer, length);
+    if (ret != (int)length)
+    {
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+
+    return COAP_NO_ERROR;
+}
+
+bool lwm2m_session_is_equal(void *session1, void *session2, void *userData)
+{
+    (void)userData;
+
+    return session1 == session2;
+}
+
+void lwm2m_session_remove(void *session_h)
+{
+    (void)session_h;
+}

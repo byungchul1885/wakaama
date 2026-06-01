@@ -437,6 +437,31 @@ if(WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
     target_link_libraries(wakaama_transport_win32_mbedtls PUBLIC wakaama_transport_mbedtls ws2_32)
 endif()
 
+if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS" AND WAKAAMA_PLATFORM STREQUAL "POSIX")
+    # Transport mbedTLS over POSIX UDP implementation library.
+    add_library(wakaama_transport_posix_mbedtls OBJECT)
+    target_sources(
+        wakaama_transport_posix_mbedtls
+        PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/posix_mbedtls/connection.c
+    )
+    target_include_directories(
+        wakaama_transport_posix_mbedtls
+        PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/posix_mbedtls/include
+    )
+    target_include_directories(
+        wakaama_transport_posix_mbedtls
+        PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include
+                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/include
+                ${WAKAAMA_MBEDTLS_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        wakaama_transport_posix_mbedtls
+        PRIVATE _POSIX_C_SOURCE=200809 LWM2M_COAP_MAX_MESSAGE_SIZE=${WAKAAMA_COAP_MAX_MESSAGE_SIZE}
+    )
+    target_compile_definitions(wakaama_transport_posix_mbedtls PUBLIC WITH_MBEDTLS)
+    target_link_libraries(wakaama_transport_posix_mbedtls PUBLIC wakaama_transport_mbedtls)
+endif()
+
 if(WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     # Transport 'tinydtls' implementation library
     add_library(wakaama_transport_tinydtls OBJECT)
@@ -475,6 +500,9 @@ elseif(WAKAAMA_TRANSPORT STREQUAL "WIN32_UDP")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_win32_udp ws2_32)
 elseif(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_mbedtls)
+    if(TARGET wakaama_transport_posix_mbedtls)
+        target_link_libraries(wakaama_static PUBLIC wakaama_transport_posix_mbedtls)
+    endif()
 elseif(WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_mbedtls wakaama_transport_win32_mbedtls ws2_32)
 elseif(WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")

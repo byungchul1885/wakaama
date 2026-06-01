@@ -34,6 +34,49 @@ static int prv_is_retryable_dtls_result(int result)
            || result == MBEDTLS_ERR_SSL_TIMEOUT;
 }
 
+static const char *prv_coap_type_name(unsigned int type)
+{
+    switch (type)
+    {
+    case 0:
+        return "CON";
+    case 1:
+        return "NON";
+    case 2:
+        return "ACK";
+    case 3:
+        return "RST";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void prv_log_coap_packet(const char *direction, const uint8_t *buffer, size_t length)
+{
+    unsigned int version;
+    unsigned int type;
+    unsigned int token_len;
+    unsigned int code_class;
+    unsigned int code_detail;
+    unsigned int mid;
+
+    if (buffer == NULL || length < 4)
+    {
+        return;
+    }
+
+    version = (buffer[0] >> 6) & 0x03U;
+    type = (buffer[0] >> 4) & 0x03U;
+    token_len = buffer[0] & 0x0FU;
+    code_class = (buffer[1] >> 5) & 0x07U;
+    code_detail = buffer[1] & 0x1FU;
+    mid = ((unsigned int)buffer[2] << 8) | buffer[3];
+
+    fprintf(stdout, "lwm2m coap %s: ver=%u type=%s tkl=%u code=%u.%02u mid=%u length=%zu\n", direction, version,
+            prv_coap_type_name(type), token_len, code_class, code_detail, mid, length);
+    fflush(stdout);
+}
+
 static int prv_socket_error_wants_retry(int error)
 {
     return error == WSAEWOULDBLOCK || error == WSAEINTR;
@@ -476,6 +519,7 @@ int lwm2m_connection_handle_packet(lwm2m_connection_t *connP, uint8_t *buffer, s
             ret = lwm2m_mbedtls_connection_read(connP->dtls, plain, sizeof(plain));
             if (ret > 0)
             {
+                prv_log_coap_packet("inbound", plain, (size_t)ret);
                 lwm2m_handle_packet(connP->lwm2mH, plain, (size_t)ret, connP->dtls);
             }
         } while (ret > 0);
@@ -495,6 +539,7 @@ int lwm2m_connection_send(lwm2m_connection_t *connP, uint8_t *buffer, size_t len
         return -1;
     }
 
+    prv_log_coap_packet("outbound", buffer, length);
     ret = lwm2m_mbedtls_connection_write(connP->dtls, buffer, length);
 
     return ret == (int)length ? 0 : -1;
@@ -556,6 +601,7 @@ uint8_t lwm2m_buffer_send(void *sessionH, uint8_t *buffer, size_t length, void *
         return COAP_500_INTERNAL_SERVER_ERROR;
     }
 
+    prv_log_coap_packet("outbound", buffer, length);
     ret = lwm2m_mbedtls_connection_write(connP, buffer, length);
     if (ret != (int)length)
     {

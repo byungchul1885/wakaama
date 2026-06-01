@@ -1067,13 +1067,18 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    char serverUri[50];
+    char serverUri[256];
+    int serverUriLength;
     int serverId = 123;
 #if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
-    sprintf(serverUri, "coaps://%s:%s", server, serverPort); // NOSONAR
+    serverUriLength = snprintf(serverUri, sizeof(serverUri), "coaps://%s:%s", server, serverPort);
 #else
-    sprintf(serverUri, "coap://%s:%s", server, serverPort); // NOSONAR
+    serverUriLength = snprintf(serverUri, sizeof(serverUri), "coap://%s:%s", server, serverPort);
 #endif
+    if (serverUriLength < 0 || (size_t)serverUriLength >= sizeof(serverUri)) {
+        fprintf(stderr, "Server URI is too long\r\n");
+        return -1;
+    }
 #ifdef LWM2M_BOOTSTRAP
     objArray[0] = get_security_object(serverId, serverUri, pskId, pskBuffer, pskLen, bootstrapRequested);
 #else

@@ -62,6 +62,7 @@ lwm2m_mbedtls_connection_t *lwm2m_mbedtls_connection_new(void);
 int lwm2m_mbedtls_connection_setup(lwm2m_mbedtls_connection_t *conn, const lwm2m_mbedtls_config_t *config);
 int lwm2m_mbedtls_connection_reset(lwm2m_mbedtls_connection_t *conn);
 int lwm2m_mbedtls_connection_handshake(lwm2m_mbedtls_connection_t *conn);
+const char *lwm2m_mbedtls_connection_get_ciphersuite(const lwm2m_mbedtls_connection_t *conn);
 int lwm2m_mbedtls_connection_read(lwm2m_mbedtls_connection_t *conn, uint8_t *buffer, size_t length);
 int lwm2m_mbedtls_connection_write(lwm2m_mbedtls_connection_t *conn, const uint8_t *buffer, size_t length);
 int lwm2m_mbedtls_connection_close_notify(lwm2m_mbedtls_connection_t *conn);

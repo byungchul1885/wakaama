@@ -76,6 +76,7 @@ lwm2m_connection_t *lwm2m_connection_create(lwm2m_connection_t *connList, lwm2m_
 int lwm2m_connection_setup_dtls(lwm2m_connection_t *connP, const lwm2m_win32_mbedtls_config_t *config);
 void *lwm2m_connection_get_session(lwm2m_connection_t *connP);
 int lwm2m_connection_is_handshake_done(lwm2m_connection_t *connP);
+const char *lwm2m_connection_get_dtls_ciphersuite(const lwm2m_connection_t *connP);
 int lwm2m_connection_step(lwm2m_connection_t *connP);
 int lwm2m_connection_handle_packet(lwm2m_connection_t *connP, uint8_t *buffer, size_t length);
 int lwm2m_connection_send(lwm2m_connection_t *connP, uint8_t *buffer, size_t length);

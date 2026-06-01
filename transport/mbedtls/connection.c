@@ -17,6 +17,11 @@
 #include <mbedtls/ssl.h>
 #include <mbedtls/ssl_cookie.h>
 
+static const int PRV_LWM2M_DTLS_CIPHERSUITES[] = {
+    MBEDTLS_TLS_PSK_WITH_ARIA_128_GCM_SHA256,
+    0
+};
+
 struct _lwm2m_mbedtls_connection_t {
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config conf;
@@ -170,6 +175,9 @@ int lwm2m_mbedtls_connection_setup(lwm2m_mbedtls_connection_t *conn, const lwm2m
         return ret;
     }
 
+    /* KEPCO LwM2M 1.3(ba)-2 requires this exact PSK ARIA-GCM ciphersuite. */
+    mbedtls_ssl_conf_ciphersuites(&conn->conf, PRV_LWM2M_DTLS_CIPHERSUITES);
+
     mbedtls_ssl_conf_rng(&conn->conf, mbedtls_ctr_drbg_random, &conn->ctr_drbg);
     mbedtls_ssl_conf_authmode(&conn->conf, MBEDTLS_SSL_VERIFY_NONE);
 
@@ -269,6 +277,16 @@ int lwm2m_mbedtls_connection_handshake(lwm2m_mbedtls_connection_t *conn)
     }
 
     return mbedtls_ssl_handshake(&conn->ssl);
+}
+
+const char *lwm2m_mbedtls_connection_get_ciphersuite(const lwm2m_mbedtls_connection_t *conn)
+{
+    if (conn == NULL)
+    {
+        return NULL;
+    }
+
+    return mbedtls_ssl_get_ciphersuite(&conn->ssl);
 }
 
 int lwm2m_mbedtls_connection_read(lwm2m_mbedtls_connection_t *conn, uint8_t *buffer, size_t length)

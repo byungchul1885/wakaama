@@ -442,6 +442,16 @@ int lwm2m_connection_is_handshake_done(lwm2m_connection_t *connP)
     return connP != NULL && connP->handshake_done != 0;
 }
 
+const char *lwm2m_connection_get_dtls_ciphersuite(const lwm2m_connection_t *connP)
+{
+    if (connP == NULL || connP->dtls == NULL || connP->handshake_done == 0)
+    {
+        return NULL;
+    }
+
+    return lwm2m_mbedtls_connection_get_ciphersuite(connP->dtls);
+}
+
 static void prv_clear_incoming(lwm2m_connection_t *connP)
 {
     connP->incoming_buffer = NULL;

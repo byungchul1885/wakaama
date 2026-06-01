@@ -44,7 +44,7 @@ static void create_big_message(coap_packet_t *packet) {
     coap_set_payload(packet, payload, strlen((char *)payload)); // NOSONAR
 }
 
-static void test_request_entity_too_large(void) {
+static void test_large_plain_request_requires_block1(void) {
     /* arrange */
     coap_packet_t packet;
     memset(&packet, 0, sizeof(packet));
@@ -66,13 +66,21 @@ static void test_request_entity_too_large(void) {
     coap_packet_t actual_response_packet;
     coap_status_t status = coap_parse_message(&actual_response_packet, send_buffer, send_buffer_len);
     CU_ASSERT_EQUAL(status, NO_ERROR);
-    CU_ASSERT_EQUAL((coap_status_t)actual_response_packet.code, CREATED_2_01);
+    CU_ASSERT_EQUAL((coap_status_t)actual_response_packet.code, COAP_413_ENTITY_TOO_LARGE);
+
+    uint32_t block1_num = 0;
+    uint8_t block1_more = 0;
+    uint16_t block1_size = 0;
+    CU_ASSERT_EQUAL(coap_get_header_block1(&actual_response_packet, &block1_num, &block1_more, &block1_size, NULL), 1);
+    CU_ASSERT_EQUAL(block1_num, 0);
+    CU_ASSERT_EQUAL(block1_more, 1);
+    CU_ASSERT_EQUAL(block1_size, lwm2m_get_coap_block_size());
 
     coap_free_header(&actual_response_packet);
 }
 
 static struct TestTable table[] = {
-    {"test_request_entity_too_large", test_request_entity_too_large},
+    {"test_large_plain_request_requires_block1", test_large_plain_request_requires_block1},
     {NULL, NULL},
 };
 

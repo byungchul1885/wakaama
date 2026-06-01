@@ -244,6 +244,17 @@ static lwm2m_transaction_t * prv_get_transaction(lwm2m_context_t * contextP, voi
     return NULL;
 }
 
+static void prv_remove_transaction_by_mid(lwm2m_context_t * contextP, void * sessionH, uint16_t mid)
+{
+    lwm2m_transaction_t *transaction;
+
+    transaction = prv_get_transaction(contextP, sessionH, mid);
+    if (transaction != NULL)
+    {
+        transaction_remove(contextP, transaction);
+    }
+}
+
 // limited clone of transaction to be used by block transfers
 static lwm2m_transaction_t * prv_create_next_block_transaction(lwm2m_transaction_t * transaction, uint16_t nextMID){
     static coap_packet_t message[1];
@@ -477,10 +488,14 @@ static int prv_send_get_next_block2(lwm2m_context_t * contextP,
 }
 
 static bool is_message_too_large(const coap_packet_t *message, const size_t packet_size) {
-    if (IS_OPTION(message, COAP_OPTION_BLOCK1) || IS_OPTION(message, COAP_OPTION_BLOCK2)) {
-        /* In case of block-transfer the *payload* mustn't be bigger than the block size. */
-        return message->payload_len > lwm2m_get_coap_block_size();
+    /*
+     * KEPCO LwM2M 1.3(ja) requires Block-Wise Transfers when the CoAP payload exceeds 1024 bytes.
+     * Enforce the configured block size for both block-transfer messages and regular messages.
+     */
+    if (message->payload_len > lwm2m_get_coap_block_size()) {
+        return true;
     }
+
     /* In case of a normal message (not block-transfer) the *complete packet* mustn't be bigger than the packet size. */
     return packet_size > LWM2M_COAP_MAX_MESSAGE_SIZE;
 }
@@ -763,24 +778,40 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 } else if (IS_OPTION(message, COAP_OPTION_BLOCK1)) {
                     uint32_t block_num;
                     uint16_t block_size;
+                    bool wait_for_next_block_response = false;
 
                     coap_get_header_block1(message, &block_num, NULL, &block_size, NULL);
 
                     switch (message->code) {
                         case COAP_201_CREATED:
                         case COAP_204_CHANGED:
+                            coap_error_code = prv_send_next_block1(contextP, fromSessionH, message->mid, block_size);
+                            break;
                         case COAP_231_CONTINUE:
-                            prv_send_next_block1(contextP, fromSessionH, message->mid, block_size);
+                            coap_error_code = prv_send_next_block1(contextP, fromSessionH, message->mid, block_size);
+                            if (coap_error_code == NO_ERROR)
+                            {
+                                prv_remove_transaction_by_mid(contextP, fromSessionH, message->mid);
+                                wait_for_next_block_response = true;
+                            }
                             break;
                         case COAP_413_ENTITY_TOO_LARGE:
                             // resend with smaller block size as specified in the block 1 option
                             if (block_num > 0) break;
-                            prv_retry_block1(contextP, fromSessionH, message->mid, block_size);
+                            coap_error_code = prv_retry_block1(contextP, fromSessionH, message->mid, block_size);
+                            if (coap_error_code == NO_ERROR)
+                            {
+                                prv_remove_transaction_by_mid(contextP, fromSessionH, message->mid);
+                                wait_for_next_block_response = true;
+                            }
                         default:
                             break;
                     }
 
-                    transaction_handleResponse(contextP, fromSessionH, message, NULL);
+                    if (!wait_for_next_block_response)
+                    {
+                        transaction_handleResponse(contextP, fromSessionH, message, NULL);
+                    }
                 } else if (IS_OPTION(message, COAP_OPTION_BLOCK2)) {
 #ifdef LWM2M_CLIENT_MODE
                     // get server
@@ -837,8 +868,15 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     All our responses are piggyback so this must be the result of request being too large (not a separate CON)
                     switch to a block1 request.
                     */
-                    prv_change_to_block1(contextP, fromSessionH, message->mid, message->size);
-                    transaction_handleResponse(contextP, fromSessionH, message, NULL);
+                    coap_error_code = prv_change_to_block1(contextP, fromSessionH, message->mid, message->size);
+                    if (coap_error_code == NO_ERROR)
+                    {
+                        prv_remove_transaction_by_mid(contextP, fromSessionH, message->mid);
+                    }
+                    else
+                    {
+                        transaction_handleResponse(contextP, fromSessionH, message, NULL);
+                    }
                 } else {
                     transaction_handleResponse(contextP, fromSessionH, message, NULL);
                 }

@@ -93,7 +93,7 @@ set(WAKAAMA_TRANSPORT
     NONE
     CACHE STRING "The transport layer implementation"
 )
-set_property(CACHE WAKAAMA_TRANSPORT PROPERTY STRINGS NONE POSIX_UDP TINYDTLS WIN32_UDP MBEDTLS)
+set_property(CACHE WAKAAMA_TRANSPORT PROPERTY STRINGS NONE POSIX_UDP TINYDTLS WIN32_UDP MBEDTLS WIN32_MBEDTLS)
 
 set(WAKAAMA_MBEDTLS_ROOT
     ""
@@ -309,6 +309,15 @@ if(WAKAAMA_PLATFORM STREQUAL "WIN32")
     target_include_directories(wakaama_platform_win32 PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
 endif()
 
+if(WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
+    if(NOT WIN32)
+        message(FATAL_ERROR "WAKAAMA_TRANSPORT=WIN32_MBEDTLS requires a Windows target.")
+    endif()
+    if(NOT WAKAAMA_PLATFORM STREQUAL "WIN32")
+        message(FATAL_ERROR "WAKAAMA_TRANSPORT=WIN32_MBEDTLS requires WAKAAMA_PLATFORM=WIN32.")
+    endif()
+endif()
+
 if(WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP")
     # Transport UDP (POSIX) implementation library
     add_library(wakaama_transport_posix_udp OBJECT)
@@ -329,7 +338,7 @@ if(WAKAAMA_TRANSPORT STREQUAL "WIN32_UDP")
     target_link_libraries(wakaama_transport_win32_udp PUBLIC ws2_32)
 endif()
 
-if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS")
+if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS" OR WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
     find_package(
         MbedTLS CONFIG QUIET
         HINTS ${WAKAAMA_MBEDTLS_ROOT}
@@ -401,6 +410,33 @@ if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS")
     target_link_libraries(wakaama_transport_mbedtls PUBLIC ${WAKAAMA_MBEDTLS_LIBRARIES})
 endif()
 
+if(WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
+    # Transport mbedTLS over Win32 Winsock UDP implementation library.
+    add_library(wakaama_transport_win32_mbedtls OBJECT)
+    target_sources(
+        wakaama_transport_win32_mbedtls
+        PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/win32_mbedtls/connection.c
+    )
+    target_include_directories(
+        wakaama_transport_win32_mbedtls
+        PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/win32_mbedtls/include
+    )
+    target_include_directories(
+        wakaama_transport_win32_mbedtls
+        PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include
+                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/include
+                ${WAKAAMA_MBEDTLS_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        wakaama_transport_win32_mbedtls
+        PRIVATE WIN32_LEAN_AND_MEAN
+                NOMINMAX
+                LWM2M_COAP_MAX_MESSAGE_SIZE=${WAKAAMA_COAP_MAX_MESSAGE_SIZE}
+    )
+    target_compile_definitions(wakaama_transport_win32_mbedtls PUBLIC WITH_MBEDTLS WITH_WIN32_MBEDTLS)
+    target_link_libraries(wakaama_transport_win32_mbedtls PUBLIC wakaama_transport_mbedtls ws2_32)
+endif()
+
 if(WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     # Transport 'tinydtls' implementation library
     add_library(wakaama_transport_tinydtls OBJECT)
@@ -439,6 +475,8 @@ elseif(WAKAAMA_TRANSPORT STREQUAL "WIN32_UDP")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_win32_udp ws2_32)
 elseif(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_mbedtls)
+elseif(WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
+    target_link_libraries(wakaama_static PUBLIC wakaama_transport_mbedtls wakaama_transport_win32_mbedtls ws2_32)
 elseif(WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_tinydtls)
 endif()

@@ -565,7 +565,7 @@ int main(int argc, char *argv[])
         {"boot", "Bootstrap a client (Server Initiated).", " boot URI [NAME]\r\n"
                                     "   URI: uri of the client to bootstrap\r\n"
                                     "   NAME: endpoint name of the client as in the .ini file (optionnal)\r\n"
-                                    "Example: boot coap://[::1]:56830 testlwm2mclient", prv_bootstrap_client, &data},
+                                    "Example: boot coap://[::1]:56830 ZZS20000001", prv_bootstrap_client, &data},
         {"q", "Quit the server.", NULL, prv_quit, NULL},
 
         COMMAND_END_LIST

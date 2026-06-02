@@ -83,6 +83,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#ifndef SMGW_DEFAULT_ENDPOINT_NAME
+#define SMGW_DEFAULT_ENDPOINT_NAME "ZZS20000001"
+#endif
+
 #define DEFAULT_SERVER_IPV6 "[::1]"
 #define DEFAULT_SERVER_IPV4 "127.0.0.1"
 
@@ -823,7 +827,7 @@ void print_usage(void) {
     fprintf(stdout, "Usage: lwm2mclient [OPTION]\r\n");
     fprintf(stdout, "Launch a LwM2M client.\r\n");
     fprintf(stdout, "Options:\r\n");
-    fprintf(stdout, "  -n NAME\tSet the endpoint name of the Client. Default: testlwm2mclient\r\n");
+    fprintf(stdout, "  -n NAME\tSet the endpoint name of the Client. Default: " SMGW_DEFAULT_ENDPOINT_NAME "\r\n");
     fprintf(stdout, "  -l PORT\tSet the local UDP port of the Client. Default: 56830\r\n");
     fprintf(stdout, "  -h HOST\tSet the hostname of the LwM2M Server to connect to. Default: localhost\r\n");
     fprintf(stdout,
@@ -851,7 +855,7 @@ int main(int argc, char *argv[]) {
     const char *localPort = "56830";
     const char *server = NULL;
     const char *serverPort = LWM2M_STANDARD_PORT_STR;
-    const char *name = "testlwm2mclient";
+    const char *name = SMGW_DEFAULT_ENDPOINT_NAME;
     int lifetime = 300;
     int batterylevelchanging = 0;
     time_t reboot_time = 0;

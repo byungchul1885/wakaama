@@ -820,6 +820,24 @@ static void prv_display_objects(lwm2m_context_t *lwm2mH, char *buffer, void *use
     }
 }
 
+static int prv_format_uri_host(const char *host, char *buffer, size_t buffer_len) {
+    if (host == NULL || buffer == NULL || buffer_len == 0) {
+        return -1;
+    }
+
+    if (strchr(host, ':') != NULL && host[0] != '[') {
+        int written = snprintf(buffer, buffer_len, "[%s]", host);
+        return (written < 0 || (size_t)written >= buffer_len) ? -1 : 0;
+    }
+
+    if (strlen(host) >= buffer_len) {
+        return -1;
+    }
+
+    strcpy(buffer, host);
+    return 0;
+}
+
 void print_usage(void) {
     fprintf(stdout, "Usage: lwm2mclient [OPTION]\r\n");
     fprintf(stdout, "Launch a LwM2M client.\r\n");
@@ -828,7 +846,8 @@ void print_usage(void) {
             "  -n NAME\tSet the endpoint name of the Client. Default: SMGW Device ID"
             " (fallback: " SMGW_IDENTITY_FALLBACK_DEVICE_ID ")\r\n");
     fprintf(stdout, "  -l PORT\tSet the local UDP port of the Client. Default: 56830\r\n");
-    fprintf(stdout, "  -h HOST\tSet the hostname of the LwM2M Server to connect to. Default: localhost\r\n");
+    fprintf(stdout,
+            "  -h HOST\tSet the hostname of the LwM2M Server to connect to. Default: [::1]. IPv6 literals may be passed with or without brackets\r\n");
     fprintf(stdout,
             "  -p PORT\tSet the port of the LwM2M Server to connect to. Default: " LWM2M_STANDARD_PORT_STR "\r\n");
     fprintf(stdout, "  -4\t\tUse IPv4 connection. Default: IPv6 connection\r\n");
@@ -1084,12 +1103,17 @@ int main(int argc, char *argv[]) {
 #endif
 
     char serverUri[256];
+    char uriHost[128];
     int serverUriLength;
     int serverId = 123;
+    if (prv_format_uri_host(server, uriHost, sizeof(uriHost)) != 0) {
+        fprintf(stderr, "Server host is too long or invalid\r\n");
+        return -1;
+    }
 #if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
-    serverUriLength = snprintf(serverUri, sizeof(serverUri), "coaps://%s:%s", server, serverPort);
+    serverUriLength = snprintf(serverUri, sizeof(serverUri), "coaps://%s:%s", uriHost, serverPort);
 #else
-    serverUriLength = snprintf(serverUri, sizeof(serverUri), "coap://%s:%s", server, serverPort);
+    serverUriLength = snprintf(serverUri, sizeof(serverUri), "coap://%s:%s", uriHost, serverPort);
 #endif
     if (serverUriLength < 0 || (size_t)serverUriLength >= sizeof(serverUri)) {
         fprintf(stderr, "Server URI is too long\r\n");

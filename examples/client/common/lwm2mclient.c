@@ -59,6 +59,7 @@
 #include "lwm2mclient.h"
 #include "commandline.h"
 #include "liblwm2m.h"
+#include "smgw_identity.h"
 #if defined(WITH_TINYDTLS)
 #include "tinydtls/connection.h"
 #elif defined(WITH_MBEDTLS)
@@ -82,10 +83,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-#ifndef SMGW_DEFAULT_ENDPOINT_NAME
-#define SMGW_DEFAULT_ENDPOINT_NAME "ZZS20000001"
-#endif
 
 #define DEFAULT_SERVER_IPV6 "[::1]"
 #define DEFAULT_SERVER_IPV4 "127.0.0.1"
@@ -827,7 +824,9 @@ void print_usage(void) {
     fprintf(stdout, "Usage: lwm2mclient [OPTION]\r\n");
     fprintf(stdout, "Launch a LwM2M client.\r\n");
     fprintf(stdout, "Options:\r\n");
-    fprintf(stdout, "  -n NAME\tSet the endpoint name of the Client. Default: " SMGW_DEFAULT_ENDPOINT_NAME "\r\n");
+    fprintf(stdout,
+            "  -n NAME\tSet the endpoint name of the Client. Default: SMGW Device ID"
+            " (fallback: " SMGW_IDENTITY_FALLBACK_DEVICE_ID ")\r\n");
     fprintf(stdout, "  -l PORT\tSet the local UDP port of the Client. Default: 56830\r\n");
     fprintf(stdout, "  -h HOST\tSet the hostname of the LwM2M Server to connect to. Default: localhost\r\n");
     fprintf(stdout,
@@ -855,7 +854,9 @@ int main(int argc, char *argv[]) {
     const char *localPort = "56830";
     const char *server = NULL;
     const char *serverPort = LWM2M_STANDARD_PORT_STR;
-    const char *name = SMGW_DEFAULT_ENDPOINT_NAME;
+    const char *name = NULL;
+    bool nameOverridden = false;
+    smgw_identity_t identity;
     int lifetime = 300;
     int batterylevelchanging = 0;
     time_t reboot_time = 0;
@@ -975,6 +976,7 @@ int main(int argc, char *argv[]) {
                 return 0;
             }
             name = argv[opt];
+            nameOverridden = true;
             break;
         case 'l':
             opt++;
@@ -1027,6 +1029,16 @@ int main(int argc, char *argv[]) {
 
     if (!server) {
         server = (AF_INET == data.addressFamily ? DEFAULT_SERVER_IPV4 : DEFAULT_SERVER_IPV6);
+    }
+
+    if (!nameOverridden) {
+        if (smgw_identity_load(&identity) != 0) {
+            fprintf(stderr, "Failed to load SMGW identity for LwM2M endpoint name\r\n");
+            return -1;
+        }
+        name = identity.device_id;
+    } else {
+        fprintf(stderr, "SMGW identity endpoint override: endpoint=%s\r\n", name);
     }
 
     /*

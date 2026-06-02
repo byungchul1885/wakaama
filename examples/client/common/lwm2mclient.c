@@ -821,6 +821,36 @@ static void prv_display_objects(lwm2m_context_t *lwm2mH, char *buffer, void *use
     }
 }
 
+#ifdef LWM2M_BOOTSTRAP
+static bool prv_bootstrap_only_finished(lwm2m_context_t *context) {
+    lwm2m_server_t *serverP;
+    bool hasFinishedServer = false;
+
+    if (context == NULL || context->state != STATE_BOOTSTRAPPING) {
+        return false;
+    }
+
+    serverP = context->bootstrapServerList;
+    while (serverP != NULL) {
+        switch (serverP->status) {
+        case STATE_BS_FINISHING:
+        case STATE_BS_FINISHED:
+            hasFinishedServer = true;
+            break;
+        case STATE_BS_HOLD_OFF:
+        case STATE_BS_INITIATED:
+        case STATE_BS_PENDING:
+            return false;
+        default:
+            break;
+        }
+        serverP = serverP->next;
+    }
+
+    return hasFinishedServer;
+}
+#endif
+
 static int prv_format_uri_host(const char *host, char *buffer, size_t buffer_len) {
     if (host == NULL || buffer == NULL || buffer_len == 0) {
         return -1;
@@ -854,6 +884,9 @@ void print_usage(void) {
     fprintf(stdout, "  -4\t\tUse IPv4 connection. Default: IPv6 connection\r\n");
     fprintf(stdout, "  -t TIME\tSet the lifetime of the Client. Default: 300\r\n");
     fprintf(stdout, "  -b\t\tBootstrap requested.\r\n");
+#ifdef LWM2M_BOOTSTRAP
+    fprintf(stdout, "  -B\t\tBootstrap-only validation mode. Exit after Bootstrap-Finish before registration.\r\n");
+#endif
     fprintf(stdout, "  -c\t\tChange battery level over time.\r\n");
     fprintf(stdout, "  -S BYTES\tCoAP block size. Options: 16, 32, 64, 128, 256, 512, 1024. Default: %" PRIu16 "\r\n",
             (uint16_t)LWM2M_COAP_DEFAULT_BLOCK_SIZE);
@@ -891,6 +924,7 @@ int main(int argc, char *argv[]) {
 
 #ifdef LWM2M_BOOTSTRAP
     lwm2m_client_state_t previousState = STATE_INITIAL;
+    bool bootstrapOnly = false;
 #endif
 
     char *pskId = NULL;
@@ -965,6 +999,14 @@ int main(int argc, char *argv[]) {
             if (!serverPortChanged)
                 serverPort = LWM2M_BSSERVER_PORT_STR;
             break;
+#ifdef LWM2M_BOOTSTRAP
+        case 'B':
+            bootstrapRequested = true;
+            bootstrapOnly = true;
+            if (!serverPortChanged)
+                serverPort = LWM2M_BSSERVER_PORT_STR;
+            break;
+#endif
         case 'c':
             batterylevelchanging = 1;
             break;
@@ -1311,6 +1353,14 @@ int main(int argc, char *argv[]) {
         FD_ZERO(&readfds);
         FD_SET(data.sock, &readfds);
         FD_SET(STDIN_FILENO, &readfds);
+
+#ifdef LWM2M_BOOTSTRAP
+        if (bootstrapOnly && prv_bootstrap_only_finished(lwm2mH)) {
+            fprintf(stdout, "[BOOTSTRAP] bootstrap-only finished; exiting before registration\r\n");
+            g_quit = 1;
+            break;
+        }
+#endif
 
         /*
          * This function does two things:

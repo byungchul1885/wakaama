@@ -10,6 +10,7 @@ if(NOT SMGW_C_REPO_ROOT)
     get_filename_component(SMGW_C_REPO_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../../.." ABSOLUTE)
 endif()
 set(SMGW_IDENTITY_DIRECTORY "${SMGW_C_REPO_ROOT}/shared/identity")
+set(SMGW_CREDENTIAL_DIRECTORY "${SMGW_C_REPO_ROOT}/shared/credential")
 
 set(WAKAAMA_MODE_CLIENT ON)
 set(WAKAAMA_MODE_SERVER OFF)
@@ -38,10 +39,11 @@ target_sources(
             ../common/object_server.c
             ../common/object_test.c
             ../common/system_api.c
+            ${SMGW_CREDENTIAL_DIRECTORY}/smgw_lwm2m_credential.c
             ${SMGW_IDENTITY_DIRECTORY}/smgw_identity.c
 )
 
-target_include_directories(lwm2mclient_mbedtls PRIVATE ${SMGW_IDENTITY_DIRECTORY})
+target_include_directories(lwm2mclient_mbedtls PRIVATE ${SMGW_CREDENTIAL_DIRECTORY} ${SMGW_IDENTITY_DIRECTORY})
 target_link_libraries(lwm2mclient_mbedtls PRIVATE wakaama_static)
 
 enable_testing()

@@ -60,6 +60,7 @@
 #include "commandline.h"
 #include "liblwm2m.h"
 #include "smgw_identity.h"
+#include "smgw_lwm2m_credential.h"
 #if defined(WITH_TINYDTLS)
 #include "tinydtls/connection.h"
 #elif defined(WITH_MBEDTLS)
@@ -876,11 +877,16 @@ int main(int argc, char *argv[]) {
     const char *name = NULL;
     bool nameOverridden = false;
     smgw_identity_t identity;
+    int identityLoaded = 0;
+    smgw_lwm2m_credential_t credential;
+    int credentialStatus = SMGW_LWM2M_CREDENTIAL_NOT_FOUND;
+    bool credentialLoaded = false;
     int lifetime = 300;
     int batterylevelchanging = 0;
     time_t reboot_time = 0;
     int opt;
     bool bootstrapRequested = false;
+    bool serverHostChanged = false;
     bool serverPortChanged = false;
 
 #ifdef LWM2M_BOOTSTRAP
@@ -893,6 +899,7 @@ int main(int argc, char *argv[]) {
 #endif
     uint16_t pskLen = 0;
     char *pskBuffer = NULL;
+    bool pskBufferOwned = false;
 
     /*
      * The function start by setting up the command line interface (which may or not be useful depending on your
@@ -942,6 +949,8 @@ int main(int argc, char *argv[]) {
         COMMAND_END_LIST};
 
     memset(&data, 0, sizeof(client_data_t));
+    memset(&identity, 0, sizeof(identity));
+    smgw_lwm2m_credential_clear(&credential);
     data.addressFamily = AF_INET6;
 
     opt = 1;
@@ -1012,6 +1021,7 @@ int main(int argc, char *argv[]) {
                 return 0;
             }
             server = argv[opt];
+            serverHostChanged = true;
             break;
         case 'p':
             opt++;
@@ -1055,9 +1065,40 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Failed to load SMGW identity for LwM2M endpoint name\r\n");
             return -1;
         }
+        identityLoaded = 1;
         name = identity.device_id;
     } else {
         fprintf(stderr, "SMGW identity endpoint override: endpoint=%s\r\n", name);
+    }
+
+    credentialStatus = smgw_lwm2m_credential_load(&credential);
+    if (credentialStatus == SMGW_LWM2M_CREDENTIAL_OK) {
+        credentialLoaded = true;
+        if (!credential.authenticated) {
+            fprintf(stderr, "SMGW LwM2M bootstrap delayed: reason=credential_not_authenticated\r\n");
+            return -1;
+        }
+        if (smgw_lwm2m_credential_is_expired(&credential)) {
+            fprintf(stderr, "SMGW LwM2M credential expired: generation=%u\r\n", credential.key_generation);
+            return -1;
+        }
+        if (strcmp(name, credential.device_id) != 0) {
+            fprintf(stderr, "SMGW LwM2M credential rejected: reason=device_id_mismatch\r\n");
+            return -1;
+        }
+        if (identityLoaded && !smgw_lwm2m_credential_matches_identity(&credential, &identity)) {
+            fprintf(stderr, "SMGW LwM2M credential rejected: reason=system_title_mismatch\r\n");
+            return -1;
+        }
+        fprintf(stderr,
+                "SMGW LwM2M credential ready: device_id=%s system_title=%s bootstrap_uri=%s generation=%u\r\n",
+                credential.device_id,
+                credential.system_title,
+                credential.bootstrap_uri,
+                credential.key_generation);
+    } else if (credentialStatus != SMGW_LWM2M_CREDENTIAL_NOT_FOUND || smgw_lwm2m_credential_required()) {
+        fprintf(stderr, "SMGW LwM2M credential unavailable or invalid\r\n");
+        return -1;
     }
 
     /*
@@ -1075,7 +1116,17 @@ int main(int argc, char *argv[]) {
      * Those functions are located in their respective object file.
      */
 #if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
-    if (psk != NULL) {
+    if (credentialLoaded) {
+        pskId = credential.system_title;
+        pskLen = (uint16_t)credential.psk_len;
+        pskBuffer = malloc(pskLen);
+        if (pskBuffer == NULL) {
+            fprintf(stderr, "Failed to create Credential PSK binary buffer\r\n");
+            return -1;
+        }
+        memcpy(pskBuffer, credential.psk, pskLen);
+        pskBufferOwned = true;
+    } else if (psk != NULL) {
         pskLen = strlen(psk) / 2; // NOSONAR
         pskBuffer = malloc(pskLen);
 
@@ -1083,6 +1134,7 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "Failed to create PSK binary buffer\r\n");
             return -1;
         }
+        pskBufferOwned = true;
         // Hex string to binary
         char *h = psk;
         char *b = pskBuffer;
@@ -1106,15 +1158,19 @@ int main(int argc, char *argv[]) {
     char uriHost[128];
     int serverUriLength;
     int serverId = 123;
-    if (prv_format_uri_host(server, uriHost, sizeof(uriHost)) != 0) {
-        fprintf(stderr, "Server host is too long or invalid\r\n");
-        return -1;
-    }
+    if (credentialLoaded && bootstrapRequested && !serverHostChanged && !serverPortChanged) {
+        serverUriLength = snprintf(serverUri, sizeof(serverUri), "%s", credential.bootstrap_uri);
+    } else {
+        if (prv_format_uri_host(server, uriHost, sizeof(uriHost)) != 0) {
+            fprintf(stderr, "Server host is too long or invalid\r\n");
+            return -1;
+        }
 #if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
-    serverUriLength = snprintf(serverUri, sizeof(serverUri), "coaps://%s:%s", uriHost, serverPort);
+        serverUriLength = snprintf(serverUri, sizeof(serverUri), "coaps://%s:%s", uriHost, serverPort);
 #else
-    serverUriLength = snprintf(serverUri, sizeof(serverUri), "coap://%s:%s", uriHost, serverPort);
+        serverUriLength = snprintf(serverUri, sizeof(serverUri), "coap://%s:%s", uriHost, serverPort);
 #endif
+    }
     if (serverUriLength < 0 || (size_t)serverUriLength >= sizeof(serverUri)) {
         fprintf(stderr, "Server URI is too long\r\n");
         return -1;
@@ -1428,7 +1484,9 @@ int main(int argc, char *argv[]) {
      */
     if (g_quit == 1) {
 #if defined(WITH_TINYDTLS) || defined(WITH_MBEDTLS)
-        free(pskBuffer);
+        if (pskBufferOwned) {
+            free(pskBuffer);
+        }
 #endif
 
 #ifdef LWM2M_BOOTSTRAP

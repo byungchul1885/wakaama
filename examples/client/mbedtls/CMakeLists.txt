@@ -11,6 +11,7 @@ if(NOT SMGW_C_REPO_ROOT)
 endif()
 set(SMGW_IDENTITY_DIRECTORY "${SMGW_C_REPO_ROOT}/shared/identity")
 set(SMGW_CREDENTIAL_DIRECTORY "${SMGW_C_REPO_ROOT}/shared/credential")
+set(SMGW_CONFIG_DIRECTORY "${SMGW_C_REPO_ROOT}/shared/config")
 
 set(WAKAAMA_MODE_CLIENT ON)
 set(WAKAAMA_MODE_SERVER OFF)
@@ -22,6 +23,10 @@ set(WAKAAMA_CLI ON)
 set(WAKAAMA_TRANSPORT MBEDTLS)
 set(WAKAAMA_PLATFORM POSIX)
 add_subdirectory(../../../ wakaama_lib)
+
+if(TARGET wakaama_transport_posix_mbedtls)
+    target_include_directories(wakaama_transport_posix_mbedtls PRIVATE ${SMGW_CONFIG_DIRECTORY})
+endif()
 
 add_executable(lwm2mclient_mbedtls)
 
@@ -39,11 +44,12 @@ target_sources(
             ../common/object_server.c
             ../common/object_test.c
             ../common/system_api.c
+            ${SMGW_CONFIG_DIRECTORY}/smgw_lwm2m_network.c
             ${SMGW_CREDENTIAL_DIRECTORY}/smgw_lwm2m_credential.c
             ${SMGW_IDENTITY_DIRECTORY}/smgw_identity.c
 )
 
-target_include_directories(lwm2mclient_mbedtls PRIVATE ${SMGW_CREDENTIAL_DIRECTORY} ${SMGW_IDENTITY_DIRECTORY})
+target_include_directories(lwm2mclient_mbedtls PRIVATE ${SMGW_CONFIG_DIRECTORY} ${SMGW_CREDENTIAL_DIRECTORY} ${SMGW_IDENTITY_DIRECTORY})
 target_link_libraries(lwm2mclient_mbedtls PRIVATE wakaama_static)
 
 enable_testing()

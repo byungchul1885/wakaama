@@ -8,6 +8,7 @@
  *******************************************************************************/
 
 #include "posix_mbedtls/connection.h"
+#include "smgw_lwm2m_network.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -203,6 +204,79 @@ static int64_t prv_security_get_mode(lwm2m_context_t *lwm2mH, lwm2m_object_t *ob
 
     lwm2m_data_free(size, dataP);
     return mode;
+}
+
+static int64_t prv_security_get_int_resource(lwm2m_context_t *lwm2mH, lwm2m_object_t *obj, int instanceId,
+                                             uint16_t resourceId, int64_t fallback)
+{
+    int64_t value = fallback;
+    int size = 1;
+    lwm2m_data_t *dataP;
+
+    dataP = lwm2m_data_new(size);
+    if (dataP == NULL)
+    {
+        return fallback;
+    }
+    dataP->id = resourceId;
+
+    if (obj->readFunc(lwm2mH, (uint16_t)instanceId, &size, &dataP, obj) == COAP_205_CONTENT)
+    {
+        (void)lwm2m_data_decode_int(dataP, &value);
+    }
+
+    lwm2m_data_free(size, dataP);
+    return value;
+}
+
+static int prv_security_get_bool_resource(lwm2m_context_t *lwm2mH, lwm2m_object_t *obj, int instanceId,
+                                          uint16_t resourceId, int fallback)
+{
+    bool value = fallback != 0;
+    int size = 1;
+    lwm2m_data_t *dataP;
+
+    dataP = lwm2m_data_new(size);
+    if (dataP == NULL)
+    {
+        return fallback;
+    }
+    dataP->id = resourceId;
+
+    if (obj->readFunc(lwm2mH, (uint16_t)instanceId, &size, &dataP, obj) == COAP_205_CONTENT)
+    {
+        (void)lwm2m_data_decode_bool(dataP, &value);
+    }
+
+    lwm2m_data_free(size, dataP);
+    return value ? 1 : 0;
+}
+
+static const char *prv_resolve_configured_port(lwm2m_context_t *lwm2mH, lwm2m_object_t *securityObj, int instanceId,
+                                               int isSecure, const char *defaultPort, char *portBuffer,
+                                               size_t portBufferSize)
+{
+    smgw_lwm2m_network_profile_t profile;
+    int64_t shortServerId;
+    int isBootstrap;
+
+    if (portBuffer == NULL || portBufferSize == 0)
+    {
+        return defaultPort;
+    }
+
+    shortServerId = prv_security_get_int_resource(lwm2mH, securityObj, instanceId, LWM2M_SECURITY_SHORT_SERVER_ID,
+                                                  instanceId);
+    isBootstrap = prv_security_get_bool_resource(lwm2mH, securityObj, instanceId, LWM2M_SECURITY_BOOTSTRAP_ID, 0);
+
+    if (smgw_lwm2m_network_load(&profile) == SMGW_LWM2M_NETWORK_OK &&
+        smgw_lwm2m_network_get_server_port(&profile, instanceId, (int)shortServerId, isBootstrap, isSecure,
+                                           portBuffer, portBufferSize) == SMGW_LWM2M_NETWORK_OK)
+    {
+        return portBuffer;
+    }
+
+    return defaultPort;
 }
 
 static char *prv_security_get_public_id(lwm2m_context_t *lwm2mH, lwm2m_object_t *obj, int instanceId, size_t *length)
@@ -437,7 +511,9 @@ lwm2m_connection_t *lwm2m_connection_create(lwm2m_connection_t *connList, int so
     char *uri;
     char *host;
     char *port;
+    char portBuffer[SMGW_LWM2M_NETWORK_PORT_LENGTH];
     const char *defaultPort;
+    int isSecure;
 
     if (securityObj == NULL || lwm2mH == NULL)
     {
@@ -454,38 +530,53 @@ lwm2m_connection_t *lwm2m_connection_create(lwm2m_connection_t *connList, int so
     {
         host = uri + strlen("coaps://");
         defaultPort = LWM2M_DTLS_PORT_STR;
+        isSecure = 1;
     }
     else if (strncmp(uri, "coap://", strlen("coap://")) == 0)
     {
         host = uri + strlen("coap://");
         defaultPort = LWM2M_STANDARD_PORT_STR;
+        isSecure = 0;
     }
     else
     {
         return NULL;
     }
 
-    port = strrchr(host, ':');
-    if (port == NULL)
+    port = NULL;
+    if (host[0] == '[')
     {
-        port = (char *)defaultPort;
+        char *endBracket = strchr(host, ']');
+
+        host++;
+        if (endBracket == NULL)
+        {
+            return NULL;
+        }
+        *endBracket = 0;
+        if (endBracket[1] == ':' && endBracket[2] != '\0')
+        {
+            port = endBracket + 2;
+        }
+        else if (endBracket[1] != '\0')
+        {
+            return NULL;
+        }
     }
     else
     {
-        if (host[0] == '[')
+        port = strrchr(host, ':');
+        if (port != NULL)
         {
-            host++;
-            if (*(port - 1) == ']')
-            {
-                *(port - 1) = 0;
-            }
-            else
-            {
-                return NULL;
-            }
+            *port = 0;
+            port++;
         }
-        *port = 0;
-        port++;
+    }
+
+    if (port == NULL)
+    {
+        port = (char *)prv_resolve_configured_port(lwm2mH, securityObj, instanceId, isSecure, defaultPort,
+                                                   portBuffer, sizeof(portBuffer));
     }
 
     memset(&hints, 0, sizeof(hints));

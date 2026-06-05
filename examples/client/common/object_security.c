@@ -513,7 +513,7 @@ lwm2m_object_t *get_security_object(int serverId, const char *serverUri, char *b
         }
         targetP->isBootstrap = isBootstrap;
         targetP->shortID = serverId;
-        targetP->clientHoldOffTime = 10;
+        targetP->clientHoldOffTime = 0;
 
         securityObj->instanceList = LWM2M_LIST_ADD(securityObj->instanceList, targetP);
 

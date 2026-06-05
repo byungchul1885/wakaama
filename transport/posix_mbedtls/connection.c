@@ -53,6 +53,45 @@ static int prv_socket_error_wants_retry(int error)
     return error == EAGAIN || error == EWOULDBLOCK || error == EINTR;
 }
 
+static void prv_log_sent_bytes(const lwm2m_connection_t *connP, size_t sent)
+{
+    char addrBuffer[INET6_ADDRSTRLEN];
+    in_port_t port;
+
+    if (connP == NULL)
+    {
+        return;
+    }
+
+    if (connP->addr.ss_family == AF_INET)
+    {
+        const struct sockaddr_in *addr = (const struct sockaddr_in *)&connP->addr;
+
+        if (inet_ntop(AF_INET, &addr->sin_addr, addrBuffer, sizeof(addrBuffer)) == NULL)
+        {
+            return;
+        }
+        port = addr->sin_port;
+    }
+    else if (connP->addr.ss_family == AF_INET6)
+    {
+        const struct sockaddr_in6 *addr = (const struct sockaddr_in6 *)&connP->addr;
+
+        if (inet_ntop(AF_INET6, &addr->sin6_addr, addrBuffer, sizeof(addrBuffer)) == NULL)
+        {
+            return;
+        }
+        port = addr->sin6_port;
+    }
+    else
+    {
+        return;
+    }
+
+    fprintf(stderr, "%zu bytes sent to [%s]:%hu\r\n", sent, addrBuffer, ntohs(port));
+    fflush(stderr);
+}
+
 static int prv_find_and_bind_to_address(struct addrinfo *res)
 {
     int s = -1;
@@ -347,6 +386,7 @@ static int prv_send_plain(lwm2m_connection_t *connP, const uint8_t *buffer, size
             return -1;
         }
 
+        prv_log_sent_bytes(connP, (size_t)sent);
         offset += (size_t)sent;
     }
 

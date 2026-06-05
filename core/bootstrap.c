@@ -24,16 +24,529 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 #ifdef LWM2M_CLIENT_MODE
 #ifdef LWM2M_BOOTSTRAP
 
 #define PRV_QUERY_BUFFER_LENGTH 200
+#define PRV_BOOTSTRAP_LOG(...)       \
+    do                               \
+    {                                \
+        fprintf(stdout, __VA_ARGS__); \
+        fflush(stdout);              \
+    } while (0)
+
+static const char * prv_bootstrapMethodToString(uint8_t code)
+{
+    switch (code)
+    {
+    case COAP_GET:
+        return "GET";
+    case COAP_POST:
+        return "POST";
+    case COAP_PUT:
+        return "PUT";
+    case COAP_DELETE:
+        return "DELETE";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static const char * prv_bootstrapCodeReason(uint8_t code)
+{
+    switch (code)
+    {
+    case COAP_201_CREATED:
+        return "Created";
+    case COAP_202_DELETED:
+        return "Deleted";
+    case COAP_204_CHANGED:
+        return "Changed";
+    case COAP_205_CONTENT:
+        return "Content";
+    case COAP_400_BAD_REQUEST:
+        return "Bad Request";
+    case COAP_405_METHOD_NOT_ALLOWED:
+        return "Method Not Allowed";
+    case COAP_406_NOT_ACCEPTABLE:
+        return "Not Acceptable";
+    case COAP_500_INTERNAL_SERVER_ERROR:
+        return "Internal Server Error";
+    case COAP_IGNORE:
+        return "Ignore";
+    case COAP_NO_ERROR:
+        return "No Error";
+    default:
+        return "";
+    }
+}
+
+static void prv_bootstrapFormatCode(uint8_t code,
+                                    char * buffer,
+                                    size_t bufferLen)
+{
+    const char * reason;
+
+    reason = prv_bootstrapCodeReason(code);
+    if (reason[0] != '\0')
+    {
+        snprintf(buffer, bufferLen, "%u.%02u %s", code >> 5, code & 0x1F, reason);
+    }
+    else
+    {
+        snprintf(buffer, bufferLen, "%u.%02u", code >> 5, code & 0x1F);
+    }
+}
+
+static const char * prv_bootstrapMediaTypeToString(lwm2m_media_type_t format)
+{
+    switch (format)
+    {
+    case LWM2M_CONTENT_TEXT:
+        return "text";
+    case LWM2M_CONTENT_LINK:
+        return "link";
+    case LWM2M_CONTENT_OPAQUE:
+        return "opaque";
+    case LWM2M_CONTENT_TLV:
+        return "tlv";
+    case LWM2M_CONTENT_JSON:
+        return "json";
+    case LWM2M_CONTENT_SENML_JSON:
+        return "senml-json";
+    case LWM2M_CONTENT_CBOR:
+        return "cbor";
+    case LWM2M_CONTENT_SENML_CBOR:
+        return "senml-cbor";
+    default:
+        return "unknown";
+    }
+}
+
+static const char * prv_bootstrapSecurityModeToString(int64_t mode)
+{
+    switch (mode)
+    {
+    case LWM2M_SECURITY_MODE_PRE_SHARED_KEY:
+        return "PSK";
+    case LWM2M_SECURITY_MODE_RAW_PUBLIC_KEY:
+        return "Raw Public Key";
+    case LWM2M_SECURITY_MODE_CERTIFICATE:
+        return "Certificate";
+    case LWM2M_SECURITY_MODE_NONE:
+        return "NoSec";
+    default:
+        return "Unknown";
+    }
+}
+
+static bool prv_bootstrapDataBuffer(const lwm2m_data_t * dataP,
+                                    const uint8_t ** bufferP,
+                                    size_t * lengthP)
+{
+    switch (dataP->type)
+    {
+    case LWM2M_TYPE_STRING:
+    case LWM2M_TYPE_OPAQUE:
+    case LWM2M_TYPE_CORE_LINK:
+        *bufferP = dataP->value.asBuffer.buffer;
+        *lengthP = dataP->value.asBuffer.length;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool prv_bootstrapBufferIsPrintable(const uint8_t * buffer,
+                                           size_t length)
+{
+    size_t i;
+
+    for (i = 0; i < length; i++)
+    {
+        if (buffer[i] < 0x20 || buffer[i] > 0x7E)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static char * prv_bootstrapBufferToHex(const uint8_t * buffer,
+                                       size_t length)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char * value;
+    size_t i;
+
+    if (length > (((size_t)-1) - 1) / 2)
+    {
+        return NULL;
+    }
+
+    value = (char *)lwm2m_malloc(length * 2 + 1);
+    if (value == NULL)
+    {
+        return NULL;
+    }
+
+    for (i = 0; i < length; i++)
+    {
+        value[i * 2] = hex[(buffer[i] >> 4) & 0x0F];
+        value[i * 2 + 1] = hex[buffer[i] & 0x0F];
+    }
+    value[length * 2] = '\0';
+
+    return value;
+}
+
+static void prv_bootstrapLogBufferResource(uint16_t objectId,
+                                           uint16_t instanceId,
+                                           const lwm2m_data_t * dataP,
+                                           const char * name,
+                                           bool forceHex)
+{
+    const uint8_t * buffer;
+    size_t length;
+
+    if (!prv_bootstrapDataBuffer(dataP, &buffer, &length))
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: <unsupported type %d>\r\n",
+                          objectId,
+                          instanceId,
+                          dataP->id,
+                          name,
+                          dataP->type);
+        return;
+    }
+
+    if (!forceHex && prv_bootstrapBufferIsPrintable(buffer, length))
+    {
+        int printLength;
+
+        printLength = length > INT_MAX ? INT_MAX : (int)length;
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: %.*s\r\n",
+                          objectId,
+                          instanceId,
+                          dataP->id,
+                          name,
+                          printLength,
+                          (const char *)buffer);
+    }
+    else
+    {
+        char * hexValue;
+
+        hexValue = prv_bootstrapBufferToHex(buffer, length);
+        if (hexValue == NULL)
+        {
+            PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: <hex encode failed, %zu bytes>\r\n",
+                              objectId,
+                              instanceId,
+                              dataP->id,
+                              name,
+                              length);
+            return;
+        }
+
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: hex:%s (%zu bytes)\r\n",
+                          objectId,
+                          instanceId,
+                          dataP->id,
+                          name,
+                          hexValue,
+                          length);
+        lwm2m_free(hexValue);
+    }
+}
+
+static void prv_bootstrapLogIntegerResource(uint16_t objectId,
+                                            uint16_t instanceId,
+                                            const lwm2m_data_t * dataP,
+                                            const char * name)
+{
+    int64_t value;
+
+    value = 0;
+    if (lwm2m_data_decode_int(dataP, &value) == 1)
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: %lld\r\n",
+                          objectId,
+                          instanceId,
+                          dataP->id,
+                          name,
+                          (long long)value);
+    }
+    else
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: <decode failed>\r\n",
+                          objectId,
+                          instanceId,
+                          dataP->id,
+                          name);
+    }
+}
+
+static void prv_bootstrapLogBoolResource(uint16_t objectId,
+                                         uint16_t instanceId,
+                                         const lwm2m_data_t * dataP,
+                                         const char * name)
+{
+    bool value;
+
+    value = false;
+    if (lwm2m_data_decode_bool(dataP, &value) == 1)
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: %s\r\n",
+                          objectId,
+                          instanceId,
+                          dataP->id,
+                          name,
+                          value ? "true" : "false");
+    }
+    else
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: <decode failed>\r\n",
+                          objectId,
+                          instanceId,
+                          dataP->id,
+                          name);
+    }
+}
+
+static void prv_bootstrapLogSecurityModeResource(uint16_t instanceId,
+                                                 const lwm2m_data_t * dataP)
+{
+    int64_t value;
+
+    value = 0;
+    if (lwm2m_data_decode_int(dataP, &value) == 1)
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u Security Mode: %lld (%s)\r\n",
+                          LWM2M_SECURITY_OBJECT_ID,
+                          instanceId,
+                          dataP->id,
+                          (long long)value,
+                          prv_bootstrapSecurityModeToString(value));
+    }
+    else
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u Security Mode: <decode failed>\r\n",
+                          LWM2M_SECURITY_OBJECT_ID,
+                          instanceId,
+                          dataP->id);
+    }
+}
+
+static void prv_bootstrapLogExecuteResource(uint16_t objectId,
+                                            uint16_t instanceId,
+                                            const lwm2m_data_t * dataP,
+                                            const char * name)
+{
+    PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: present\r\n",
+                      objectId,
+                      instanceId,
+                      dataP->id,
+                      name);
+}
+
+static void prv_bootstrapLogSecurityResource(uint16_t instanceId,
+                                             const lwm2m_data_t * dataP)
+{
+    switch (dataP->id)
+    {
+    case LWM2M_SECURITY_URI_ID:
+        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Server URI", false);
+        break;
+    case LWM2M_SECURITY_BOOTSTRAP_ID:
+        prv_bootstrapLogBoolResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Bootstrap Server");
+        break;
+    case LWM2M_SECURITY_SECURITY_ID:
+        prv_bootstrapLogSecurityModeResource(instanceId, dataP);
+        break;
+    case LWM2M_SECURITY_PUBLIC_KEY_ID:
+        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Public Key or Identity", false);
+        break;
+    case LWM2M_SECURITY_SERVER_PUBLIC_KEY_ID:
+        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Server Public Key", true);
+        break;
+    case LWM2M_SECURITY_SECRET_KEY_ID:
+        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Secret Key", true);
+        break;
+    case LWM2M_SECURITY_SMS_SECURITY_ID:
+        prv_bootstrapLogIntegerResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "SMS Security Mode");
+        break;
+    case LWM2M_SECURITY_SMS_KEY_PARAM_ID:
+        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "SMS Binding Key Param", false);
+        break;
+    case LWM2M_SECURITY_SMS_SECRET_KEY_ID:
+        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "SMS Binding Secret Key", true);
+        break;
+    case LWM2M_SECURITY_SHORT_SERVER_ID:
+        prv_bootstrapLogIntegerResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Short Server ID");
+        break;
+    default:
+        break;
+    }
+}
+
+static void prv_bootstrapLogServerResource(uint16_t instanceId,
+                                           const lwm2m_data_t * dataP)
+{
+    switch (dataP->id)
+    {
+    case LWM2M_SERVER_SHORT_ID_ID:
+        prv_bootstrapLogIntegerResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Short Server ID");
+        break;
+    case LWM2M_SERVER_LIFETIME_ID:
+        prv_bootstrapLogIntegerResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Lifetime");
+        break;
+    case LWM2M_SERVER_STORING_ID:
+        prv_bootstrapLogBoolResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Notification Storing");
+        break;
+    case LWM2M_SERVER_BINDING_ID:
+        prv_bootstrapLogBufferResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Binding", false);
+        break;
+    case LWM2M_SERVER_UPDATE_ID:
+        prv_bootstrapLogExecuteResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Registration Update Trigger");
+        break;
+    default:
+        break;
+    }
+}
+
+static void prv_bootstrapLogResourceList(uint16_t objectId,
+                                         uint16_t instanceId,
+                                         size_t count,
+                                         lwm2m_data_t * dataP)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++)
+    {
+        if (objectId == LWM2M_SECURITY_OBJECT_ID)
+        {
+            prv_bootstrapLogSecurityResource(instanceId, dataP + i);
+        }
+        else if (objectId == LWM2M_SERVER_OBJECT_ID)
+        {
+            prv_bootstrapLogServerResource(instanceId, dataP + i);
+        }
+    }
+}
+
+static void prv_bootstrapLogPutPayload(lwm2m_uri_t * uriP,
+                                       uint8_t * buffer,
+                                       size_t length,
+                                       lwm2m_media_type_t format)
+{
+    lwm2m_data_t * dataP;
+    lwm2m_uri_t parseUri;
+    int size;
+    int i;
+    bool loggedContainer;
+
+    if (!LWM2M_URI_IS_SET_OBJECT(uriP)
+     || (uriP->objectId != LWM2M_SECURITY_OBJECT_ID
+      && uriP->objectId != LWM2M_SERVER_OBJECT_ID)
+     || buffer == NULL
+     || length == 0)
+    {
+        return;
+    }
+
+    dataP = NULL;
+    parseUri = *uriP;
+    size = lwm2m_data_parse(&parseUri, buffer, length, format, &dataP);
+    if (size <= 0)
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   payload decode failed\r\n");
+        return;
+    }
+
+    loggedContainer = false;
+    if (LWM2M_URI_IS_SET_INSTANCE(uriP))
+    {
+        for (i = 0; i < size; i++)
+        {
+            if (dataP[i].type == LWM2M_TYPE_OBJECT_INSTANCE)
+            {
+                loggedContainer = true;
+                prv_bootstrapLogResourceList(uriP->objectId,
+                                             dataP[i].id,
+                                             dataP[i].value.asChildren.count,
+                                             dataP[i].value.asChildren.array);
+            }
+            else if (dataP[i].type == LWM2M_TYPE_OBJECT)
+            {
+                size_t j;
+
+                loggedContainer = true;
+                for (j = 0; j < dataP[i].value.asChildren.count; j++)
+                {
+                    if (dataP[i].value.asChildren.array[j].type == LWM2M_TYPE_OBJECT_INSTANCE)
+                    {
+                        prv_bootstrapLogResourceList(uriP->objectId,
+                                                     dataP[i].value.asChildren.array[j].id,
+                                                     dataP[i].value.asChildren.array[j].value.asChildren.count,
+                                                     dataP[i].value.asChildren.array[j].value.asChildren.array);
+                    }
+                }
+            }
+        }
+
+        if (!loggedContainer)
+        {
+            prv_bootstrapLogResourceList(uriP->objectId,
+                                         uriP->instanceId,
+                                         (size_t)size,
+                                         dataP);
+        }
+    }
+    else
+    {
+        for (i = 0; i < size; i++)
+        {
+            if (dataP[i].type == LWM2M_TYPE_OBJECT_INSTANCE)
+            {
+                prv_bootstrapLogResourceList(uriP->objectId,
+                                             dataP[i].id,
+                                             dataP[i].value.asChildren.count,
+                                             dataP[i].value.asChildren.array);
+            }
+            else if (dataP[i].type == LWM2M_TYPE_OBJECT)
+            {
+                size_t j;
+
+                for (j = 0; j < dataP[i].value.asChildren.count; j++)
+                {
+                    if (dataP[i].value.asChildren.array[j].type == LWM2M_TYPE_OBJECT_INSTANCE)
+                    {
+                        prv_bootstrapLogResourceList(uriP->objectId,
+                                                     dataP[i].value.asChildren.array[j].id,
+                                                     dataP[i].value.asChildren.array[j].value.asChildren.count,
+                                                     dataP[i].value.asChildren.array[j].value.asChildren.array);
+                    }
+                }
+            }
+        }
+    }
+
+    lwm2m_data_free(size, dataP);
+}
 
 
 static void prv_handleResponse(lwm2m_server_t * bootstrapServer,
                                coap_packet_t * message)
 {
+    char codeBuffer[24];
+
+    prv_bootstrapFormatCode(message->code, codeBuffer, sizeof(codeBuffer));
+    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv Bootstrap-Request response: %s\r\n", codeBuffer);
+
     if (COAP_204_CHANGED == message->code)
     {
         LOG_DBG("Received ACK/2.04, Bootstrap pending, waiting for DEL/PUT from BS server...");
@@ -146,6 +659,7 @@ static void prv_requestBootstrap(lwm2m_context_t * context,
         transaction->callback = prv_handleBootstrapReply;
         transaction->userData = (void *)bootstrapServer;
         context->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(context->transactionList, transaction);
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send Bootstrap-Request: POST /%s%s\r\n", URI_BOOTSTRAP_SEGMENT, query);
         if (transaction_send(context, transaction) == 0)
         {
             LOG_DBG("CI bootstrap requested to BS server");
@@ -590,8 +1104,11 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
                                void * fromSessionH)
 {
     lwm2m_server_t * bootstrapServer;
+    uint8_t result;
+    char codeBuffer[24];
 
     LOG_DBG("Entering");
+    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv Bootstrap-Finish: POST /%s\r\n", URI_BOOTSTRAP_SEGMENT);
     bootstrapServer = utils_findBootstrapServer(context, fromSessionH);
     if (bootstrapServer != NULL
      && bootstrapServer->status == STATE_BS_PENDING)
@@ -600,15 +1117,24 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
         {
             LOG_DBG("Bootstrap server status changed to STATE_BS_FINISHING");
             bootstrapServer->status = STATE_BS_FINISHING;
-            return COAP_204_CHANGED;
+            result = COAP_204_CHANGED;
+            prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
+            PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send response: POST /%s -> %s\r\n", URI_BOOTSTRAP_SEGMENT, codeBuffer);
+            return result;
         }
         else
         {
-           return COAP_406_NOT_ACCEPTABLE;
+           result = COAP_406_NOT_ACCEPTABLE;
+           prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
+           PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send response: POST /%s -> %s\r\n", URI_BOOTSTRAP_SEGMENT, codeBuffer);
+           return result;
         }
     }
 
-    return COAP_IGNORE;
+    result = COAP_IGNORE;
+    prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
+    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send response: POST /%s -> %s\r\n", URI_BOOTSTRAP_SEGMENT, codeBuffer);
+    return result;
 }
 
 /*
@@ -754,13 +1280,32 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
 {
     uint8_t result;
     lwm2m_media_type_t format;
+    char codeBuffer[24];
+    char uriBuffer[URI_MAX_STRING_LEN + 1];
+    const char * method;
 
     LOG_ARG_DBG("Code: %02X", message->code);
     LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
     format = utils_convertMediaType(message->content_type);
+    method = prv_bootstrapMethodToString(message->code);
+    snprintf(uriBuffer, sizeof(uriBuffer), "%s", LOG_URI_TO_STRING(uriP));
+    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv %s %s format=%s payload=%zu bytes\r\n",
+                      method,
+                      uriBuffer,
+                      prv_bootstrapMediaTypeToString(format),
+                      message->payload_len);
+    if (message->code == COAP_PUT)
+    {
+        prv_bootstrapLogPutPayload(uriP, message->payload, message->payload_len, format);
+    }
 
     result = prv_checkServerStatus(serverP);
-    if (result != COAP_NO_ERROR) return result;
+    if (result != COAP_NO_ERROR)
+    {
+        prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send response: %s %s -> %s\r\n", method, uriBuffer, codeBuffer);
+        return result;
+    }
 
     switch (message->code)
     {
@@ -962,6 +1507,8 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
         }
     }
     LOG_ARG_DBG("Server status: %s", STR_STATUS(serverP->status));
+    prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
+    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send response: %s %s -> %s\r\n", method, uriBuffer, codeBuffer);
 
     return result;
 }
@@ -972,12 +1519,19 @@ uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
     lwm2m_server_t * serverP;
     uint8_t result;
     lwm2m_object_t * objectP;
+    char codeBuffer[24];
 
     LOG_DBG("Entering");
+    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv DELETE /\r\n");
     serverP = utils_findBootstrapServer(contextP, fromSessionH);
     if (serverP == NULL) return COAP_IGNORE;
     result = prv_checkServerStatus(serverP);
-    if (result != COAP_NO_ERROR) return result;
+    if (result != COAP_NO_ERROR)
+    {
+        prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send response: DELETE / -> %s\r\n", codeBuffer);
+        return result;
+    }
 
     result = COAP_202_DELETED;
     for (objectP = contextP->objectList; objectP != NULL; objectP = objectP->next)
@@ -1021,6 +1575,9 @@ uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
             }
         }
     }
+
+    prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
+    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send response: DELETE / -> %s\r\n", codeBuffer);
 
     return result;
 }

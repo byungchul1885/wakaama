@@ -1132,12 +1132,11 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "SMGW LwM2M credential rejected: reason=system_title_mismatch\r\n");
             return -1;
         }
-        fprintf(stderr,
-                "SMGW LwM2M credential ready: device_id=%s system_title=%s bootstrap_uri=%s generation=%u\r\n",
-                credential.device_id,
-                credential.system_title,
-                credential.bootstrap_uri,
-                credential.key_generation);
+        fprintf(stderr, "SMGW LwM2M credential ready\r\n");
+        fprintf(stderr, "SMGW LwM2M credential device_id: %s\r\n", credential.device_id);
+        fprintf(stderr, "SMGW LwM2M credential system_title: %s\r\n", credential.system_title);
+        fprintf(stderr, "SMGW LwM2M credential bootstrap_uri: %s\r\n", credential.bootstrap_uri);
+        fprintf(stderr, "SMGW LwM2M credential generation: %u\r\n", credential.key_generation);
     } else if (credentialStatus != SMGW_LWM2M_CREDENTIAL_NOT_FOUND || smgw_lwm2m_credential_required()) {
         fprintf(stderr, "SMGW LwM2M credential unavailable or invalid\r\n");
         return -1;

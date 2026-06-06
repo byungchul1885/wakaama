@@ -8,7 +8,6 @@
  *******************************************************************************/
 
 #include "posix_mbedtls/connection.h"
-#include "smgw_lwm2m_network.h"
 
 #include "er-coap-13/er-coap-13.h"
 
@@ -31,6 +30,15 @@ typedef struct _dtls_timer_t {
     uint64_t final_deadline;
     int active;
 } dtls_timer_t;
+
+static lwm2m_connection_port_resolver_t g_portResolver = NULL;
+static void *g_portResolverUserData = NULL;
+
+void lwm2m_connection_set_port_resolver(lwm2m_connection_port_resolver_t resolver, void *userData)
+{
+    g_portResolver = resolver;
+    g_portResolverUserData = userData;
+}
 
 static uint64_t prv_now_ms(void)
 {
@@ -509,74 +517,22 @@ static int64_t prv_security_get_mode(lwm2m_context_t *lwm2mH, lwm2m_object_t *ob
     return mode;
 }
 
-static int64_t prv_security_get_int_resource(lwm2m_context_t *lwm2mH, lwm2m_object_t *obj, int instanceId,
-                                             uint16_t resourceId, int64_t fallback)
-{
-    int64_t value = fallback;
-    int size = 1;
-    lwm2m_data_t *dataP;
-
-    dataP = lwm2m_data_new(size);
-    if (dataP == NULL)
-    {
-        return fallback;
-    }
-    dataP->id = resourceId;
-
-    if (obj->readFunc(lwm2mH, (uint16_t)instanceId, &size, &dataP, obj) == COAP_205_CONTENT)
-    {
-        (void)lwm2m_data_decode_int(dataP, &value);
-    }
-
-    lwm2m_data_free(size, dataP);
-    return value;
-}
-
-static int prv_security_get_bool_resource(lwm2m_context_t *lwm2mH, lwm2m_object_t *obj, int instanceId,
-                                          uint16_t resourceId, int fallback)
-{
-    bool value = fallback != 0;
-    int size = 1;
-    lwm2m_data_t *dataP;
-
-    dataP = lwm2m_data_new(size);
-    if (dataP == NULL)
-    {
-        return fallback;
-    }
-    dataP->id = resourceId;
-
-    if (obj->readFunc(lwm2mH, (uint16_t)instanceId, &size, &dataP, obj) == COAP_205_CONTENT)
-    {
-        (void)lwm2m_data_decode_bool(dataP, &value);
-    }
-
-    lwm2m_data_free(size, dataP);
-    return value ? 1 : 0;
-}
-
 static const char *prv_resolve_configured_port(lwm2m_context_t *lwm2mH, lwm2m_object_t *securityObj, int instanceId,
                                                int isSecure, const char *defaultPort, char *portBuffer,
                                                size_t portBufferSize)
 {
-    smgw_lwm2m_network_profile_t profile;
-    int64_t shortServerId;
-    int isBootstrap;
+    const char *resolvedPort;
 
-    if (portBuffer == NULL || portBufferSize == 0)
+    if (g_portResolver == NULL || portBuffer == NULL || portBufferSize == 0)
     {
         return defaultPort;
     }
 
-    shortServerId = prv_security_get_int_resource(lwm2mH, securityObj, instanceId, LWM2M_SECURITY_SHORT_SERVER_ID,
-                                                  instanceId);
-    isBootstrap = prv_security_get_bool_resource(lwm2mH, securityObj, instanceId, LWM2M_SECURITY_BOOTSTRAP_ID, 0);
-
-    if (smgw_lwm2m_network_load(&profile) == SMGW_LWM2M_NETWORK_OK &&
-        smgw_lwm2m_network_get_server_port(&profile, instanceId, (int)shortServerId, isBootstrap, isSecure,
-                                           portBuffer, portBufferSize) == SMGW_LWM2M_NETWORK_OK)
+    resolvedPort = g_portResolver(lwm2mH, securityObj, instanceId, isSecure, defaultPort, portBuffer, portBufferSize,
+                                  g_portResolverUserData);
+    if (resolvedPort != NULL && resolvedPort[0] != '\0')
     {
-        return portBuffer;
+        return resolvedPort;
     }
 
     return defaultPort;
@@ -815,7 +771,7 @@ lwm2m_connection_t *lwm2m_connection_create(lwm2m_connection_t *connList, int so
     char *uri;
     char *host;
     char *port;
-    char portBuffer[SMGW_LWM2M_NETWORK_PORT_LENGTH];
+    char portBuffer[16];
     const char *defaultPort;
     int isSecure;
 

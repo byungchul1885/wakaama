@@ -10,6 +10,8 @@
 #include "posix_mbedtls/connection.h"
 #include "smgw_lwm2m_network.h"
 
+#include "er-coap-13/er-coap-13.h"
+
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -53,43 +55,253 @@ static int prv_socket_error_wants_retry(int error)
     return error == EAGAIN || error == EWOULDBLOCK || error == EINTR;
 }
 
-static void prv_log_sent_bytes(const lwm2m_connection_t *connP, size_t sent)
+static bool prv_format_peer(const lwm2m_connection_t *connP, char *addrBuffer, size_t addrBufferSize, in_port_t *portP)
 {
-    char addrBuffer[INET6_ADDRSTRLEN];
-    in_port_t port;
-
-    if (connP == NULL)
+    if (connP == NULL || addrBuffer == NULL || addrBufferSize == 0 || portP == NULL)
     {
-        return;
+        return false;
     }
 
     if (connP->addr.ss_family == AF_INET)
     {
         const struct sockaddr_in *addr = (const struct sockaddr_in *)&connP->addr;
 
-        if (inet_ntop(AF_INET, &addr->sin_addr, addrBuffer, sizeof(addrBuffer)) == NULL)
+        if (inet_ntop(AF_INET, &addr->sin_addr, addrBuffer, addrBufferSize) == NULL)
         {
-            return;
+            return false;
         }
-        port = addr->sin_port;
+        *portP = addr->sin_port;
     }
     else if (connP->addr.ss_family == AF_INET6)
     {
         const struct sockaddr_in6 *addr = (const struct sockaddr_in6 *)&connP->addr;
 
-        if (inet_ntop(AF_INET6, &addr->sin6_addr, addrBuffer, sizeof(addrBuffer)) == NULL)
+        if (inet_ntop(AF_INET6, &addr->sin6_addr, addrBuffer, addrBufferSize) == NULL)
         {
-            return;
+            return false;
         }
-        port = addr->sin6_port;
+        *portP = addr->sin6_port;
     }
     else
+    {
+        return false;
+    }
+
+    return true;
+}
+
+static void prv_log_sent_bytes(const lwm2m_connection_t *connP, size_t sent)
+{
+    char addrBuffer[INET6_ADDRSTRLEN];
+    in_port_t port;
+
+    if (!prv_format_peer(connP, addrBuffer, sizeof(addrBuffer), &port))
     {
         return;
     }
 
     fprintf(stderr, "%zu bytes sent to [%s]:%hu\r\n", sent, addrBuffer, ntohs(port));
     fflush(stderr);
+}
+
+static unsigned long long prv_dtls_elapsed_ms(const lwm2m_connection_t *connP)
+{
+    uint64_t now;
+
+    if (connP == NULL || connP->handshake_start_ms == 0U)
+    {
+        return 0ULL;
+    }
+
+    now = prv_now_ms();
+    if (now < connP->handshake_start_ms)
+    {
+        return 0ULL;
+    }
+
+    return (unsigned long long)(now - connP->handshake_start_ms);
+}
+
+static const char *prv_dtls_wait_reason(int ret)
+{
+    switch (ret)
+    {
+    case MBEDTLS_ERR_SSL_WANT_READ:
+        return "WANT_READ";
+    case MBEDTLS_ERR_SSL_WANT_WRITE:
+        return "WANT_WRITE";
+    case MBEDTLS_ERR_SSL_TIMEOUT:
+        return "TIMEOUT";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void prv_format_coap_token(const coap_packet_t *packetP, char *buffer, size_t bufferSize)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t i;
+
+    if (buffer == NULL || bufferSize == 0U)
+    {
+        return;
+    }
+    if (packetP == NULL || packetP->token_len == 0U)
+    {
+        (void)snprintf(buffer, bufferSize, "-");
+        return;
+    }
+    if (bufferSize < ((size_t)packetP->token_len * 2U) + 1U)
+    {
+        (void)snprintf(buffer, bufferSize, "<truncated>");
+        return;
+    }
+
+    for (i = 0; i < packetP->token_len; i++)
+    {
+        buffer[i * 2U] = hex[(packetP->token[i] >> 4) & 0x0FU];
+        buffer[i * 2U + 1U] = hex[packetP->token[i] & 0x0FU];
+    }
+    buffer[packetP->token_len * 2U] = '\0';
+}
+
+static bool prv_is_bootstrap_request(const coap_packet_t *packetP)
+{
+    const multi_option_t *pathP;
+
+    if (packetP == NULL || packetP->code != COAP_POST)
+    {
+        return false;
+    }
+
+    pathP = packetP->uri_path;
+
+    return pathP != NULL && pathP->next == NULL && pathP->len == 2U && memcmp(pathP->data, "bs", 2U) == 0;
+}
+
+static void prv_log_bootstrap_request_sent(const uint8_t *buffer, size_t length)
+{
+    coap_packet_t packet;
+    char tokenBuffer[(COAP_TOKEN_LEN * 2) + 1];
+    char *query;
+
+    if (buffer == NULL || length > UINT16_MAX)
+    {
+        return;
+    }
+    if (coap_parse_message(&packet, (uint8_t *)buffer, (uint16_t)length) != NO_ERROR)
+    {
+        coap_free_header(&packet);
+        return;
+    }
+    if (!prv_is_bootstrap_request(&packet))
+    {
+        coap_free_header(&packet);
+        return;
+    }
+
+    query = coap_get_multi_option_as_query_string(packet.uri_query);
+    if (query == NULL)
+    {
+        coap_free_header(&packet);
+        return;
+    }
+
+    prv_format_coap_token(&packet, tokenBuffer, sizeof(tokenBuffer));
+    fprintf(stdout, "[BOOTSTRAP] send Bootstrap-Request: POST /bs%s mid=%u token=%s bytes=%zu\r\n", query, packet.mid,
+            tokenBuffer, length);
+    fflush(stdout);
+
+    lwm2m_free(query);
+    coap_free_header(&packet);
+}
+
+static void prv_log_dtls_handshake_event(const lwm2m_connection_t *connP, const char *event, const char *detail)
+{
+    char addrBuffer[INET6_ADDRSTRLEN];
+    in_port_t port;
+
+    if (prv_format_peer(connP, addrBuffer, sizeof(addrBuffer), &port))
+    {
+        fprintf(stderr, "[DTLS] %s: peer=[%s]:%hu%s%s\r\n", event, addrBuffer, ntohs(port),
+                detail == NULL ? "" : " ", detail == NULL ? "" : detail);
+    }
+    else
+    {
+        fprintf(stderr, "[DTLS] %s: peer=<unknown>%s%s\r\n", event, detail == NULL ? "" : " ",
+                detail == NULL ? "" : detail);
+    }
+    fflush(stderr);
+}
+
+static void prv_log_dtls_application_data_sent(const lwm2m_connection_t *connP, size_t length)
+{
+    char message[64];
+
+    (void)snprintf(message, sizeof(message), "bytes=%zu", length);
+    prv_log_dtls_handshake_event(connP, "application data sent", message);
+}
+
+static void prv_log_dtls_handshake_start(lwm2m_connection_t *connP)
+{
+    if (connP->handshake_log_started != 0)
+    {
+        return;
+    }
+
+    connP->handshake_log_started = 1;
+    connP->handshake_last_wait = 0;
+    connP->handshake_start_ms = prv_now_ms();
+    connP->handshake_wait_count = 0U;
+    connP->handshake_timeout_count = 0U;
+    prv_log_dtls_handshake_event(connP, "handshake start", "mode=PSK");
+}
+
+static void prv_log_dtls_handshake_wait(lwm2m_connection_t *connP, int ret)
+{
+    char message[96];
+
+    connP->handshake_wait_count++;
+    if (ret == MBEDTLS_ERR_SSL_TIMEOUT)
+    {
+        connP->handshake_timeout_count++;
+    }
+
+    if (connP->handshake_last_wait == ret)
+    {
+        return;
+    }
+
+    connP->handshake_last_wait = ret;
+    snprintf(message, sizeof(message), "reason=%s wait_count=%u timeout_count=%u", prv_dtls_wait_reason(ret),
+             connP->handshake_wait_count, connP->handshake_timeout_count);
+    prv_log_dtls_handshake_event(connP, "handshake wait", message);
+}
+
+static void prv_log_dtls_handshake_established(lwm2m_connection_t *connP)
+{
+    const char *cipher;
+    char message[192];
+
+    cipher = lwm2m_mbedtls_connection_get_ciphersuite(connP->dtls);
+    if (cipher == NULL)
+    {
+        cipher = "unknown";
+    }
+
+    snprintf(message, sizeof(message), "cipher=%s duration=%llums wait_count=%u timeout_count=%u", cipher,
+             prv_dtls_elapsed_ms(connP), connP->handshake_wait_count, connP->handshake_timeout_count);
+    prv_log_dtls_handshake_event(connP, "handshake established", message);
+}
+
+static void prv_log_dtls_handshake_failed(lwm2m_connection_t *connP, int ret)
+{
+    char message[128];
+
+    snprintf(message, sizeof(message), "ret=-0x%04X duration=%llums wait_count=%u timeout_count=%u",
+             ret < 0 ? -ret : ret, prv_dtls_elapsed_ms(connP), connP->handshake_wait_count,
+             connP->handshake_timeout_count);
+    prv_log_dtls_handshake_event(connP, "handshake failed", message);
 }
 
 static int prv_find_and_bind_to_address(struct addrinfo *res)
@@ -692,17 +904,21 @@ static int prv_drive_handshake(lwm2m_connection_t *connP)
         return 0;
     }
 
+    prv_log_dtls_handshake_start(connP);
     ret = lwm2m_mbedtls_connection_handshake(connP->dtls);
     if (ret == 0)
     {
         connP->handshake_done = 1;
+        prv_log_dtls_handshake_established(connP);
         return 0;
     }
     if (prv_is_retryable_dtls_result(ret))
     {
+        prv_log_dtls_handshake_wait(connP, ret);
         return 0;
     }
 
+    prv_log_dtls_handshake_failed(connP, ret);
     return ret;
 }
 
@@ -755,6 +971,7 @@ static int prv_flush_pending(lwm2m_connection_t *connP)
         ret = prv_send_plain(connP, connP->pending_buffer, connP->pending_length);
         if (ret == 0)
         {
+            prv_log_bootstrap_request_sent(connP->pending_buffer, connP->pending_length);
             prv_clear_pending(connP);
         }
         return ret;
@@ -775,6 +992,8 @@ static int prv_flush_pending(lwm2m_connection_t *connP)
     ret = lwm2m_mbedtls_connection_write(connP->dtls, connP->pending_buffer, connP->pending_length);
     if (ret == (int)connP->pending_length)
     {
+        prv_log_dtls_application_data_sent(connP, connP->pending_length);
+        prv_log_bootstrap_request_sent(connP->pending_buffer, connP->pending_length);
         prv_clear_pending(connP);
         return 0;
     }
@@ -871,7 +1090,12 @@ int lwm2m_connection_send(lwm2m_connection_t *connP, uint8_t *buffer, size_t len
     }
     if (connP->dtls == NULL)
     {
-        return prv_send_plain(connP, buffer, length);
+        ret = prv_send_plain(connP, buffer, length);
+        if (ret == 0)
+        {
+            prv_log_bootstrap_request_sent(buffer, length);
+        }
+        return ret;
     }
     if (connP->handshake_done == 0)
     {
@@ -886,6 +1110,8 @@ int lwm2m_connection_send(lwm2m_connection_t *connP, uint8_t *buffer, size_t len
     ret = lwm2m_mbedtls_connection_write(connP->dtls, buffer, length);
     if (ret == (int)length)
     {
+        prv_log_dtls_application_data_sent(connP, length);
+        prv_log_bootstrap_request_sent(buffer, length);
         return 0;
     }
     if (prv_is_retryable_dtls_result(ret))
@@ -913,6 +1139,8 @@ int lwm2m_connection_rehandshake(lwm2m_connection_t *connP, bool sendCloseNotify
     if (ret == 0)
     {
         connP->handshake_done = 0;
+        connP->handshake_log_started = 0;
+        connP->handshake_last_wait = 0;
     }
 
     return ret;

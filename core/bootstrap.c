@@ -659,7 +659,7 @@ static void prv_requestBootstrap(lwm2m_context_t * context,
         transaction->callback = prv_handleBootstrapReply;
         transaction->userData = (void *)bootstrapServer;
         context->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(context->transactionList, transaction);
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send Bootstrap-Request: POST /%s%s\r\n", URI_BOOTSTRAP_SEGMENT, query);
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] queue Bootstrap-Request: POST /%s%s\r\n", URI_BOOTSTRAP_SEGMENT, query);
         if (transaction_send(context, transaction) == 0)
         {
             LOG_DBG("CI bootstrap requested to BS server");

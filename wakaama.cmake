@@ -451,6 +451,7 @@ if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS" AND WAKAAMA_PLATFORM STREQUAL "POSIX")
     target_include_directories(
         wakaama_transport_posix_mbedtls
         PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include
+                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/coap
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/include
                 ${WAKAAMA_MBEDTLS_INCLUDE_DIRS}
     )

@@ -738,7 +738,6 @@ static void prv_restore_objects(lwm2m_context_t *context) {
     copy_server_object(targetP, backupObjectArray[1]);
 
     // restart the old servers
-    fprintf(stdout, "[BOOTSTRAP] ObjectList restored\r\n");
 }
 
 static void update_bootstrap_info(lwm2m_client_state_t *previousBootstrapState, lwm2m_context_t *context) {
@@ -746,9 +745,6 @@ static void update_bootstrap_info(lwm2m_client_state_t *previousBootstrapState, 
         *previousBootstrapState = context->state;
         switch (context->state) {
         case STATE_BOOTSTRAPPING:
-#if LWM2M_LOG_LEVEL != LWM2M_LOG_DISABLED
-            fprintf(stdout, "[BOOTSTRAP] backup security and server objects\r\n");
-#endif
             prv_backup_objects(context);
             break;
         default:
@@ -1278,9 +1274,6 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "lwm2m_step() failed: 0x%X\r\n", result);
 #ifdef LWM2M_BOOTSTRAP
             if (previousState == STATE_BOOTSTRAPPING) {
-#if LWM2M_LOG_LEVEL != LWM2M_LOG_DISABLED
-                fprintf(stdout, "[BOOTSTRAP] restore security and server objects\r\n");
-#endif
                 prv_restore_objects(lwm2mH);
                 lwm2mH->state = STATE_INITIAL;
             } else

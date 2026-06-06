@@ -31,13 +31,14 @@
 #ifdef LWM2M_BOOTSTRAP
 
 #define PRV_QUERY_BUFFER_LENGTH 200
-#define PRV_BOOTSTRAP_LOG_BUFFER_LENGTH 512
+#define PRV_BOOTSTRAP_TRACE_BUFFER_LENGTH 512
+#define PRV_BOOTSTRAP_CODE_BUFFER_LENGTH 32
 
 static void prv_bootstrapLog(lwm2m_context_t * contextP,
                              const char * format,
                              ...)
 {
-    char buffer[PRV_BOOTSTRAP_LOG_BUFFER_LENGTH];
+    char buffer[PRV_BOOTSTRAP_TRACE_BUFFER_LENGTH];
     size_t length;
     va_list args;
 
@@ -127,6 +128,39 @@ static void prv_bootstrapFormatCode(uint8_t code,
     }
 }
 
+static void prv_bootstrapFormatUri(lwm2m_uri_t * uriP,
+                                   char * buffer,
+                                   size_t bufferLen)
+{
+    int length;
+
+    if (buffer == NULL || bufferLen == 0)
+    {
+        return;
+    }
+
+    buffer[0] = '\0';
+    if (bufferLen == 1)
+    {
+        return;
+    }
+
+    if (uriP == NULL)
+    {
+        snprintf(buffer, bufferLen, "/");
+        return;
+    }
+
+    length = lwm2m_uriToString(uriP, (uint8_t *)buffer, bufferLen - 1, NULL);
+    if (length <= 0)
+    {
+        snprintf(buffer, bufferLen, "/");
+        return;
+    }
+
+    buffer[length] = '\0';
+}
+
 static const char * prv_bootstrapMediaTypeToString(lwm2m_media_type_t format)
 {
     switch (format)
@@ -198,7 +232,7 @@ static void prv_handleResponse(lwm2m_context_t * contextP,
                                lwm2m_server_t * bootstrapServer,
                                coap_packet_t * message)
 {
-    char codeBuffer[24];
+    char codeBuffer[PRV_BOOTSTRAP_CODE_BUFFER_LENGTH];
 
     prv_bootstrapFormatCode(message->code, codeBuffer, sizeof(codeBuffer));
     prv_bootstrapLog(contextP,
@@ -766,7 +800,7 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
 {
     lwm2m_server_t * bootstrapServer;
     uint8_t result;
-    char codeBuffer[24];
+    char codeBuffer[PRV_BOOTSTRAP_CODE_BUFFER_LENGTH];
 
     LOG_DBG("Entering");
     prv_bootstrapLog(context, "[BOOTSTRAP] recv Bootstrap-Finish: POST /%s", URI_BOOTSTRAP_SEGMENT);
@@ -950,7 +984,7 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
 {
     uint8_t result;
     lwm2m_media_type_t format;
-    char codeBuffer[24];
+    char codeBuffer[PRV_BOOTSTRAP_CODE_BUFFER_LENGTH];
     char uriBuffer[URI_MAX_STRING_LEN + 1];
     const char * method;
     const char * operation;
@@ -960,7 +994,7 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     format = utils_convertMediaType(message->content_type);
     method = prv_bootstrapMethodToString(message->code);
     operation = prv_bootstrapOperationToString(message->code, uriP, message);
-    snprintf(uriBuffer, sizeof(uriBuffer), "%s", LOG_URI_TO_STRING(uriP));
+    prv_bootstrapFormatUri(uriP, uriBuffer, sizeof(uriBuffer));
     if (contextP->bootstrapCommandCallback != NULL)
     {
         contextP->bootstrapCommandCallback(contextP,
@@ -1226,13 +1260,34 @@ void lwm2m_set_bootstrap_log_callback(lwm2m_context_t * contextP,
     contextP->bootstrapLogUserData = userData;
 }
 
+int lwm2m_request_bootstrap(lwm2m_context_t * contextP)
+{
+    lwm2m_server_t * targetP;
+
+    LOG_DBG("Entering");
+    if (contextP == NULL || contextP->bootstrapServerList == NULL)
+    {
+        return -1;
+    }
+
+    contextP->state = STATE_BOOTSTRAP_REQUIRED;
+    targetP = contextP->bootstrapServerList;
+    while (targetP != NULL)
+    {
+        targetP->lifetime = 0;
+        targetP = targetP->next;
+    }
+
+    return 0;
+}
+
 uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
                                   void * fromSessionH)
 {
     lwm2m_server_t * serverP;
     uint8_t result;
     lwm2m_object_t * objectP;
-    char codeBuffer[24];
+    char codeBuffer[PRV_BOOTSTRAP_CODE_BUFFER_LENGTH];
 
     LOG_DBG("Entering");
     prv_bootstrapLog(contextP, "[BOOTSTRAP] recv Bootstrap-Delete: DELETE /");

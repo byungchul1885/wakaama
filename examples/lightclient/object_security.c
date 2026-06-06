@@ -38,7 +38,7 @@
  */
 
 /*
- * Here we implement a very basic LwM2M Security Object which only knows NoSec security mode.
+ * Here we implement a minimal NoSec-only LwM2M Security Object for the light client.
  */
 
 #include "liblwm2m.h"

@@ -40,7 +40,8 @@
  */
 
 /*
- * Here we implement a very basic LwM2M Security Object which only knows NoSec security mode.
+ * Here we implement a basic LwM2M Security Object for the example client.
+ * It supports NoSec and PSK resources used by bootstrap validation.
  */
 
 #include "liblwm2m.h"

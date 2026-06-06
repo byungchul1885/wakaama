@@ -649,17 +649,12 @@ static void prv_remove(lwm2m_context_t *lwm2mH, char *buffer, void *user_data) {
 #ifdef LWM2M_BOOTSTRAP
 
 static void prv_initiate_bootstrap(lwm2m_context_t *lwm2mH, char *buffer, void *user_data) {
-    lwm2m_server_t *targetP;
-
     /* unused parameter */
+    (void)buffer;
     (void)user_data;
 
-    // HACK !!!
-    lwm2mH->state = STATE_BOOTSTRAP_REQUIRED;
-    targetP = lwm2mH->bootstrapServerList;
-    while (targetP != NULL) {
-        targetP->lifetime = 0;
-        targetP = targetP->next;
+    if (lwm2m_request_bootstrap(lwm2mH) != 0) {
+        fprintf(stderr, "Bootstrap request failed: no bootstrap server configured\r\n");
     }
 }
 

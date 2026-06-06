@@ -811,13 +811,19 @@ typedef enum
 } lwm2m_client_state_t;
 
 #ifdef LWM2M_BOOTSTRAP
-// Called when a bootstrap command is received by a client.
+// Called synchronously when a bootstrap command is received by a client, before
+// the command is applied to local objects. The uriP, operation, method and data
+// pointers are owned by liblwm2m and remain valid only for the duration of this
+// callback. The callback is intended for tracing or application-side
+// inspection; it must not retain the pointers.
 typedef void (*lwm2m_bootstrap_command_callback_t)(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, uint8_t code,
                                                    const char *operation, const char *method,
                                                    lwm2m_media_type_t format, uint8_t *data, size_t dataLength,
                                                    void *userData);
 
-// Called when the bootstrap state machine emits a human-readable trace message.
+// Called synchronously when the bootstrap state machine emits a human-readable
+// trace message. The message pointer is owned by liblwm2m and remains valid only
+// for the duration of this callback.
 typedef void (*lwm2m_bootstrap_log_callback_t)(lwm2m_context_t *contextP, const char *message, void *userData);
 #endif
 
@@ -904,10 +910,19 @@ int lwm2m_update_registration(lwm2m_context_t * contextP, uint16_t shortServerID
 void lwm2m_deregister(lwm2m_context_t * context);
 void lwm2m_resource_value_changed(lwm2m_context_t * contextP, lwm2m_uri_t * uriP);
 #ifdef LWM2M_BOOTSTRAP
+// Register or clear a client-side bootstrap command callback. userData is stored
+// in the context and passed back unchanged.
 void lwm2m_set_bootstrap_command_callback(lwm2m_context_t *contextP, lwm2m_bootstrap_command_callback_t callback,
                                           void *userData);
+
+// Register or clear a client-side bootstrap trace callback. userData is stored
+// in the context and passed back unchanged.
 void lwm2m_set_bootstrap_log_callback(lwm2m_context_t *contextP, lwm2m_bootstrap_log_callback_t callback,
                                       void *userData);
+
+// Request client initiated bootstrap on the next lwm2m_step(). Returns 0 when a
+// bootstrap server is configured, otherwise -1.
+int lwm2m_request_bootstrap(lwm2m_context_t *contextP);
 #endif
 
 #ifndef LWM2M_VERSION_1_0

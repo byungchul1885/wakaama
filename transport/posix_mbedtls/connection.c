@@ -179,6 +179,49 @@ static bool prv_is_bootstrap_request(const coap_packet_t *packetP)
     return pathP != NULL && pathP->next == NULL && pathP->len == 2U && memcmp(pathP->data, "bs", 2U) == 0;
 }
 
+static const char *prv_coap_type_name(unsigned int type)
+{
+    switch (type)
+    {
+    case 0:
+        return "CON";
+    case 1:
+        return "NON";
+    case 2:
+        return "ACK";
+    case 3:
+        return "RST";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void prv_log_coap_packet(const char *direction, const uint8_t *buffer, size_t length)
+{
+    unsigned int version;
+    unsigned int type;
+    unsigned int token_len;
+    unsigned int code_class;
+    unsigned int code_detail;
+    unsigned int mid;
+
+    if (buffer == NULL || length < 4U)
+    {
+        return;
+    }
+
+    version = (buffer[0] >> 6) & 0x03U;
+    type = (buffer[0] >> 4) & 0x03U;
+    token_len = buffer[0] & 0x0FU;
+    code_class = (buffer[1] >> 5) & 0x07U;
+    code_detail = buffer[1] & 0x1FU;
+    mid = ((unsigned int)buffer[2] << 8) | buffer[3];
+
+    fprintf(stderr, "[COAP] %s: ver=%u type=%s tkl=%u code=%u.%02u mid=%u bytes=%zu\r\n", direction, version,
+            prv_coap_type_name(type), token_len, code_class, code_detail, mid, length);
+    fflush(stderr);
+}
+
 static void prv_log_bootstrap_request_sent(const uint8_t *buffer, size_t length)
 {
     coap_packet_t packet;
@@ -980,6 +1023,7 @@ static int prv_flush_pending(lwm2m_connection_t *connP)
         ret = prv_send_plain(connP, connP->pending_buffer, connP->pending_length);
         if (ret == 0)
         {
+            prv_log_coap_packet("outbound", connP->pending_buffer, connP->pending_length);
             prv_log_bootstrap_request_sent(connP->pending_buffer, connP->pending_length);
             prv_clear_pending(connP);
         }
@@ -1001,6 +1045,7 @@ static int prv_flush_pending(lwm2m_connection_t *connP)
     ret = lwm2m_mbedtls_connection_write(connP->dtls, connP->pending_buffer, connP->pending_length);
     if (ret == (int)connP->pending_length)
     {
+        prv_log_coap_packet("outbound", connP->pending_buffer, connP->pending_length);
         prv_log_dtls_application_data_sent(connP, connP->pending_length);
         prv_log_bootstrap_request_sent(connP->pending_buffer, connP->pending_length);
         prv_clear_pending(connP);
@@ -1046,6 +1091,7 @@ int lwm2m_connection_handle_packet(lwm2m_connection_t *connP, uint8_t *buffer, s
 
     if (connP->dtls == NULL)
     {
+        prv_log_coap_packet("inbound", buffer, length);
         lwm2m_handle_packet(connP->lwm2mH, buffer, length, connP);
         return 0;
     }
@@ -1075,6 +1121,7 @@ int lwm2m_connection_handle_packet(lwm2m_connection_t *connP, uint8_t *buffer, s
             ret = lwm2m_mbedtls_connection_read(connP->dtls, plain, sizeof(plain));
             if (ret > 0)
             {
+                prv_log_coap_packet("inbound", plain, (size_t)ret);
                 prv_log_dtls_application_data_received(connP, (size_t)ret);
                 lwm2m_handle_packet(connP->lwm2mH, plain, (size_t)ret, connP);
             }
@@ -1103,6 +1150,7 @@ int lwm2m_connection_send(lwm2m_connection_t *connP, uint8_t *buffer, size_t len
         ret = prv_send_plain(connP, buffer, length);
         if (ret == 0)
         {
+            prv_log_coap_packet("outbound", buffer, length);
             prv_log_bootstrap_request_sent(buffer, length);
         }
         return ret;
@@ -1120,6 +1168,7 @@ int lwm2m_connection_send(lwm2m_connection_t *connP, uint8_t *buffer, size_t len
     ret = lwm2m_mbedtls_connection_write(connP->dtls, buffer, length);
     if (ret == (int)length)
     {
+        prv_log_coap_packet("outbound", buffer, length);
         prv_log_dtls_application_data_sent(connP, length);
         prv_log_bootstrap_request_sent(buffer, length);
         return 0;

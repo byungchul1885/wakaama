@@ -816,6 +816,9 @@ typedef void (*lwm2m_bootstrap_command_callback_t)(lwm2m_context_t *contextP, lw
                                                    const char *operation, const char *method,
                                                    lwm2m_media_type_t format, uint8_t *data, size_t dataLength,
                                                    void *userData);
+
+// Called when the bootstrap state machine emits a human-readable trace message.
+typedef void (*lwm2m_bootstrap_log_callback_t)(lwm2m_context_t *contextP, const char *message, void *userData);
 #endif
 
 #endif
@@ -851,6 +854,8 @@ struct _lwm2m_context_
 #ifdef LWM2M_BOOTSTRAP
     lwm2m_bootstrap_command_callback_t bootstrapCommandCallback;
     void *                            bootstrapCommandUserData;
+    lwm2m_bootstrap_log_callback_t    bootstrapLogCallback;
+    void *                            bootstrapLogUserData;
 #endif
 #endif
 #if defined(LWM2M_SERVER_MODE) || defined(LWM2M_BOOTSTRAP_SERVER_MODE)
@@ -901,6 +906,8 @@ void lwm2m_resource_value_changed(lwm2m_context_t * contextP, lwm2m_uri_t * uriP
 #ifdef LWM2M_BOOTSTRAP
 void lwm2m_set_bootstrap_command_callback(lwm2m_context_t *contextP, lwm2m_bootstrap_command_callback_t callback,
                                           void *userData);
+void lwm2m_set_bootstrap_log_callback(lwm2m_context_t *contextP, lwm2m_bootstrap_log_callback_t callback,
+                                      void *userData);
 #endif
 
 #ifndef LWM2M_VERSION_1_0

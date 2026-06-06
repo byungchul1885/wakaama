@@ -25,17 +25,44 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <stdarg.h>
 
 #ifdef LWM2M_CLIENT_MODE
 #ifdef LWM2M_BOOTSTRAP
 
 #define PRV_QUERY_BUFFER_LENGTH 200
-#define PRV_BOOTSTRAP_LOG(...)       \
-    do                               \
-    {                                \
-        fprintf(stdout, __VA_ARGS__); \
-        fflush(stdout);              \
-    } while (0)
+#define PRV_BOOTSTRAP_LOG_BUFFER_LENGTH 512
+
+static void prv_bootstrapLog(lwm2m_context_t * contextP,
+                             const char * format,
+                             ...)
+{
+    char buffer[PRV_BOOTSTRAP_LOG_BUFFER_LENGTH];
+    size_t length;
+    va_list args;
+
+    va_start(args, format);
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+
+    buffer[sizeof(buffer) - 1] = '\0';
+    length = strlen(buffer);
+    while (length > 0
+        && (buffer[length - 1] == '\r'
+         || buffer[length - 1] == '\n'))
+    {
+        buffer[--length] = '\0';
+    }
+
+    if (contextP != NULL && contextP->bootstrapLogCallback != NULL)
+    {
+        contextP->bootstrapLogCallback(contextP, buffer, contextP->bootstrapLogUserData);
+    }
+    else
+    {
+        LOG_ARG_INFO("%s", buffer);
+    }
+}
 
 static const char * prv_bootstrapMethodToString(uint8_t code)
 {
@@ -167,15 +194,17 @@ static const char * prv_bootstrapOperationToString(uint8_t code,
     }
 }
 
-static void prv_handleResponse(lwm2m_server_t * bootstrapServer,
+static void prv_handleResponse(lwm2m_context_t * contextP,
+                               lwm2m_server_t * bootstrapServer,
                                coap_packet_t * message)
 {
     char codeBuffer[24];
 
     prv_bootstrapFormatCode(message->code, codeBuffer, sizeof(codeBuffer));
-    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv Bootstrap-Request response: POST /%s -> %s\r\n",
-                      URI_BOOTSTRAP_SEGMENT,
-                      codeBuffer);
+    prv_bootstrapLog(contextP,
+                     "[BOOTSTRAP] recv Bootstrap-Request response: POST /%s -> %s",
+                     URI_BOOTSTRAP_SEGMENT,
+                     codeBuffer);
 
     if (COAP_204_CHANGED == message->code)
     {
@@ -196,15 +225,13 @@ static void prv_handleBootstrapReply(lwm2m_context_t * contextP,
     lwm2m_server_t * bootstrapServer = (lwm2m_server_t *)transaction->userData;
     coap_packet_t * coapMessage = (coap_packet_t *)message;
 
-    (void)contextP; /* unused */
-
     LOG_DBG("Entering");
 
     if (bootstrapServer->status == STATE_BS_INITIATED)
     {
         if (NULL != coapMessage && COAP_TYPE_RST != coapMessage->type)
         {
-            prv_handleResponse(bootstrapServer, coapMessage);
+            prv_handleResponse(contextP, bootstrapServer, coapMessage);
         }
         else
         {
@@ -289,10 +316,11 @@ static void prv_requestBootstrap(lwm2m_context_t * context,
         transaction->callback = prv_handleBootstrapReply;
         transaction->userData = (void *)bootstrapServer;
         context->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(context->transactionList, transaction);
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] queue Bootstrap-Request: POST /%s%s endpoint=%s\r\n",
-                          URI_BOOTSTRAP_SEGMENT,
-                          query,
-                          context->endpointName != NULL ? context->endpointName : "");
+        prv_bootstrapLog(context,
+                         "[BOOTSTRAP] queue Bootstrap-Request: POST /%s%s endpoint=%s",
+                         URI_BOOTSTRAP_SEGMENT,
+                         query,
+                         context->endpointName != NULL ? context->endpointName : "");
         if (transaction_send(context, transaction) == 0)
         {
             LOG_DBG("CI bootstrap requested to BS server");
@@ -741,7 +769,7 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
     char codeBuffer[24];
 
     LOG_DBG("Entering");
-    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv Bootstrap-Finish: POST /%s\r\n", URI_BOOTSTRAP_SEGMENT);
+    prv_bootstrapLog(context, "[BOOTSTRAP] recv Bootstrap-Finish: POST /%s", URI_BOOTSTRAP_SEGMENT);
     bootstrapServer = utils_findBootstrapServer(context, fromSessionH);
     if (bootstrapServer != NULL
      && bootstrapServer->status == STATE_BS_PENDING)
@@ -752,27 +780,30 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
             bootstrapServer->status = STATE_BS_FINISHING;
             result = COAP_204_CHANGED;
             prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-            PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s\r\n",
-                              URI_BOOTSTRAP_SEGMENT,
-                              codeBuffer);
+            prv_bootstrapLog(context,
+                             "[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s",
+                             URI_BOOTSTRAP_SEGMENT,
+                             codeBuffer);
             return result;
         }
         else
         {
            result = COAP_406_NOT_ACCEPTABLE;
            prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-           PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s\r\n",
-                             URI_BOOTSTRAP_SEGMENT,
-                             codeBuffer);
+           prv_bootstrapLog(context,
+                            "[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s",
+                            URI_BOOTSTRAP_SEGMENT,
+                            codeBuffer);
            return result;
         }
     }
 
     result = COAP_IGNORE;
     prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s\r\n",
-                      URI_BOOTSTRAP_SEGMENT,
-                      codeBuffer);
+    prv_bootstrapLog(context,
+                     "[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s",
+                     URI_BOOTSTRAP_SEGMENT,
+                     codeBuffer);
     return result;
 }
 
@@ -944,23 +975,25 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     }
     else
     {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv %s: %s %s format=%s payload=%zu bytes\r\n",
-                          operation,
-                          method,
-                          uriBuffer,
-                          prv_bootstrapMediaTypeToString(format),
-                          message->payload_len);
+        prv_bootstrapLog(contextP,
+                         "[BOOTSTRAP] recv %s: %s %s format=%s payload=%zu bytes",
+                         operation,
+                         method,
+                         uriBuffer,
+                         prv_bootstrapMediaTypeToString(format),
+                         message->payload_len);
     }
 
     result = prv_checkServerStatus(serverP);
     if (result != COAP_NO_ERROR)
     {
         prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send %s response: %s %s -> %s\r\n",
-                          operation,
-                          method,
-                          uriBuffer,
-                          codeBuffer);
+        prv_bootstrapLog(contextP,
+                         "[BOOTSTRAP] send %s response: %s %s -> %s",
+                         operation,
+                         method,
+                         uriBuffer,
+                         codeBuffer);
         return result;
     }
 
@@ -1165,11 +1198,12 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     }
     LOG_ARG_DBG("Server status: %s", STR_STATUS(serverP->status));
     prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send %s response: %s %s -> %s\r\n",
-                      operation,
-                      method,
-                      uriBuffer,
-                      codeBuffer);
+    prv_bootstrapLog(contextP,
+                     "[BOOTSTRAP] send %s response: %s %s -> %s",
+                     operation,
+                     method,
+                     uriBuffer,
+                     codeBuffer);
 
     return result;
 }
@@ -1183,6 +1217,15 @@ void lwm2m_set_bootstrap_command_callback(lwm2m_context_t * contextP,
     contextP->bootstrapCommandUserData = userData;
 }
 
+void lwm2m_set_bootstrap_log_callback(lwm2m_context_t * contextP,
+                                      lwm2m_bootstrap_log_callback_t callback,
+                                      void * userData)
+{
+    LOG_DBG("Entering");
+    contextP->bootstrapLogCallback = callback;
+    contextP->bootstrapLogUserData = userData;
+}
+
 uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
                                   void * fromSessionH)
 {
@@ -1192,14 +1235,14 @@ uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
     char codeBuffer[24];
 
     LOG_DBG("Entering");
-    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv Bootstrap-Delete: DELETE /\r\n");
+    prv_bootstrapLog(contextP, "[BOOTSTRAP] recv Bootstrap-Delete: DELETE /");
     serverP = utils_findBootstrapServer(contextP, fromSessionH);
     if (serverP == NULL) return COAP_IGNORE;
     result = prv_checkServerStatus(serverP);
     if (result != COAP_NO_ERROR)
     {
         prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send Bootstrap-Delete response: DELETE / -> %s\r\n", codeBuffer);
+        prv_bootstrapLog(contextP, "[BOOTSTRAP] send Bootstrap-Delete response: DELETE / -> %s", codeBuffer);
         return result;
     }
 
@@ -1247,7 +1290,7 @@ uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
     }
 
     prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] send Bootstrap-Delete response: DELETE / -> %s\r\n", codeBuffer);
+    prv_bootstrapLog(contextP, "[BOOTSTRAP] send Bootstrap-Delete response: DELETE / -> %s", codeBuffer);
 
     return result;
 }

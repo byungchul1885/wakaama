@@ -11,7 +11,7 @@ def parse_client_registration(server_output):
     ...
     New client #0 registered.
     Client #0:
-        name: "ZZS20000001"
+        name: "testlwm2mclient"
         version: "1.1"
         binding: "UDP"
         lifetime: 300 sec
@@ -38,7 +38,7 @@ def test_registration_interface(lwm2mserver, lwm2mclient):
         parse_client_registration(text)
     assert client_id == 0
     assert event == "registered"
-    assert endpoint == "ZZS20000001"
+    assert endpoint == "testlwm2mclient"
     assert version == "1.1"
     assert binding == "UDP"
     assert lifetime == 300

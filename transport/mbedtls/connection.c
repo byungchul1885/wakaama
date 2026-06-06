@@ -175,7 +175,7 @@ int lwm2m_mbedtls_connection_setup(lwm2m_mbedtls_connection_t *conn, const lwm2m
         return ret;
     }
 
-    /* KEPCO LwM2M 1.3(ba)-2 requires this exact PSK ARIA-GCM ciphersuite. */
+    /* Keep the PSK ARIA-GCM ciphersuite order explicit for deployments that require it. */
     mbedtls_ssl_conf_ciphersuites(&conn->conf, PRV_LWM2M_DTLS_CIPHERSUITES);
 
     mbedtls_ssl_conf_rng(&conn->conf, mbedtls_ctr_drbg_random, &conn->ctr_drbg);

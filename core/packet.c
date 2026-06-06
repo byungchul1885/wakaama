@@ -489,7 +489,7 @@ static int prv_send_get_next_block2(lwm2m_context_t * contextP,
 
 static bool is_message_too_large(const coap_packet_t *message, const size_t packet_size) {
     /*
-     * KEPCO LwM2M 1.3(ja) requires Block-Wise Transfers when the CoAP payload exceeds 1024 bytes.
+     * Some LwM2M profiles require Block-Wise Transfers when the CoAP payload exceeds the negotiated block size.
      * Enforce the configured block size for both block-transfer messages and regular messages.
      */
     if (message->payload_len > lwm2m_get_coap_block_size()) {

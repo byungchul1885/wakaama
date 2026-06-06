@@ -810,6 +810,14 @@ typedef enum
     STATE_READY
 } lwm2m_client_state_t;
 
+#ifdef LWM2M_BOOTSTRAP
+// Called when a bootstrap command is received by a client.
+typedef void (*lwm2m_bootstrap_command_callback_t)(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, uint8_t code,
+                                                   const char *operation, const char *method,
+                                                   lwm2m_media_type_t format, uint8_t *data, size_t dataLength,
+                                                   void *userData);
+#endif
+
 #endif
 /*
  * LwM2M Context
@@ -840,6 +848,10 @@ struct _lwm2m_context_
     lwm2m_server_t *     serverList;
     lwm2m_object_t *     objectList;
     lwm2m_observed_t *   observedList;
+#ifdef LWM2M_BOOTSTRAP
+    lwm2m_bootstrap_command_callback_t bootstrapCommandCallback;
+    void *                            bootstrapCommandUserData;
+#endif
 #endif
 #if defined(LWM2M_SERVER_MODE) || defined(LWM2M_BOOTSTRAP_SERVER_MODE)
     lwm2m_client_t *        clientList;
@@ -886,6 +898,10 @@ int lwm2m_update_registration(lwm2m_context_t * contextP, uint16_t shortServerID
 // send deregistration to all servers connected to client
 void lwm2m_deregister(lwm2m_context_t * context);
 void lwm2m_resource_value_changed(lwm2m_context_t * contextP, lwm2m_uri_t * uriP);
+#ifdef LWM2M_BOOTSTRAP
+void lwm2m_set_bootstrap_command_callback(lwm2m_context_t *contextP, lwm2m_bootstrap_command_callback_t callback,
+                                          void *userData);
+#endif
 
 #ifndef LWM2M_VERSION_1_0
 // send resources specified by URIs to the server specified by the server short

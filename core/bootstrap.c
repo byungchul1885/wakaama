@@ -167,420 +167,6 @@ static const char * prv_bootstrapOperationToString(uint8_t code,
     }
 }
 
-static const char * prv_bootstrapSecurityModeToString(int64_t mode)
-{
-    switch (mode)
-    {
-    case LWM2M_SECURITY_MODE_PRE_SHARED_KEY:
-        return "PSK";
-    case LWM2M_SECURITY_MODE_RAW_PUBLIC_KEY:
-        return "Raw Public Key";
-    case LWM2M_SECURITY_MODE_CERTIFICATE:
-        return "Certificate";
-    case LWM2M_SECURITY_MODE_NONE:
-        return "NoSec";
-    default:
-        return "Unknown";
-    }
-}
-
-static bool prv_bootstrapDataBuffer(const lwm2m_data_t * dataP,
-                                    const uint8_t ** bufferP,
-                                    size_t * lengthP)
-{
-    switch (dataP->type)
-    {
-    case LWM2M_TYPE_STRING:
-    case LWM2M_TYPE_OPAQUE:
-    case LWM2M_TYPE_CORE_LINK:
-        *bufferP = dataP->value.asBuffer.buffer;
-        *lengthP = dataP->value.asBuffer.length;
-        return true;
-    default:
-        return false;
-    }
-}
-
-static bool prv_bootstrapBufferIsPrintable(const uint8_t * buffer,
-                                           size_t length)
-{
-    size_t i;
-
-    for (i = 0; i < length; i++)
-    {
-        if (buffer[i] < 0x20 || buffer[i] > 0x7E)
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-static char * prv_bootstrapBufferToHex(const uint8_t * buffer,
-                                       size_t length)
-{
-    static const char hex[] = "0123456789ABCDEF";
-    char * value;
-    size_t i;
-
-    if (length > (((size_t)-1) - 1) / 2)
-    {
-        return NULL;
-    }
-
-    value = (char *)lwm2m_malloc(length * 2 + 1);
-    if (value == NULL)
-    {
-        return NULL;
-    }
-
-    for (i = 0; i < length; i++)
-    {
-        value[i * 2] = hex[(buffer[i] >> 4) & 0x0F];
-        value[i * 2 + 1] = hex[buffer[i] & 0x0F];
-    }
-    value[length * 2] = '\0';
-
-    return value;
-}
-
-static void prv_bootstrapLogBufferResource(uint16_t objectId,
-                                           uint16_t instanceId,
-                                           const lwm2m_data_t * dataP,
-                                           const char * name,
-                                           bool forceHex)
-{
-    const uint8_t * buffer;
-    size_t length;
-
-    if (!prv_bootstrapDataBuffer(dataP, &buffer, &length))
-    {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: <unsupported type %d>\r\n",
-                          objectId,
-                          instanceId,
-                          dataP->id,
-                          name,
-                          dataP->type);
-        return;
-    }
-
-    if (!forceHex && prv_bootstrapBufferIsPrintable(buffer, length))
-    {
-        int printLength;
-
-        printLength = length > INT_MAX ? INT_MAX : (int)length;
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: %.*s\r\n",
-                          objectId,
-                          instanceId,
-                          dataP->id,
-                          name,
-                          printLength,
-                          (const char *)buffer);
-    }
-    else
-    {
-        char * hexValue;
-
-        hexValue = prv_bootstrapBufferToHex(buffer, length);
-        if (hexValue == NULL)
-        {
-            PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: <hex encode failed, %zu bytes>\r\n",
-                              objectId,
-                              instanceId,
-                              dataP->id,
-                              name,
-                              length);
-            return;
-        }
-
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: hex:%s (%zu bytes)\r\n",
-                          objectId,
-                          instanceId,
-                          dataP->id,
-                          name,
-                          hexValue,
-                          length);
-        lwm2m_free(hexValue);
-    }
-}
-
-static void prv_bootstrapLogIntegerResource(uint16_t objectId,
-                                            uint16_t instanceId,
-                                            const lwm2m_data_t * dataP,
-                                            const char * name)
-{
-    int64_t value;
-
-    value = 0;
-    if (lwm2m_data_decode_int(dataP, &value) == 1)
-    {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: %lld\r\n",
-                          objectId,
-                          instanceId,
-                          dataP->id,
-                          name,
-                          (long long)value);
-    }
-    else
-    {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: <decode failed>\r\n",
-                          objectId,
-                          instanceId,
-                          dataP->id,
-                          name);
-    }
-}
-
-static void prv_bootstrapLogBoolResource(uint16_t objectId,
-                                         uint16_t instanceId,
-                                         const lwm2m_data_t * dataP,
-                                         const char * name)
-{
-    bool value;
-
-    value = false;
-    if (lwm2m_data_decode_bool(dataP, &value) == 1)
-    {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: %s\r\n",
-                          objectId,
-                          instanceId,
-                          dataP->id,
-                          name,
-                          value ? "true" : "false");
-    }
-    else
-    {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: <decode failed>\r\n",
-                          objectId,
-                          instanceId,
-                          dataP->id,
-                          name);
-    }
-}
-
-static void prv_bootstrapLogSecurityModeResource(uint16_t instanceId,
-                                                 const lwm2m_data_t * dataP)
-{
-    int64_t value;
-
-    value = 0;
-    if (lwm2m_data_decode_int(dataP, &value) == 1)
-    {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u Security Mode: %lld (%s)\r\n",
-                          LWM2M_SECURITY_OBJECT_ID,
-                          instanceId,
-                          dataP->id,
-                          (long long)value,
-                          prv_bootstrapSecurityModeToString(value));
-    }
-    else
-    {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u Security Mode: <decode failed>\r\n",
-                          LWM2M_SECURITY_OBJECT_ID,
-                          instanceId,
-                          dataP->id);
-    }
-}
-
-static void prv_bootstrapLogExecuteResource(uint16_t objectId,
-                                            uint16_t instanceId,
-                                            const lwm2m_data_t * dataP,
-                                            const char * name)
-{
-    PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   /%u/%u/%u %s: present\r\n",
-                      objectId,
-                      instanceId,
-                      dataP->id,
-                      name);
-}
-
-static void prv_bootstrapLogSecurityResource(uint16_t instanceId,
-                                             const lwm2m_data_t * dataP)
-{
-    switch (dataP->id)
-    {
-    case LWM2M_SECURITY_URI_ID:
-        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Server URI", false);
-        break;
-    case LWM2M_SECURITY_BOOTSTRAP_ID:
-        prv_bootstrapLogBoolResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Bootstrap Server");
-        break;
-    case LWM2M_SECURITY_SECURITY_ID:
-        prv_bootstrapLogSecurityModeResource(instanceId, dataP);
-        break;
-    case LWM2M_SECURITY_PUBLIC_KEY_ID:
-        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Public Key or Identity", false);
-        break;
-    case LWM2M_SECURITY_SERVER_PUBLIC_KEY_ID:
-        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Server Public Key", true);
-        break;
-    case LWM2M_SECURITY_SECRET_KEY_ID:
-        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Secret Key", true);
-        break;
-    case LWM2M_SECURITY_SMS_SECURITY_ID:
-        prv_bootstrapLogIntegerResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "SMS Security Mode");
-        break;
-    case LWM2M_SECURITY_SMS_KEY_PARAM_ID:
-        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "SMS Binding Key Param", false);
-        break;
-    case LWM2M_SECURITY_SMS_SECRET_KEY_ID:
-        prv_bootstrapLogBufferResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "SMS Binding Secret Key", true);
-        break;
-    case LWM2M_SECURITY_SHORT_SERVER_ID:
-        prv_bootstrapLogIntegerResource(LWM2M_SECURITY_OBJECT_ID, instanceId, dataP, "Short Server ID");
-        break;
-    default:
-        break;
-    }
-}
-
-static void prv_bootstrapLogServerResource(uint16_t instanceId,
-                                           const lwm2m_data_t * dataP)
-{
-    switch (dataP->id)
-    {
-    case LWM2M_SERVER_SHORT_ID_ID:
-        prv_bootstrapLogIntegerResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Short Server ID");
-        break;
-    case LWM2M_SERVER_LIFETIME_ID:
-        prv_bootstrapLogIntegerResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Lifetime");
-        break;
-    case LWM2M_SERVER_STORING_ID:
-        prv_bootstrapLogBoolResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Notification Storing");
-        break;
-    case LWM2M_SERVER_BINDING_ID:
-        prv_bootstrapLogBufferResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Binding", false);
-        break;
-    case LWM2M_SERVER_UPDATE_ID:
-        prv_bootstrapLogExecuteResource(LWM2M_SERVER_OBJECT_ID, instanceId, dataP, "Registration Update Trigger");
-        break;
-    default:
-        break;
-    }
-}
-
-static void prv_bootstrapLogResourceList(uint16_t objectId,
-                                         uint16_t instanceId,
-                                         size_t count,
-                                         lwm2m_data_t * dataP)
-{
-    size_t i;
-
-    for (i = 0; i < count; i++)
-    {
-        if (objectId == LWM2M_SECURITY_OBJECT_ID)
-        {
-            prv_bootstrapLogSecurityResource(instanceId, dataP + i);
-        }
-        else if (objectId == LWM2M_SERVER_OBJECT_ID)
-        {
-            prv_bootstrapLogServerResource(instanceId, dataP + i);
-        }
-    }
-}
-
-static void prv_bootstrapLogPutPayload(lwm2m_uri_t * uriP,
-                                       uint8_t * buffer,
-                                       size_t length,
-                                       lwm2m_media_type_t format)
-{
-    lwm2m_data_t * dataP;
-    lwm2m_uri_t parseUri;
-    int size;
-    int i;
-    bool loggedContainer;
-
-    if (!LWM2M_URI_IS_SET_OBJECT(uriP)
-     || (uriP->objectId != LWM2M_SECURITY_OBJECT_ID
-      && uriP->objectId != LWM2M_SERVER_OBJECT_ID)
-     || buffer == NULL
-     || length == 0)
-    {
-        return;
-    }
-
-    dataP = NULL;
-    parseUri = *uriP;
-    size = lwm2m_data_parse(&parseUri, buffer, length, format, &dataP);
-    if (size <= 0)
-    {
-        PRV_BOOTSTRAP_LOG("[BOOTSTRAP]   payload decode failed\r\n");
-        return;
-    }
-
-    loggedContainer = false;
-    if (LWM2M_URI_IS_SET_INSTANCE(uriP))
-    {
-        for (i = 0; i < size; i++)
-        {
-            if (dataP[i].type == LWM2M_TYPE_OBJECT_INSTANCE)
-            {
-                loggedContainer = true;
-                prv_bootstrapLogResourceList(uriP->objectId,
-                                             dataP[i].id,
-                                             dataP[i].value.asChildren.count,
-                                             dataP[i].value.asChildren.array);
-            }
-            else if (dataP[i].type == LWM2M_TYPE_OBJECT)
-            {
-                size_t j;
-
-                loggedContainer = true;
-                for (j = 0; j < dataP[i].value.asChildren.count; j++)
-                {
-                    if (dataP[i].value.asChildren.array[j].type == LWM2M_TYPE_OBJECT_INSTANCE)
-                    {
-                        prv_bootstrapLogResourceList(uriP->objectId,
-                                                     dataP[i].value.asChildren.array[j].id,
-                                                     dataP[i].value.asChildren.array[j].value.asChildren.count,
-                                                     dataP[i].value.asChildren.array[j].value.asChildren.array);
-                    }
-                }
-            }
-        }
-
-        if (!loggedContainer)
-        {
-            prv_bootstrapLogResourceList(uriP->objectId,
-                                         uriP->instanceId,
-                                         (size_t)size,
-                                         dataP);
-        }
-    }
-    else
-    {
-        for (i = 0; i < size; i++)
-        {
-            if (dataP[i].type == LWM2M_TYPE_OBJECT_INSTANCE)
-            {
-                prv_bootstrapLogResourceList(uriP->objectId,
-                                             dataP[i].id,
-                                             dataP[i].value.asChildren.count,
-                                             dataP[i].value.asChildren.array);
-            }
-            else if (dataP[i].type == LWM2M_TYPE_OBJECT)
-            {
-                size_t j;
-
-                for (j = 0; j < dataP[i].value.asChildren.count; j++)
-                {
-                    if (dataP[i].value.asChildren.array[j].type == LWM2M_TYPE_OBJECT_INSTANCE)
-                    {
-                        prv_bootstrapLogResourceList(uriP->objectId,
-                                                     dataP[i].value.asChildren.array[j].id,
-                                                     dataP[i].value.asChildren.array[j].value.asChildren.count,
-                                                     dataP[i].value.asChildren.array[j].value.asChildren.array);
-                    }
-                }
-            }
-        }
-    }
-
-    lwm2m_data_free(size, dataP);
-}
-
-
 static void prv_handleResponse(lwm2m_server_t * bootstrapServer,
                                coap_packet_t * message)
 {
@@ -1344,15 +930,26 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     method = prv_bootstrapMethodToString(message->code);
     operation = prv_bootstrapOperationToString(message->code, uriP, message);
     snprintf(uriBuffer, sizeof(uriBuffer), "%s", LOG_URI_TO_STRING(uriP));
-    PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv %s: %s %s format=%s payload=%zu bytes\r\n",
-                      operation,
-                      method,
-                      uriBuffer,
-                      prv_bootstrapMediaTypeToString(format),
-                      message->payload_len);
-    if (message->code == COAP_PUT)
+    if (contextP->bootstrapCommandCallback != NULL)
     {
-        prv_bootstrapLogPutPayload(uriP, message->payload, message->payload_len, format);
+        contextP->bootstrapCommandCallback(contextP,
+                                           uriP,
+                                           message->code,
+                                           operation,
+                                           method,
+                                           format,
+                                           message->payload,
+                                           message->payload_len,
+                                           contextP->bootstrapCommandUserData);
+    }
+    else
+    {
+        PRV_BOOTSTRAP_LOG("[BOOTSTRAP] recv %s: %s %s format=%s payload=%zu bytes\r\n",
+                          operation,
+                          method,
+                          uriBuffer,
+                          prv_bootstrapMediaTypeToString(format),
+                          message->payload_len);
     }
 
     result = prv_checkServerStatus(serverP);
@@ -1575,6 +1172,15 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
                       codeBuffer);
 
     return result;
+}
+
+void lwm2m_set_bootstrap_command_callback(lwm2m_context_t * contextP,
+                                          lwm2m_bootstrap_command_callback_t callback,
+                                          void * userData)
+{
+    LOG_DBG("Entering");
+    contextP->bootstrapCommandCallback = callback;
+    contextP->bootstrapCommandUserData = userData;
 }
 
 uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,

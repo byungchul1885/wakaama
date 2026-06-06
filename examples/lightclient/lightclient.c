@@ -74,8 +74,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#ifndef SMGW_DEFAULT_ENDPOINT_NAME
-#define SMGW_DEFAULT_ENDPOINT_NAME "ZZS20000001"
+#ifndef DEFAULT_ENDPOINT_NAME
+#define DEFAULT_ENDPOINT_NAME "testlwm2mclient"
 #endif
 
 extern lwm2m_object_t * get_object_device(void);
@@ -200,7 +200,7 @@ void print_usage(void)
     fprintf(stdout, "Usage: lwm2mclient [OPTION]\r\n");
     fprintf(stdout, "Launch a LwM2M client.\r\n");
     fprintf(stdout, "Options:\r\n");
-    fprintf(stdout, "  -n NAME\tSet the endpoint name of the Client. Default: " SMGW_DEFAULT_ENDPOINT_NAME "\r\n");
+    fprintf(stdout, "  -n NAME\tSet the endpoint name of the Client. Default: " DEFAULT_ENDPOINT_NAME "\r\n");
     fprintf(stdout, "  -l PORT\tSet the local UDP port of the Client. Default: 56830\r\n");
     fprintf(stdout, "  -4\t\tUse IPv4 connection. Default: IPv6 connection\r\n");
     fprintf(stdout, "  -S BYTES\tCoAP block size. Options: 16, 32, 64, 128, 256, 512, 1024. Default: %" PRIu16 "\r\n",
@@ -331,7 +331,7 @@ int main(int argc, char *argv[])
     lwm2m_object_t * objArray[OBJ_COUNT];
 
     const char * localPort = "56830";
-    const char *name = SMGW_DEFAULT_ENDPOINT_NAME;
+    const char *name = DEFAULT_ENDPOINT_NAME;
 
     int result;
     int opt;

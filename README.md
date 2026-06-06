@@ -114,6 +114,7 @@ If `NONE` is chosen, the user of Wakaama needs to implement a custom transport l
 - WAKAAMA_PLATFORM: Select the implementation of the platform abstraction layer, one of:
   - POSIX: An implementation using the POSIX API.
   - NONE: No platform abstraction layer is provided.
+- WAKAAMA_POSIX_PLATFORM_ROOT: Root directory containing `platform.c` when WAKAAMA_PLATFORM=POSIX.
 
 If `NONE` is chosen, the user of Wakaama needs to implement a custom platform abstraction layer. Check the available POSIX implementation for more information.
 
@@ -122,6 +123,7 @@ If `NONE` is chosen, the user of Wakaama needs to implement a custom platform ab
 Wakaama provides a simple CLI library. It can be enabled with:
 
 - WAKAAMA_CLI: If enabled the command line library is added to Wakaama (default: disabled)
+- WAKAAMA_CLI_ROOT: Root directory containing `commandline.c` and `commandline.h`.
 
 ## Development
 

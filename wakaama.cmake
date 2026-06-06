@@ -122,8 +122,18 @@ set(WAKAAMA_PLATFORM
 )
 set_property(CACHE WAKAAMA_PLATFORM PROPERTY STRINGS NONE POSIX)
 
+set(WAKAAMA_POSIX_PLATFORM_ROOT
+    "${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}"
+    CACHE PATH "Root directory of the POSIX platform implementation"
+)
+
 # Command line interface
 option(WAKAAMA_CLI "Command line interface library" OFF)
+
+set(WAKAAMA_CLI_ROOT
+    "${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}"
+    CACHE PATH "Root directory of the command line interface implementation"
+)
 
 if(MSVC)
     add_compile_options(/utf-8)
@@ -303,16 +313,24 @@ endfunction()
 
 if(WAKAAMA_CLI OR WAKAAMA_UNIT_TESTS OR WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP" OR WAKAAMA_TRANSPORT STREQUAL "TINYDTLS")
     # Commandline library
+    if(NOT EXISTS "${WAKAAMA_CLI_ROOT}/commandline.c"
+       OR NOT EXISTS "${WAKAAMA_CLI_ROOT}/commandline.h"
+    )
+        message(FATAL_ERROR "Invalid WAKAAMA_CLI_ROOT: ${WAKAAMA_CLI_ROOT}")
+    endif()
     add_library(wakaama_command_line OBJECT)
-    target_sources(wakaama_command_line PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/commandline.c)
+    target_sources(wakaama_command_line PRIVATE ${WAKAAMA_CLI_ROOT}/commandline.c)
     target_include_directories(wakaama_command_line PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
-    target_include_directories(wakaama_command_line PUBLIC ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY})
+    target_include_directories(wakaama_command_line PUBLIC ${WAKAAMA_CLI_ROOT})
 endif()
 
 if(WAKAAMA_UNIT_TESTS OR WAKAAMA_PLATFORM STREQUAL "POSIX")
     # POSIX platform library
+    if(NOT EXISTS "${WAKAAMA_POSIX_PLATFORM_ROOT}/platform.c")
+        message(FATAL_ERROR "Invalid WAKAAMA_POSIX_PLATFORM_ROOT: ${WAKAAMA_POSIX_PLATFORM_ROOT}")
+    endif()
     add_library(wakaama_platform_posix OBJECT)
-    target_sources(wakaama_platform_posix PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/platform.c)
+    target_sources(wakaama_platform_posix PRIVATE ${WAKAAMA_POSIX_PLATFORM_ROOT}/platform.c)
     target_include_directories(wakaama_platform_posix PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
     target_compile_definitions(wakaama_platform_posix PRIVATE _POSIX_C_SOURCE=200809)
 endif()

@@ -100,6 +100,11 @@ set(WAKAAMA_MBEDTLS_ROOT
     CACHE PATH "Root directory of an mbedTLS installation"
 )
 
+set(WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT
+    ""
+    CACHE PATH "Root directory of the Win32 mbedTLS transport implementation"
+)
+
 # Platform
 set(WAKAAMA_PLATFORM
     NONE
@@ -391,15 +396,35 @@ if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS" OR WAKAAMA_TRANSPORT STREQUAL "WIN32_MBE
 endif()
 
 if(WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
+    if(NOT WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT)
+        message(
+            FATAL_ERROR
+                "WAKAAMA_TRANSPORT=WIN32_MBEDTLS requires WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT "
+                "to point to a Win32 mbedTLS transport implementation."
+        )
+    endif()
+    get_filename_component(
+        WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT "${WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT}" ABSOLUTE
+    )
+    if(NOT EXISTS "${WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT}/connection.c"
+       OR NOT EXISTS "${WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT}/include/win32_mbedtls/connection.h"
+    )
+        message(
+            FATAL_ERROR
+                "Invalid WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT: "
+                "${WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT}"
+        )
+    endif()
+
     # Transport mbedTLS over Win32 Winsock UDP implementation library.
     add_library(wakaama_transport_win32_mbedtls OBJECT)
     target_sources(
         wakaama_transport_win32_mbedtls
-        PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/win32_mbedtls/connection.c
+        PRIVATE ${WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT}/connection.c
     )
     target_include_directories(
         wakaama_transport_win32_mbedtls
-        PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/win32_mbedtls/include
+        PUBLIC ${WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT}/include
     )
     target_include_directories(
         wakaama_transport_win32_mbedtls

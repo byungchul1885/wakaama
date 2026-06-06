@@ -104,7 +104,7 @@ The logging infrastructure can be configured with CMake cache variables (e.g. `c
   - POSIX_UDP: A simple UDP implementation using the POSIX socket API.
   - TINYDTLS: Use DTLS with the 'tinydtls' library.
   - MBEDTLS: Use DTLS with mbedTLS. With WAKAAMA_PLATFORM=POSIX this includes POSIX UDP glue.
-  - WIN32_MBEDTLS: Use DTLS with mbedTLS over the Win32 Winsock API.
+  - WIN32_MBEDTLS: Use DTLS with mbedTLS over the Win32 Winsock API. Requires WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT.
   - NONE: No transport layer is provided.
 
 If `NONE` is chosen, the user of Wakaama needs to implement a custom transport layer. Check the available implementations for more information.

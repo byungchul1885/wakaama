@@ -105,7 +105,7 @@ set(WAKAAMA_PLATFORM
     NONE
     CACHE STRING "The platform abstraction layer implementation"
 )
-set_property(CACHE WAKAAMA_PLATFORM PROPERTY STRINGS NONE POSIX WIN32)
+set_property(CACHE WAKAAMA_PLATFORM PROPERTY STRINGS NONE POSIX)
 
 # Command line interface
 option(WAKAAMA_CLI "Command line interface library" OFF)
@@ -302,19 +302,9 @@ if(WAKAAMA_UNIT_TESTS OR WAKAAMA_PLATFORM STREQUAL "POSIX")
     target_compile_definitions(wakaama_platform_posix PRIVATE _POSIX_C_SOURCE=200809)
 endif()
 
-if(WAKAAMA_PLATFORM STREQUAL "WIN32")
-    # Win32 platform library
-    add_library(wakaama_platform_win32 OBJECT)
-    target_sources(wakaama_platform_win32 PRIVATE ${WAKAAMA_EXAMPLE_SHARED_DIRECTORY}/platform_win32.c)
-    target_include_directories(wakaama_platform_win32 PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
-endif()
-
 if(WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
     if(NOT WIN32)
         message(FATAL_ERROR "WAKAAMA_TRANSPORT=WIN32_MBEDTLS requires a Windows target.")
-    endif()
-    if(NOT WAKAAMA_PLATFORM STREQUAL "WIN32")
-        message(FATAL_ERROR "WAKAAMA_TRANSPORT=WIN32_MBEDTLS requires WAKAAMA_PLATFORM=WIN32.")
     endif()
 endif()
 
@@ -500,8 +490,6 @@ endif()
 
 if(WAKAAMA_PLATFORM STREQUAL "POSIX")
     target_link_libraries(wakaama_static PUBLIC wakaama_platform_posix)
-elseif(WAKAAMA_PLATFORM STREQUAL "WIN32")
-    target_link_libraries(wakaama_static PUBLIC wakaama_platform_win32)
 endif()
 
 if(WAKAAMA_CLI)

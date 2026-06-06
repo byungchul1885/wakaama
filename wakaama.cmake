@@ -100,6 +100,11 @@ set(WAKAAMA_MBEDTLS_ROOT
     CACHE PATH "Root directory of an mbedTLS installation"
 )
 
+set(WAKAAMA_MBEDTLS_TRANSPORT_ROOT
+    ""
+    CACHE PATH "Root directory of the mbedTLS transport adapter implementation"
+)
+
 set(WAKAAMA_WIN32_MBEDTLS_TRANSPORT_ROOT
     ""
     CACHE PATH "Root directory of the Win32 mbedTLS transport implementation"
@@ -329,6 +334,20 @@ if(WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP")
 endif()
 
 if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS" OR WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
+    if(NOT WAKAAMA_MBEDTLS_TRANSPORT_ROOT)
+        message(
+            FATAL_ERROR
+                "WAKAAMA_TRANSPORT=MBEDTLS or WIN32_MBEDTLS requires WAKAAMA_MBEDTLS_TRANSPORT_ROOT "
+                "to point to an mbedTLS transport adapter implementation."
+        )
+    endif()
+    get_filename_component(WAKAAMA_MBEDTLS_TRANSPORT_ROOT "${WAKAAMA_MBEDTLS_TRANSPORT_ROOT}" ABSOLUTE)
+    if(NOT EXISTS "${WAKAAMA_MBEDTLS_TRANSPORT_ROOT}/connection.c"
+       OR NOT EXISTS "${WAKAAMA_MBEDTLS_TRANSPORT_ROOT}/include/mbedtls_transport/connection.h"
+    )
+        message(FATAL_ERROR "Invalid WAKAAMA_MBEDTLS_TRANSPORT_ROOT: ${WAKAAMA_MBEDTLS_TRANSPORT_ROOT}")
+    endif()
+
     find_package(
         MbedTLS CONFIG QUIET
         HINTS ${WAKAAMA_MBEDTLS_ROOT}
@@ -387,12 +406,8 @@ if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS" OR WAKAAMA_TRANSPORT STREQUAL "WIN32_MBE
 
     # Transport 'mbedTLS' DTLS adapter library.
     add_library(wakaama_transport_mbedtls OBJECT)
-    target_sources(
-        wakaama_transport_mbedtls PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/connection.c
-    )
-    target_include_directories(
-        wakaama_transport_mbedtls PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/include
-    )
+    target_sources(wakaama_transport_mbedtls PRIVATE ${WAKAAMA_MBEDTLS_TRANSPORT_ROOT}/connection.c)
+    target_include_directories(wakaama_transport_mbedtls PUBLIC ${WAKAAMA_MBEDTLS_TRANSPORT_ROOT}/include)
     target_include_directories(
         wakaama_transport_mbedtls PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include ${WAKAAMA_MBEDTLS_INCLUDE_DIRS}
     )
@@ -434,7 +449,7 @@ if(WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
     target_include_directories(
         wakaama_transport_win32_mbedtls
         PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include
-                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/include
+                ${WAKAAMA_MBEDTLS_TRANSPORT_ROOT}/include
                 ${WAKAAMA_MBEDTLS_INCLUDE_DIRS}
     )
     target_compile_definitions(
@@ -482,7 +497,7 @@ if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS" AND WAKAAMA_PLATFORM STREQUAL "POSIX")
         wakaama_transport_posix_mbedtls
         PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/coap
-                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/mbedtls/include
+                ${WAKAAMA_MBEDTLS_TRANSPORT_ROOT}/include
                 ${WAKAAMA_MBEDTLS_INCLUDE_DIRS}
     )
     target_compile_definitions(

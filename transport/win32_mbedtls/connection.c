@@ -10,6 +10,7 @@
 #include "win32_mbedtls/connection.h"
 
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -32,6 +33,113 @@ static int prv_is_retryable_dtls_result(int result)
 {
     return result == MBEDTLS_ERR_SSL_WANT_READ || result == MBEDTLS_ERR_SSL_WANT_WRITE
            || result == MBEDTLS_ERR_SSL_TIMEOUT;
+}
+
+static void prv_log_debugview(const char *format, ...)
+{
+    char stack_buffer[512];
+    va_list args;
+    int length;
+
+    if (format == NULL)
+    {
+        return;
+    }
+
+    va_start(args, format);
+    length = vsnprintf(stack_buffer, sizeof(stack_buffer), format, args);
+    va_end(args);
+
+    if (length <= 0)
+    {
+        return;
+    }
+    stack_buffer[sizeof(stack_buffer) - 1U] = '\0';
+    OutputDebugStringA(stack_buffer);
+}
+
+static bool prv_format_peer(const lwm2m_connection_t *connP, char *addrBuffer, size_t addrBufferSize,
+                            unsigned short *portP)
+{
+    if (connP == NULL || addrBuffer == NULL || addrBufferSize == 0U || portP == NULL)
+    {
+        return false;
+    }
+
+    if (connP->addr.ss_family == AF_INET)
+    {
+        const struct sockaddr_in *addr = (const struct sockaddr_in *)&connP->addr;
+
+        if (InetNtopA(AF_INET, &addr->sin_addr, addrBuffer, (DWORD)addrBufferSize) == NULL)
+        {
+            return false;
+        }
+        *portP = ntohs(addr->sin_port);
+        return true;
+    }
+    if (connP->addr.ss_family == AF_INET6)
+    {
+        const struct sockaddr_in6 *addr = (const struct sockaddr_in6 *)&connP->addr;
+
+        if (InetNtopA(AF_INET6, &addr->sin6_addr, addrBuffer, (DWORD)addrBufferSize) == NULL)
+        {
+            return false;
+        }
+        *portP = ntohs(addr->sin6_port);
+        return true;
+    }
+
+    return false;
+}
+
+static unsigned long long prv_dtls_elapsed_ms(const lwm2m_connection_t *connP)
+{
+    ULONGLONG now;
+
+    if (connP == NULL || connP->handshake_start_ms == 0ULL)
+    {
+        return 0ULL;
+    }
+
+    now = GetTickCount64();
+    if (now < connP->handshake_start_ms)
+    {
+        return 0ULL;
+    }
+
+    return (unsigned long long)(now - connP->handshake_start_ms);
+}
+
+static const char *prv_dtls_wait_reason(int ret)
+{
+    switch (ret)
+    {
+    case MBEDTLS_ERR_SSL_WANT_READ:
+        return "WANT_READ";
+    case MBEDTLS_ERR_SSL_WANT_WRITE:
+        return "WANT_WRITE";
+    case MBEDTLS_ERR_SSL_TIMEOUT:
+        return "TIMEOUT";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void prv_log_dtls_event(const lwm2m_connection_t *connP, const char *event, const char *detail)
+{
+    char addrBuffer[INET6_ADDRSTRLEN];
+    unsigned short port;
+
+    if (prv_format_peer(connP, addrBuffer, sizeof(addrBuffer), &port))
+    {
+        prv_log_debugview("[I] [DTLS] %s: peer=[%s]:%hu%s%s\r\n", event, addrBuffer, port,
+                          detail == NULL ? "" : " ", detail == NULL ? "" : detail);
+    }
+    else
+    {
+        prv_log_debugview("[I] [DTLS] %s: peer=<unknown>%s%s\r\n", event, detail == NULL ? "" : " ",
+                          detail == NULL ? "" : detail);
+    }
 }
 
 static const char *prv_coap_type_name(unsigned int type)
@@ -72,9 +180,8 @@ static void prv_log_coap_packet(const char *direction, const uint8_t *buffer, si
     code_detail = buffer[1] & 0x1FU;
     mid = ((unsigned int)buffer[2] << 8) | buffer[3];
 
-    fprintf(stdout, "lwm2m coap %s: ver=%u type=%s tkl=%u code=%u.%02u mid=%u length=%zu\n", direction, version,
-            prv_coap_type_name(type), token_len, code_class, code_detail, mid, length);
-    fflush(stdout);
+    prv_log_debugview("[I] [COAP] %s: ver=%u type=%s tkl=%u code=%u.%02u mid=%u bytes=%zu\r\n", direction, version,
+                      prv_coap_type_name(type), token_len, code_class, code_detail, mid, length);
 }
 
 static int prv_socket_error_wants_retry(int error)
@@ -282,6 +389,12 @@ static int prv_send(void *ctx, const uint8_t *buffer, size_t length)
         }
 
         offset += (size_t)sent;
+        {
+            char message[64];
+
+            (void)snprintf(message, sizeof(message), "bytes=%d", sent);
+            prv_log_dtls_event(connP, "datagram sent", message);
+        }
     }
 
     return (length > INT_MAX) ? LWM2M_MBEDTLS_IO_ERROR : (int)length;
@@ -428,6 +541,12 @@ int lwm2m_connection_setup_dtls(lwm2m_connection_t *connP, const lwm2m_win32_mbe
     connP->timer_context = timer;
     connP->lwm2mH = config->lwm2mH;
     connP->handshake_done = 0;
+    connP->handshake_log_started = 0;
+    connP->handshake_last_wait = 0;
+    connP->handshake_start_ms = 0ULL;
+    connP->handshake_wait_count = 0U;
+    connP->handshake_timeout_count = 0U;
+    connP->handshake_verify_count = 0U;
 
     return 0;
 }
@@ -459,6 +578,92 @@ static void prv_clear_incoming(lwm2m_connection_t *connP)
     connP->incoming_offset = 0;
 }
 
+static void prv_log_dtls_handshake_start(lwm2m_connection_t *connP)
+{
+    if (connP->handshake_log_started != 0)
+    {
+        return;
+    }
+
+    connP->handshake_log_started = 1;
+    connP->handshake_last_wait = 0;
+    connP->handshake_start_ms = GetTickCount64();
+    connP->handshake_wait_count = 0U;
+    connP->handshake_timeout_count = 0U;
+    connP->handshake_verify_count = 0U;
+    prv_log_dtls_event(connP, "handshake start", "mode=PSK role=server");
+}
+
+static void prv_log_dtls_handshake_wait(lwm2m_connection_t *connP, int ret)
+{
+    char message[128];
+
+    connP->handshake_wait_count++;
+    if (ret == MBEDTLS_ERR_SSL_TIMEOUT)
+    {
+        connP->handshake_timeout_count++;
+    }
+
+    if (connP->handshake_last_wait == ret)
+    {
+        return;
+    }
+
+    connP->handshake_last_wait = ret;
+    (void)snprintf(message, sizeof(message), "reason=%s wait_count=%u timeout_count=%u verify_count=%u",
+                   prv_dtls_wait_reason(ret), connP->handshake_wait_count, connP->handshake_timeout_count,
+                   connP->handshake_verify_count);
+    prv_log_dtls_event(connP, "handshake wait", message);
+}
+
+static void prv_log_dtls_handshake_verify(lwm2m_connection_t *connP)
+{
+    char message[128];
+
+    connP->handshake_verify_count++;
+    (void)snprintf(message, sizeof(message), "reason=HELLO_VERIFY_REQUIRED verify_count=%u",
+                   connP->handshake_verify_count);
+    prv_log_dtls_event(connP, "handshake verify", message);
+}
+
+static void prv_log_dtls_handshake_established(lwm2m_connection_t *connP)
+{
+    const char *cipher;
+    char message[192];
+
+    cipher = lwm2m_mbedtls_connection_get_ciphersuite(connP->dtls);
+    if (cipher == NULL)
+    {
+        cipher = "unknown";
+    }
+
+    (void)snprintf(message, sizeof(message), "cipher=%s duration=%llums wait_count=%u timeout_count=%u verify_count=%u",
+                   cipher, prv_dtls_elapsed_ms(connP), connP->handshake_wait_count, connP->handshake_timeout_count,
+                   connP->handshake_verify_count);
+    prv_log_dtls_event(connP, "handshake established", message);
+}
+
+static void prv_log_dtls_handshake_failed(lwm2m_connection_t *connP, int ret)
+{
+    char message[160];
+    unsigned int code = ret < 0 ? (unsigned int)(-ret) : (unsigned int)ret;
+    const char *prefix = ret < 0 ? "-0x" : "0x";
+
+    (void)snprintf(message, sizeof(message),
+                   "ret=%s%04X duration=%llums wait_count=%u timeout_count=%u verify_count=%u", prefix, code,
+                   prv_dtls_elapsed_ms(connP), connP->handshake_wait_count, connP->handshake_timeout_count,
+                   connP->handshake_verify_count);
+    prv_log_dtls_event(connP, "handshake failed", message);
+}
+
+static void prv_log_dtls_application_data(lwm2m_connection_t *connP, const char *event, size_t length)
+{
+    char message[64];
+
+    (void)snprintf(message, sizeof(message), "bytes=%zu", length);
+    prv_log_dtls_event(connP, event, message);
+}
+
 static int prv_drive_handshake(lwm2m_connection_t *connP)
 {
     int ret;
@@ -468,22 +673,27 @@ static int prv_drive_handshake(lwm2m_connection_t *connP)
         return 0;
     }
 
+    prv_log_dtls_handshake_start(connP);
     ret = lwm2m_mbedtls_connection_handshake(connP->dtls);
     if (ret == 0)
     {
         connP->handshake_done = 1;
+        prv_log_dtls_handshake_established(connP);
         return 0;
     }
     if (ret == MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED)
     {
+        prv_log_dtls_handshake_verify(connP);
         ret = lwm2m_mbedtls_connection_reset(connP->dtls);
         return ret == 0 ? MBEDTLS_ERR_SSL_WANT_READ : ret;
     }
     if (prv_is_retryable_dtls_result(ret))
     {
+        prv_log_dtls_handshake_wait(connP, ret);
         return 0;
     }
 
+    prv_log_dtls_handshake_failed(connP, ret);
     return ret;
 }
 
@@ -529,6 +739,7 @@ int lwm2m_connection_handle_packet(lwm2m_connection_t *connP, uint8_t *buffer, s
             ret = lwm2m_mbedtls_connection_read(connP->dtls, plain, sizeof(plain));
             if (ret > 0)
             {
+                prv_log_dtls_application_data(connP, "application data received", (size_t)ret);
                 prv_log_coap_packet("inbound", plain, (size_t)ret);
                 lwm2m_handle_packet(connP->lwm2mH, plain, (size_t)ret, connP->dtls);
             }
@@ -549,10 +760,16 @@ int lwm2m_connection_send(lwm2m_connection_t *connP, uint8_t *buffer, size_t len
         return -1;
     }
 
-    prv_log_coap_packet("outbound", buffer, length);
     ret = lwm2m_mbedtls_connection_write(connP->dtls, buffer, length);
 
-    return ret == (int)length ? 0 : -1;
+    if (ret == (int)length)
+    {
+        prv_log_dtls_application_data(connP, "application data sent", length);
+        prv_log_coap_packet("outbound", buffer, length);
+        return 0;
+    }
+
+    return -1;
 }
 
 int lwm2m_connection_rehandshake(lwm2m_connection_t *connP, bool sendCloseNotify)
@@ -573,6 +790,12 @@ int lwm2m_connection_rehandshake(lwm2m_connection_t *connP, bool sendCloseNotify
     if (ret == 0)
     {
         connP->handshake_done = 0;
+        connP->handshake_log_started = 0;
+        connP->handshake_last_wait = 0;
+        connP->handshake_start_ms = 0ULL;
+        connP->handshake_wait_count = 0U;
+        connP->handshake_timeout_count = 0U;
+        connP->handshake_verify_count = 0U;
     }
 
     return ret;
@@ -611,12 +834,14 @@ uint8_t lwm2m_buffer_send(void *sessionH, uint8_t *buffer, size_t length, void *
         return COAP_500_INTERNAL_SERVER_ERROR;
     }
 
-    prv_log_coap_packet("outbound", buffer, length);
     ret = lwm2m_mbedtls_connection_write(connP, buffer, length);
     if (ret != (int)length)
     {
         return COAP_500_INTERNAL_SERVER_ERROR;
     }
+
+    prv_log_debugview("[I] [DTLS] application data sent: peer=session:%p bytes=%zu\r\n", (void *)connP, length);
+    prv_log_coap_packet("outbound", buffer, length);
 
     return COAP_NO_ERROR;
 }

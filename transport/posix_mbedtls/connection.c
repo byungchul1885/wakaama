@@ -100,7 +100,7 @@ static void prv_log_sent_bytes(const lwm2m_connection_t *connP, size_t sent)
         return;
     }
 
-    fprintf(stderr, "%zu bytes sent to [%s]:%hu\r\n", sent, addrBuffer, ntohs(port));
+    fprintf(stderr, "[DTLS] datagram sent: peer=[%s]:%hu bytes=%zu\r\n", addrBuffer, ntohs(port), sent);
     fflush(stderr);
 }
 
@@ -242,6 +242,14 @@ static void prv_log_dtls_application_data_sent(const lwm2m_connection_t *connP, 
     prv_log_dtls_handshake_event(connP, "application data sent", message);
 }
 
+static void prv_log_dtls_application_data_received(const lwm2m_connection_t *connP, size_t length)
+{
+    char message[64];
+
+    (void)snprintf(message, sizeof(message), "bytes=%zu", length);
+    prv_log_dtls_handshake_event(connP, "application data received", message);
+}
+
 static void prv_log_dtls_handshake_start(lwm2m_connection_t *connP)
 {
     if (connP->handshake_log_started != 0)
@@ -297,10 +305,11 @@ static void prv_log_dtls_handshake_established(lwm2m_connection_t *connP)
 static void prv_log_dtls_handshake_failed(lwm2m_connection_t *connP, int ret)
 {
     char message[128];
+    unsigned int code = ret < 0 ? (unsigned int)(-ret) : (unsigned int)ret;
+    const char *prefix = ret < 0 ? "-0x" : "0x";
 
-    snprintf(message, sizeof(message), "ret=-0x%04X duration=%llums wait_count=%u timeout_count=%u",
-             ret < 0 ? -ret : ret, prv_dtls_elapsed_ms(connP), connP->handshake_wait_count,
-             connP->handshake_timeout_count);
+    snprintf(message, sizeof(message), "ret=%s%04X duration=%llums wait_count=%u timeout_count=%u", prefix, code,
+             prv_dtls_elapsed_ms(connP), connP->handshake_wait_count, connP->handshake_timeout_count);
     prv_log_dtls_handshake_event(connP, "handshake failed", message);
 }
 
@@ -1066,6 +1075,7 @@ int lwm2m_connection_handle_packet(lwm2m_connection_t *connP, uint8_t *buffer, s
             ret = lwm2m_mbedtls_connection_read(connP->dtls, plain, sizeof(plain));
             if (ret > 0)
             {
+                prv_log_dtls_application_data_received(connP, (size_t)ret);
                 lwm2m_handle_packet(connP->lwm2mH, plain, (size_t)ret, connP);
             }
         } while (ret > 0);

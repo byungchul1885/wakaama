@@ -1471,7 +1471,7 @@ int main(int argc, char *argv[]) {
                         inet_ntop(saddr->sin6_family, &saddr->sin6_addr, s, INET6_ADDRSTRLEN);
                         port = saddr->sin6_port;
                     }
-                    fprintf(stderr, "%zd bytes received from [%s]:%hu\r\n", numBytes, s, ntohs(port));
+                    fprintf(stderr, "[DTLS] datagram received: peer=[%s]:%hu bytes=%zd\r\n", s, ntohs(port), numBytes);
 
                     /*
                      * Display it in the STDERR

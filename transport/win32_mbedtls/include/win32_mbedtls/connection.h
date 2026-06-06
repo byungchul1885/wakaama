@@ -21,6 +21,7 @@
 #include <liblwm2m.h>
 #include <mbedtls_transport/connection.h>
 
+#include <stdint.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -53,6 +54,12 @@ typedef struct _lwm2m_connection_t {
     lwm2m_context_t *lwm2mH;
     lwm2m_mbedtls_connection_t *dtls;
     int handshake_done;
+    int handshake_log_started;
+    int handshake_last_wait;
+    uint64_t handshake_start_ms;
+    unsigned int handshake_wait_count;
+    unsigned int handshake_timeout_count;
+    unsigned int handshake_verify_count;
     const uint8_t *incoming_buffer;
     size_t incoming_length;
     size_t incoming_offset;

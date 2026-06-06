@@ -93,7 +93,7 @@ set(WAKAAMA_TRANSPORT
     NONE
     CACHE STRING "The transport layer implementation"
 )
-set_property(CACHE WAKAAMA_TRANSPORT PROPERTY STRINGS NONE POSIX_UDP TINYDTLS WIN32_UDP MBEDTLS WIN32_MBEDTLS)
+set_property(CACHE WAKAAMA_TRANSPORT PROPERTY STRINGS NONE POSIX_UDP TINYDTLS MBEDTLS WIN32_MBEDTLS)
 
 set(WAKAAMA_MBEDTLS_ROOT
     ""
@@ -328,16 +328,6 @@ if(WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP")
     target_compile_definitions(wakaama_transport_posix_udp PRIVATE _POSIX_C_SOURCE=200809)
 endif()
 
-if(WAKAAMA_TRANSPORT STREQUAL "WIN32_UDP")
-    # Transport UDP (Win32 Winsock) implementation library
-    add_library(wakaama_transport_win32_udp OBJECT)
-    target_sources(wakaama_transport_win32_udp PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/win32_udp/connection.c)
-    target_include_directories(wakaama_transport_win32_udp PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/transport/win32_udp/include)
-    target_include_directories(wakaama_transport_win32_udp PRIVATE ${WAKAAMA_TOP_LEVEL_DIRECTORY}/include)
-    target_compile_definitions(wakaama_transport_win32_udp PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(wakaama_transport_win32_udp PUBLIC ws2_32)
-endif()
-
 if(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS" OR WAKAAMA_TRANSPORT STREQUAL "WIN32_MBEDTLS")
     find_package(
         MbedTLS CONFIG QUIET
@@ -497,8 +487,6 @@ target_include_directories(wakaama_static PUBLIC ${WAKAAMA_TOP_LEVEL_DIRECTORY}/
 
 if(WAKAAMA_TRANSPORT STREQUAL "POSIX_UDP")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_posix_udp)
-elseif(WAKAAMA_TRANSPORT STREQUAL "WIN32_UDP")
-    target_link_libraries(wakaama_static PUBLIC wakaama_transport_win32_udp ws2_32)
 elseif(WAKAAMA_TRANSPORT STREQUAL "MBEDTLS")
     target_link_libraries(wakaama_static PUBLIC wakaama_transport_mbedtls)
     if(TARGET wakaama_transport_posix_mbedtls)

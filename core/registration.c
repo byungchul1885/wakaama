@@ -609,7 +609,11 @@ static void prv_handleRegistrationAttemptFailure(lwm2m_context_t *contextP, lwm2
             }
             else
             {
+#ifdef SMGW_LWM2M_REGISTRATION_RETRY_FIXED_INTERVAL
+                targetP->registration = lwm2m_gettime() + attemptDelay;
+#else
                 targetP->registration = lwm2m_gettime() + attemptDelay * (1 << (targetP->attempt - 1));
+#endif
                 targetP->status = STATE_REG_HOLD_OFF;
                 LOG_ARG_DBG("%d Registration attempt failed", targetP->shortID);
             }

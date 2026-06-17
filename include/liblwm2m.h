@@ -747,6 +747,9 @@ typedef struct _lwm2m_transaction_ lwm2m_transaction_t;
 
 typedef void (*lwm2m_transaction_callback_t) (lwm2m_context_t * contextP, lwm2m_transaction_t * transacP, void * message);
 
+#define LWM2M_COAP_TOKEN_MAX_LEN 8
+#define LWM2M_DEVICE_TOKEN_PREFIX 0xFF
+
 struct _lwm2m_transaction_
 {
     lwm2m_transaction_t * next;  // matches lwm2m_list_t::next
@@ -857,6 +860,10 @@ struct _lwm2m_context_
     lwm2m_server_t *     serverList;
     lwm2m_object_t *     objectList;
     lwm2m_observed_t *   observedList;
+#ifndef LWM2M_VERSION_1_0
+    uint8_t              currentRequestToken[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t               currentRequestTokenLen;
+#endif
 #ifdef LWM2M_BOOTSTRAP
     lwm2m_bootstrap_command_callback_t bootstrapCommandCallback;
     void *                            bootstrapCommandUserData;
@@ -931,6 +938,10 @@ int lwm2m_request_bootstrap(lwm2m_context_t *contextP);
 // server is successful.
 int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
                lwm2m_transaction_callback_t callback, void *userData);
+int lwm2m_send_with_token(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
+                          const uint8_t *token, size_t tokenLen, lwm2m_transaction_callback_t callback,
+                          void *userData);
+size_t lwm2m_get_current_request_token(lwm2m_context_t *contextP, uint8_t *buffer, size_t bufferLen);
 #endif
 #endif
 

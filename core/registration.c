@@ -734,6 +734,7 @@ static uint8_t prv_register(lwm2m_context_t * contextP,
     uint8_t * payload;
     int payload_length;
     lwm2m_transaction_t * transaction;
+    uint8_t token[COAP_TOKEN_LEN];
 
     payload_length = object_getRegisterPayloadBufferLength(contextP);
     if(payload_length == 0) return COAP_500_INTERNAL_SERVER_ERROR;
@@ -777,7 +778,8 @@ static uint8_t prv_register(lwm2m_context_t * contextP,
         return COAP_503_SERVICE_UNAVAILABLE;
     }
 
-    transaction = transaction_new(server->sessionH, COAP_POST, NULL, NULL, contextP->nextMID++, 4, NULL);
+    transaction_generate_device_token(token);
+    transaction = transaction_new(server->sessionH, COAP_POST, NULL, NULL, contextP->nextMID++, COAP_TOKEN_LEN, token);
     if (transaction == NULL)
     {
         lwm2m_free(payload);
@@ -873,10 +875,12 @@ static int prv_updateRegistration(lwm2m_context_t * contextP,
                                   bool withObjects)
 {
     lwm2m_transaction_t * transaction;
+    uint8_t token[COAP_TOKEN_LEN];
     uint8_t * payload = NULL;
     int payload_length;
 
-    transaction = transaction_new(server->sessionH, COAP_POST, NULL, NULL, contextP->nextMID++, 4, NULL);
+    transaction_generate_device_token(token);
+    transaction = transaction_new(server->sessionH, COAP_POST, NULL, NULL, contextP->nextMID++, COAP_TOKEN_LEN, token);
     if (transaction == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
 
     coap_set_header_uri_path(transaction->message, server->location);
@@ -1157,6 +1161,7 @@ void registration_deregister(lwm2m_context_t * contextP,
                              lwm2m_server_t * serverP)
 {
     lwm2m_transaction_t * transaction;
+    uint8_t token[COAP_TOKEN_LEN];
 
     LOG_ARG_DBG("State: %s, %d status: %s", STR_STATE(contextP->state), serverP->shortID, STR_STATUS(serverP->status));
 
@@ -1169,7 +1174,8 @@ void registration_deregister(lwm2m_context_t * contextP,
         return;
     }
 
-    transaction = transaction_new(serverP->sessionH, COAP_DELETE, NULL, NULL, contextP->nextMID++, 4, NULL);
+    transaction_generate_device_token(token);
+    transaction = transaction_new(serverP->sessionH, COAP_DELETE, NULL, NULL, contextP->nextMID++, COAP_TOKEN_LEN, token);
     if (transaction == NULL) return;
 
     coap_set_header_uri_path(transaction->message, serverP->location);

@@ -115,6 +115,41 @@ Contains code snippets which are:
 #define COAP_RESPONSE_TIMEOUT_TICKS         (CLOCK_SECOND * COAP_RESPONSE_TIMEOUT)
 #define COAP_RESPONSE_TIMEOUT_BACKOFF_MASK  ((CLOCK_SECOND * COAP_RESPONSE_TIMEOUT * (COAP_RESPONSE_RANDOM_FACTOR - 1)) + 1.5)
 
+static uint8_t prv_randomByte(void)
+{
+    return (uint8_t)(rand() & 0xFF);
+}
+
+void transaction_generate_device_token(uint8_t token[COAP_TOKEN_LEN])
+{
+    size_t i;
+
+    if (token == NULL) return;
+
+    token[0] = LWM2M_DEVICE_TOKEN_PREFIX;
+    for (i = 1; i < COAP_TOKEN_LEN; i++)
+    {
+        token[i] = prv_randomByte();
+    }
+}
+
+void transaction_generate_server_token(uint8_t token[COAP_TOKEN_LEN], uint8_t token_len)
+{
+    uint8_t length = token_len > COAP_TOKEN_LEN ? COAP_TOKEN_LEN : token_len;
+    uint8_t i;
+
+    if (token == NULL) return;
+
+    for (i = 0; i < length; i++)
+    {
+        token[i] = prv_randomByte();
+    }
+    if (length > 0 && token[0] == LWM2M_DEVICE_TOKEN_PREFIX)
+    {
+        token[0] = 0xFE;
+    }
+}
+
 static int prv_checkFinished(lwm2m_transaction_t * transacP,
                              coap_packet_t * receivedMessage)
 {
@@ -221,18 +256,8 @@ lwm2m_transaction_t * transaction_new(void * sessionH,
             coap_set_header_token(transacP->message, token, token_len);
         }
         else {
-            // generate a token
             uint8_t temp_token[COAP_TOKEN_LEN];
-            time_t tv_sec = lwm2m_gettime();
-
-            // initialize first 6 bytes, leave the last 2 random
-            temp_token[0] = mID;
-            temp_token[1] = mID >> 8;
-            temp_token[2] = tv_sec;
-            temp_token[3] = tv_sec >> 8;
-            temp_token[4] = tv_sec >> 16;
-            temp_token[5] = tv_sec >> 24;
-            // use just the provided amount of bytes
+            transaction_generate_server_token(temp_token, token_len);
             coap_set_header_token(transacP->message, temp_token, token_len);
         }
     }

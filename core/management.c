@@ -333,7 +333,28 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                 }
                 else
                 {
+#ifndef LWM2M_VERSION_1_0
+                    uint8_t previousToken[LWM2M_COAP_TOKEN_MAX_LEN];
+                    size_t previousTokenLen = contextP->currentRequestTokenLen;
+
+                    if (previousTokenLen > 0)
+                    {
+                        memcpy(previousToken, contextP->currentRequestToken, previousTokenLen);
+                    }
+                    contextP->currentRequestTokenLen = message->token_len;
+                    if (message->token_len > 0)
+                    {
+                        memcpy(contextP->currentRequestToken, message->token, message->token_len);
+                    }
+#endif
                     result = object_execute(contextP, uriP, message->payload, message->payload_len);
+#ifndef LWM2M_VERSION_1_0
+                    contextP->currentRequestTokenLen = previousTokenLen;
+                    if (previousTokenLen > 0)
+                    {
+                        memcpy(contextP->currentRequestToken, previousToken, previousTokenLen);
+                    }
+#endif
                 }
             }
             else

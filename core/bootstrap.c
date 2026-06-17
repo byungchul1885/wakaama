@@ -335,10 +335,13 @@ static void prv_requestBootstrap(lwm2m_context_t * context,
     if (bootstrapServer->sessionH != NULL)
     {
         lwm2m_transaction_t * transaction = NULL;
+        uint8_t token[COAP_TOKEN_LEN];
 
         LOG_DBG("Bootstrap server connection opened");
 
-        transaction = transaction_new(bootstrapServer->sessionH, COAP_POST, NULL, NULL, context->nextMID++, 4, NULL);
+        transaction_generate_device_token(token);
+        transaction = transaction_new(bootstrapServer->sessionH, COAP_POST, NULL, NULL, context->nextMID++,
+                                      COAP_TOKEN_LEN, token);
         if (transaction == NULL)
         {
             bootstrapServer->status = STATE_BS_FAILING;

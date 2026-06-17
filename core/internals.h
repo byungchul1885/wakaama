@@ -256,6 +256,8 @@ typedef bool (*senml_convertValue)(const senml_record_t *recordP, lwm2m_data_t *
 #endif
 
 // defined in transaction.c
+void transaction_generate_device_token(uint8_t token[COAP_TOKEN_LEN]);
+void transaction_generate_server_token(uint8_t token[COAP_TOKEN_LEN], uint8_t token_len);
 lwm2m_transaction_t * transaction_new(void * sessionH, coap_method_t method, char * altPath, lwm2m_uri_t * uriP, uint16_t mID, uint8_t token_len, uint8_t* token);
 int transaction_send(lwm2m_context_t * contextP, lwm2m_transaction_t * transacP);
 void transaction_free(lwm2m_transaction_t * transacP);

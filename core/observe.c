@@ -846,8 +846,35 @@ void observe_step(lwm2m_context_t * contextP,
 }
 
 #ifndef LWM2M_VERSION_1_0
-int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
-               lwm2m_transaction_callback_t callback, void *userData) {
+#if defined(LWM2M_SUPPORT_SENML_CBOR) || defined(LWM2M_SUPPORT_SENML_JSON)
+static size_t prv_prepareSendToken(lwm2m_context_t *contextP,
+                                   const uint8_t *token,
+                                   size_t tokenLen,
+                                   uint8_t preparedToken[COAP_TOKEN_LEN])
+{
+    if (tokenLen > COAP_TOKEN_LEN)
+    {
+        return 0;
+    }
+    if (token != NULL && tokenLen > 0)
+    {
+        memcpy(preparedToken, token, tokenLen);
+        return tokenLen;
+    }
+    if (contextP != NULL && contextP->currentRequestTokenLen > 0)
+    {
+        memcpy(preparedToken, contextP->currentRequestToken, contextP->currentRequestTokenLen);
+        return contextP->currentRequestTokenLen;
+    }
+
+    transaction_generate_device_token(preparedToken);
+    return COAP_TOKEN_LEN;
+}
+#endif
+
+static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
+                          const uint8_t *token, size_t tokenLen, lwm2m_transaction_callback_t callback,
+                          void *userData) {
 #if defined(LWM2M_SUPPORT_SENML_CBOR) || defined(LWM2M_SUPPORT_SENML_JSON)
     lwm2m_transaction_t *transactionP;
     lwm2m_server_t *targetP;
@@ -864,6 +891,8 @@ int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *u
     int length;
     size_t i;
     bool oneGood = false;
+    uint8_t preparedToken[COAP_TOKEN_LEN];
+    size_t preparedTokenLen;
 
     LOG_ARG_DBG("shortServerID: %d", shortServerID);
     for (i = 0; i < numUris; i++) {
@@ -876,6 +905,12 @@ int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *u
         if (!LWM2M_URI_IS_SET_INSTANCE(urisP + i) && LWM2M_URI_IS_SET_RESOURCE(urisP + i))
             return COAP_400_BAD_REQUEST;
     }
+
+    if (tokenLen > 0 && token == NULL)
+        return COAP_400_BAD_REQUEST;
+    preparedTokenLen = prv_prepareSendToken(contextP, token, tokenLen, preparedToken);
+    if (preparedTokenLen == 0)
+        return COAP_400_BAD_REQUEST;
 
     ret = object_readCompositeData(contextP, urisP, numUris, &size, &dataP);
     if (ret != COAP_205_CONTENT)
@@ -936,7 +971,8 @@ int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *u
         }
 
         LWM2M_URI_RESET(&uri);
-        transactionP = transaction_new(targetP->sessionH, COAP_POST, NULL, &uri, contextP->nextMID++, 0, NULL);
+        transactionP = transaction_new(targetP->sessionH, COAP_POST, NULL, &uri, contextP->nextMID++,
+                                       (uint8_t)preparedTokenLen, preparedToken);
         if (transactionP == NULL) {
             ret = COAP_500_INTERNAL_SERVER_ERROR;
             // Going to the next server likely won't fix this, just get out.
@@ -974,10 +1010,34 @@ int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *u
     (void)shortServerID;
     (void)urisP;
     (void)numUris;
+    (void)token;
+    (void)tokenLen;
     (void)callback;
     (void)userData;
     return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
 #endif
+}
+
+int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
+               lwm2m_transaction_callback_t callback, void *userData) {
+    return prv_lwm2m_send(contextP, shortServerID, urisP, numUris, NULL, 0, callback, userData);
+}
+
+int lwm2m_send_with_token(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
+                          const uint8_t *token, size_t tokenLen, lwm2m_transaction_callback_t callback,
+                          void *userData) {
+    return prv_lwm2m_send(contextP, shortServerID, urisP, numUris, token, tokenLen, callback, userData);
+}
+
+size_t lwm2m_get_current_request_token(lwm2m_context_t *contextP, uint8_t *buffer, size_t bufferLen) {
+    if (contextP == NULL)
+        return 0;
+    if (buffer != NULL && bufferLen >= contextP->currentRequestTokenLen && contextP->currentRequestTokenLen > 0)
+    {
+        memcpy(buffer, contextP->currentRequestToken, contextP->currentRequestTokenLen);
+    }
+
+    return contextP->currentRequestTokenLen;
 }
 #endif
 
@@ -1284,6 +1344,12 @@ int prv_lwm2m_observe(lwm2m_context_t * contextP,
     observationData->userData = userData;
     observationData->contextP = contextP;
 
+    if ((clientP->internalID >> 8) == LWM2M_DEVICE_TOKEN_PREFIX)
+    {
+        lwm2m_free(observationData);
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+
     token[0] = clientP->internalID >> 8;
     token[1] = clientP->internalID & 0xFF;
     token[2] = observationData->id >> 8;
@@ -1356,6 +1422,11 @@ int prv_lwm2m_observe_cancel(lwm2m_context_t * contextP,
         lwm2m_transaction_t * transactionP;
         cancellation_data_t * cancelP;
         uint8_t token[4];
+
+        if ((clientP->internalID >> 8) == LWM2M_DEVICE_TOKEN_PREFIX)
+        {
+            return COAP_500_INTERNAL_SERVER_ERROR;
+        }
 
         token[0] = clientP->internalID >> 8;
         token[1] = clientP->internalID & 0xFF;

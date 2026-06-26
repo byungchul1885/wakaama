@@ -1377,7 +1377,7 @@ uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, s
                     // Need to add a new resource
                     count = parentP->value.asChildren.count;
                     if (0 != lwm2m_data_append_one(&count, &parentP->value.asChildren.array, LWM2M_TYPE_UNDEFINED,
-                                                   uriP[i].instanceId)) {
+                                                   uriP[i].resourceId)) {
                         parentP->value.asChildren.count = count;
                         parentP = parentP->value.asChildren.array + count - 1;
 
@@ -1415,7 +1415,7 @@ uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, s
                     // Need to add a new resource instance
                     count = parentP->value.asChildren.count;
                     if (0 != lwm2m_data_append_one(&count, &parentP->value.asChildren.array, LWM2M_TYPE_UNDEFINED,
-                                                   uriP[i].instanceId)) {
+                                                   uriP[i].resourceInstanceId)) {
                         parentP->value.asChildren.count = count;
                         parentP = parentP->value.asChildren.array + count - 1;
                         memcpy(parentP, partialDataP->value.asChildren.array, sizeof(lwm2m_data_t));

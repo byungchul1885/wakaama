@@ -639,7 +639,7 @@ int tlv_serialize(bool isResourceInstance, int size, lwm2m_data_t *dataP, uint8_
         *bufferP = NULL;
     }
 
-    LOG_ARG_DBG("returning %u", length);
+    LOG_ARG_DBG("returning %d", length);
 
     return length;
 }

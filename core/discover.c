@@ -18,8 +18,9 @@
 
 #include "internals.h"
 
-#define PRV_LINK_BUFFER_SIZE  1024
+#include <limits.h>
 
+#define PRV_LINK_ITEM_BUFFER_SIZE  1024
 
 #define PRV_CONCAT_STR(buf, len, index, str, str_len)    \
     {                                                    \
@@ -30,6 +31,72 @@
 
 
 #ifdef LWM2M_CLIENT_MODE
+
+typedef struct
+{
+    uint8_t * data;
+    size_t length;
+    size_t capacity;
+} prv_link_buffer_t;
+
+static int prv_linkBufferReserve(prv_link_buffer_t * bufferP,
+                                 size_t additional)
+{
+    size_t required;
+    size_t capacity;
+    uint8_t * data;
+
+    if (bufferP == NULL) return -1;
+    if (additional > SIZE_MAX - bufferP->length) return -1;
+
+    required = bufferP->length + additional;
+    if (required <= bufferP->capacity) return 0;
+
+    capacity = bufferP->capacity == 0 ? PRV_LINK_ITEM_BUFFER_SIZE : bufferP->capacity;
+    while (capacity < required)
+    {
+        if (capacity > SIZE_MAX / 2) return -1;
+        capacity *= 2;
+    }
+
+    data = (uint8_t *)lwm2m_malloc(capacity);
+    if (data == NULL) return -1;
+    if (bufferP->data != NULL)
+    {
+        memcpy(data, bufferP->data, bufferP->length);
+        lwm2m_free(bufferP->data);
+    }
+
+    bufferP->data = data;
+    bufferP->capacity = capacity;
+    return 0;
+}
+
+static int prv_linkBufferAppend(prv_link_buffer_t * bufferP,
+                                const uint8_t * data,
+                                size_t length)
+{
+    if (bufferP == NULL || (data == NULL && length > 0)) return -1;
+    if (prv_linkBufferReserve(bufferP, length) != 0) return -1;
+    if (length > 0)
+    {
+        memcpy(bufferP->data + bufferP->length, data, length);
+        bufferP->length += length;
+    }
+    return 0;
+}
+
+static void prv_linkBufferFree(prv_link_buffer_t * bufferP)
+{
+    if (bufferP == NULL) return;
+    if (bufferP->data != NULL)
+    {
+        lwm2m_free(bufferP->data);
+    }
+    bufferP->data = NULL;
+    bufferP->length = 0;
+    bufferP->capacity = 0;
+}
 
 static lwm2m_attributes_t * prv_findAttributes(lwm2m_context_t * contextP,
                                                lwm2m_uri_t * uriP,
@@ -163,12 +230,12 @@ static int prv_serializeLinkData(lwm2m_context_t * contextP,
                                  lwm2m_uri_t * parentUriP,
                                  uint8_t * parentUriStr,
                                  size_t parentUriLen,
-                                 uint8_t * buffer,
-                                 size_t bufferLen)
+                                 prv_link_buffer_t * bufferP)
 {
-    int head;
+    size_t head;
     int res;
     lwm2m_uri_t uri;
+    uint8_t item[PRV_LINK_ITEM_BUFFER_SIZE];
 
     head = 0;
 
@@ -184,43 +251,43 @@ static int prv_serializeLinkData(lwm2m_context_t * contextP,
     case LWM2M_TYPE_OBJECT_LINK:
     case LWM2M_TYPE_CORE_LINK:
     case LWM2M_TYPE_MULTIPLE_RESOURCE:
-        if (bufferLen < LINK_ITEM_START_SIZE) return -1;
-        memcpy(buffer + head, LINK_ITEM_START, LINK_ITEM_START_SIZE);
+        if (sizeof(item) < LINK_ITEM_START_SIZE) return -1;
+        memcpy(item + head, LINK_ITEM_START, LINK_ITEM_START_SIZE);
         head = LINK_ITEM_START_SIZE;
 
         if (parentUriLen > 0)
         {
-            if (bufferLen - head < parentUriLen) return -1;
-            memcpy(buffer + head, parentUriStr, parentUriLen);
+            if (sizeof(item) - head < parentUriLen) return -1;
+            memcpy(item + head, parentUriStr, parentUriLen);
             head += parentUriLen;
         }
 
-        if (bufferLen - head < LINK_URI_SEPARATOR_SIZE) return -1;
-        memcpy(buffer + head, LINK_URI_SEPARATOR, LINK_URI_SEPARATOR_SIZE);
+        if (sizeof(item) - head < LINK_URI_SEPARATOR_SIZE) return -1;
+        memcpy(item + head, LINK_URI_SEPARATOR, LINK_URI_SEPARATOR_SIZE);
         head += LINK_URI_SEPARATOR_SIZE;
 
-        res = utils_intToText(tlvP->id, buffer + head, bufferLen - head);
+        res = utils_intToText(tlvP->id, item + head, sizeof(item) - head);
         if (res <= 0) return -1;
         head += res;
 
         if (tlvP->type == LWM2M_TYPE_MULTIPLE_RESOURCE)
         {
-            if (bufferLen - head < LINK_ITEM_DIM_START_SIZE) return -1;
-            memcpy(buffer + head, LINK_ITEM_DIM_START, LINK_ITEM_DIM_START_SIZE);
+            if (sizeof(item) - head < LINK_ITEM_DIM_START_SIZE) return -1;
+            memcpy(item + head, LINK_ITEM_DIM_START, LINK_ITEM_DIM_START_SIZE);
             head += LINK_ITEM_DIM_START_SIZE;
 
-            res = utils_intToText(tlvP->value.asChildren.count, buffer + head, bufferLen - head);
+            res = utils_intToText(tlvP->value.asChildren.count, item + head, sizeof(item) - head);
             if (res <= 0) return -1;
             head += res;
 
-            if (bufferLen - head < LINK_ITEM_ATTR_END_SIZE) return -1;
-            memcpy(buffer + head, LINK_ITEM_ATTR_END, LINK_ITEM_ATTR_END_SIZE);
+            if (sizeof(item) - head < LINK_ITEM_ATTR_END_SIZE) return -1;
+            memcpy(item + head, LINK_ITEM_ATTR_END, LINK_ITEM_ATTR_END_SIZE);
             head += LINK_ITEM_ATTR_END_SIZE;
         }
         else
         {
-            if (bufferLen - head < LINK_ITEM_END_SIZE) return -1;
-            memcpy(buffer + head, LINK_ITEM_END, LINK_ITEM_END_SIZE);
+            if (sizeof(item) - head < LINK_ITEM_END_SIZE) return -1;
+            memcpy(item + head, LINK_ITEM_END, LINK_ITEM_END_SIZE);
             head += LINK_ITEM_END_SIZE;
         }
 
@@ -228,10 +295,11 @@ static int prv_serializeLinkData(lwm2m_context_t * contextP,
         {
             memcpy(&uri, parentUriP, sizeof(lwm2m_uri_t));
             uri.resourceId = tlvP->id;
-            res = prv_serializeAttributes(contextP, &uri, serverP, objectParamP, buffer, head - 1, bufferLen);
+            res = prv_serializeAttributes(contextP, &uri, serverP, objectParamP, item, head - 1, sizeof(item));
             if (res < 0) return -1;    // careful, 0 is valid
             if (res > 0) head += res;
         }
+        if (prv_linkBufferAppend(bufferP, item, head) != 0) return -1;
         break;
 
     case LWM2M_TYPE_OBJECT_INSTANCE:
@@ -263,21 +331,28 @@ static int prv_serializeLinkData(lwm2m_context_t * contextP,
         uri.instanceId = tlvP->id;
 
         head = 0;
-        PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ITEM_START, LINK_ITEM_START_SIZE);
-        PRV_CONCAT_STR(buffer, bufferLen, head, uriStr, uriLen);
-        PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ITEM_END, LINK_ITEM_END_SIZE);
+        PRV_CONCAT_STR(item, sizeof(item), head, LINK_ITEM_START, LINK_ITEM_START_SIZE);
+        PRV_CONCAT_STR(item, sizeof(item), head, uriStr, uriLen);
+        PRV_CONCAT_STR(item, sizeof(item), head, LINK_ITEM_END, LINK_ITEM_END_SIZE);
         if (serverP != NULL)
         {
-            res = prv_serializeAttributes(contextP, &uri, serverP, NULL, buffer, head - 1, bufferLen);
+            res = prv_serializeAttributes(contextP, &uri, serverP, NULL, item, head - 1, sizeof(item));
             if (res < 0) return -1;    // careful, 0 is valid
             if (res == 0) head = 0;    // rewind
             else head += res;
         }
+        if (head > 0 && prv_linkBufferAppend(bufferP, item, head) != 0) return -1;
         for (index = 0; index < tlvP->value.asChildren.count; index++)
         {
-            res = prv_serializeLinkData(contextP, tlvP->value.asChildren.array + index, serverP, objectParamP, &uri, uriStr, uriLen, buffer + head, bufferLen - head);
-            if (res < 0) return -1;
-            head += res;
+            res = prv_serializeLinkData(contextP,
+                                        tlvP->value.asChildren.array + index,
+                                        serverP,
+                                        objectParamP,
+                                        &uri,
+                                        uriStr,
+                                        uriLen,
+                                        bufferP);
+            if (res != 0) return -1;
         }
     }
     break;
@@ -287,7 +362,7 @@ static int prv_serializeLinkData(lwm2m_context_t * contextP,
         return -1;
     }
 
-    return head;
+    return 0;
 }
 
 int discover_serialize(lwm2m_context_t * contextP,
@@ -297,7 +372,8 @@ int discover_serialize(lwm2m_context_t * contextP,
                        lwm2m_data_t * dataP,
                        uint8_t ** bufferP)
 {
-    uint8_t bufferLink[PRV_LINK_BUFFER_SIZE];
+    prv_link_buffer_t bufferLink;
+    uint8_t item[PRV_LINK_ITEM_BUFFER_SIZE];
     uint8_t baseUriStr[URI_MAX_STRING_LEN];
     int baseUriLen;
     int index;
@@ -311,6 +387,7 @@ int discover_serialize(lwm2m_context_t * contextP,
     LOG_ARG_DBG("size: %d", size);
     LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
 
+    memset(&bufferLink, 0, sizeof(bufferLink));
     head = 0;
     LWM2M_URI_RESET(&parentUri);
     parentUri.objectId = uriP->objectId;
@@ -381,65 +458,71 @@ int discover_serialize(lwm2m_context_t * contextP,
 
         if (LWM2M_URI_IS_SET_INSTANCE(uriP))
         {
-            PRV_CONCAT_STR(bufferLink, PRV_LINK_BUFFER_SIZE, head, LINK_ITEM_START, LINK_ITEM_START_SIZE);
-            PRV_CONCAT_STR(bufferLink, PRV_LINK_BUFFER_SIZE, head, LINK_URI_SEPARATOR, LINK_URI_SEPARATOR_SIZE);
-            res = utils_intToText(uriP->objectId, bufferLink + head, PRV_LINK_BUFFER_SIZE - head);
-            if (res <= 0) return -1;
+            PRV_CONCAT_STR(item, sizeof(item), head, LINK_ITEM_START, LINK_ITEM_START_SIZE);
+            PRV_CONCAT_STR(item, sizeof(item), head, LINK_URI_SEPARATOR, LINK_URI_SEPARATOR_SIZE);
+            res = utils_intToText(uriP->objectId, item + head, sizeof(item) - head);
+            if (res <= 0) goto error;
             head += res;
-            PRV_CONCAT_STR(bufferLink, PRV_LINK_BUFFER_SIZE, head, LINK_URI_SEPARATOR, LINK_URI_SEPARATOR_SIZE);
-            res = utils_intToText(uriP->instanceId, bufferLink + head, PRV_LINK_BUFFER_SIZE - head);
-            if (res <= 0) return -1;
+            PRV_CONCAT_STR(item, sizeof(item), head, LINK_URI_SEPARATOR, LINK_URI_SEPARATOR_SIZE);
+            res = utils_intToText(uriP->instanceId, item + head, sizeof(item) - head);
+            if (res <= 0) goto error;
             head += res;
-            PRV_CONCAT_STR(bufferLink, PRV_LINK_BUFFER_SIZE, head, LINK_ITEM_END, LINK_ITEM_END_SIZE);
+            PRV_CONCAT_STR(item, sizeof(item), head, LINK_ITEM_END, LINK_ITEM_END_SIZE);
             parentUri.instanceId = uriP->instanceId;
             if (serverP != NULL)
             {
-                res = prv_serializeAttributes(contextP, &parentUri, serverP, NULL, bufferLink, head - 1, PRV_LINK_BUFFER_SIZE);
-                if (res < 0) return -1;    // careful, 0 is valid
+                res = prv_serializeAttributes(contextP, &parentUri, serverP, NULL, item, head - 1, sizeof(item));
+                if (res < 0) goto error;    // careful, 0 is valid
             }
             else
             {
                 res = 0;
             }
             head += res;
+            if (prv_linkBufferAppend(&bufferLink, item, head) != 0) goto error;
         }
         else
         {
-            PRV_CONCAT_STR(bufferLink, PRV_LINK_BUFFER_SIZE, head, LINK_ITEM_START, LINK_ITEM_START_SIZE);
-            PRV_CONCAT_STR(bufferLink, PRV_LINK_BUFFER_SIZE, head, LINK_URI_SEPARATOR, LINK_URI_SEPARATOR_SIZE);
-            res = utils_intToText(uriP->objectId, bufferLink + head, PRV_LINK_BUFFER_SIZE - head);
-            if (res <= 0) return -1;
+            PRV_CONCAT_STR(item, sizeof(item), head, LINK_ITEM_START, LINK_ITEM_START_SIZE);
+            PRV_CONCAT_STR(item, sizeof(item), head, LINK_URI_SEPARATOR, LINK_URI_SEPARATOR_SIZE);
+            res = utils_intToText(uriP->objectId, item + head, sizeof(item) - head);
+            if (res <= 0) goto error;
             head += res;
-            PRV_CONCAT_STR(bufferLink, PRV_LINK_BUFFER_SIZE, head, LINK_ITEM_END, LINK_ITEM_END_SIZE);
+            PRV_CONCAT_STR(item, sizeof(item), head, LINK_ITEM_END, LINK_ITEM_END_SIZE);
 
             if (serverP != NULL)
             {
-                res = prv_serializeAttributes(contextP, &parentUri, serverP, NULL, bufferLink, head - 1, PRV_LINK_BUFFER_SIZE);
-                if (res < 0) return -1;    // careful, 0 is valid
+                res = prv_serializeAttributes(contextP, &parentUri, serverP, NULL, item, head - 1, sizeof(item));
+                if (res < 0) goto error;    // careful, 0 is valid
                 head += res;
             }
+            if (prv_linkBufferAppend(&bufferLink, item, head) != 0) goto error;
         }
     }
 
     baseUriLen = lwm2m_uriToString(uriP, baseUriStr, URI_MAX_STRING_LEN, NULL);
-    if (baseUriLen < 0) return -1;
+    if (baseUriLen < 0) goto error;
 
-    for (index = 0; index < size && head < PRV_LINK_BUFFER_SIZE; index++)
+    for (index = 0; index < size; index++)
     {
-        res = prv_serializeLinkData(contextP, dataP + index, serverP, paramP, uriP, baseUriStr, baseUriLen, bufferLink + head, PRV_LINK_BUFFER_SIZE - head);
-        if (res < 0) return -1;
-        head += res;
+        res = prv_serializeLinkData(contextP, dataP + index, serverP, paramP, uriP, baseUriStr, baseUriLen, &bufferLink);
+        if (res != 0) goto error;
     }
 
-    if (head > 0)
+    if (bufferLink.length > 0)
     {
-        head -= 1;
+        bufferLink.length -= 1;
 
-        *bufferP = (uint8_t *)lwm2m_malloc(head);
-        if (*bufferP == NULL) return 0;
-        memcpy(*bufferP, bufferLink, head);
+        if (bufferLink.length > INT_MAX) goto error;
+        *bufferP = bufferLink.data;
+        return (int)bufferLink.length;
     }
 
-    return (int)head;
+    prv_linkBufferFree(&bufferLink);
+    return 0;
+
+error:
+    prv_linkBufferFree(&bufferLink);
+    return -1;
 }
 #endif

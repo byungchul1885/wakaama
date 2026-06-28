@@ -26,6 +26,7 @@ option(WAKAAMA_DATA_OLD_CONTENT_FORMAT "Support the deprecated content format va
 
 # CoAP
 option(WAKAAMA_COAP_RAW_BLOCK1_REQUESTS "Pass each unprocessed block 1 payload to the application" OFF)
+option(WAKAAMA_COAP_RAW_BLOCK2_READS "Allow objects to generate block-wise read responses directly" OFF)
 
 set(WAKAAMA_COAP_DEFAULT_BLOCK_SIZE
     1024
@@ -196,6 +197,9 @@ endfunction()
 function(set_coap_defines)
     if(WAKAAMA_COAP_RAW_BLOCK1_REQUESTS)
         target_compile_definitions(${target} PUBLIC LWM2M_RAW_BLOCK1_REQUESTS)
+    endif()
+    if(WAKAAMA_COAP_RAW_BLOCK2_READS)
+        target_compile_definitions(${target} PUBLIC LWM2M_RAW_BLOCK2_READS)
     endif()
 
     target_compile_definitions(${target} PUBLIC LWM2M_COAP_DEFAULT_BLOCK_SIZE=${WAKAAMA_COAP_DEFAULT_BLOCK_SIZE})

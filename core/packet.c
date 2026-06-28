@@ -639,7 +639,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             {
                 /* Save original payload pointer for later freeing. Payload in response may be updated. */
                 uint8_t *payload = response->payload;
-                if ( IS_OPTION(message, COAP_OPTION_BLOCK2) )
+                if (IS_OPTION(message, COAP_OPTION_BLOCK2) && !IS_OPTION(response, COAP_OPTION_BLOCK2))
                 {
                     /* get offset for blockwise transfers */
                     if (coap_get_header_block2(message, &block_num, NULL, &block_size, &block_offset))
@@ -661,7 +661,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                         coap_set_header_block2(response, block_num, response->payload_len - block_offset > block_size, block_size);
                         coap_set_payload(response, response->payload+block_offset, MIN(response->payload_len - block_offset, block_size));
                     } /* if (valid offset) */
-                } else if (response->payload_len > lwm2m_get_coap_block_size()) {
+                } else if (!IS_OPTION(response, COAP_OPTION_BLOCK2) && response->payload_len > lwm2m_get_coap_block_size()) {
                     coap_set_header_block2(response, 0, response->payload_len > lwm2m_get_coap_block_size(),
                                            lwm2m_get_coap_block_size());
                     coap_set_payload(response, response->payload, lwm2m_get_coap_block_size());

@@ -516,6 +516,9 @@ typedef uint8_t (*lwm2m_raw_block1_create_callback_t) (lwm2m_context_t * context
 typedef uint8_t (*lwm2m_raw_block1_write_callback_t) (lwm2m_context_t * contextP, lwm2m_uri_t * uriP, lwm2m_media_type_t format, uint8_t * buffer, int length, lwm2m_object_t * objectP, uint32_t block_num, uint8_t block_more);
 typedef uint8_t (*lwm2m_raw_block1_execute_callback_t) (lwm2m_context_t * contextP, lwm2m_uri_t * uriP, uint8_t * buffer, int length, lwm2m_object_t * objectP, uint32_t block_num, uint8_t block_more);
 #endif
+#ifdef LWM2M_RAW_BLOCK2_READS
+typedef uint8_t (*lwm2m_raw_block2_read_callback_t) (lwm2m_context_t * contextP, lwm2m_uri_t * uriP, const uint16_t * accept, uint8_t acceptNum, lwm2m_media_type_t * formatP, uint8_t ** bufferP, size_t * lengthP, lwm2m_object_t * objectP, uint32_t block_num, uint16_t block_size, uint8_t * block_moreP);
+#endif
 typedef uint8_t (*lwm2m_delete_callback_t) (lwm2m_context_t * contextP, uint16_t instanceId, lwm2m_object_t * objectP);
 
 struct _lwm2m_object_t
@@ -533,6 +536,9 @@ struct _lwm2m_object_t
     lwm2m_raw_block1_create_callback_t   rawBlock1CreateFunc;
     lwm2m_raw_block1_write_callback_t    rawBlock1WriteFunc;
     lwm2m_raw_block1_execute_callback_t  rawBlock1ExecuteFunc;
+#endif
+#ifdef LWM2M_RAW_BLOCK2_READS
+    lwm2m_raw_block2_read_callback_t     rawBlock2ReadFunc;
 #endif
     lwm2m_delete_callback_t   deleteFunc;
     lwm2m_discover_callback_t discoverFunc;

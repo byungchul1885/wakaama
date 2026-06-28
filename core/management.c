@@ -255,13 +255,54 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
             }
             else
             {
-                result = object_read(contextP,
-                                     uriP,
-                                     message->accept,
-                                     message->accept_num,
-                                     &format,
-                                     &buffer,
-                                     &length);
+#ifdef LWM2M_RAW_BLOCK2_READS
+                if (object_raw_block2_read_supported(contextP, uriP))
+                {
+                    uint32_t block_num = 0;
+                    uint16_t block_size = lwm2m_get_coap_block_size();
+                    uint8_t block_more = 0;
+
+                    if (IS_OPTION(message, COAP_OPTION_BLOCK2))
+                    {
+                        (void)coap_get_header_block2(message, &block_num, NULL, &block_size, NULL);
+                        block_size = MIN(block_size, lwm2m_get_coap_block_size());
+                    }
+                    if (block_size == 0)
+                    {
+                        block_size = lwm2m_get_coap_block_size();
+                    }
+
+                    result = object_raw_block2_read(contextP,
+                                                    uriP,
+                                                    message->accept,
+                                                    message->accept_num,
+                                                    &format,
+                                                    &buffer,
+                                                    &length,
+                                                    block_num,
+                                                    block_size,
+                                                    &block_more);
+                    if (COAP_205_CONTENT == result &&
+                        (block_more || IS_OPTION(message, COAP_OPTION_BLOCK2)))
+                    {
+                        coap_set_header_block2(response, block_num, block_more, block_size);
+                    }
+                }
+                else
+                {
+                    result = COAP_405_METHOD_NOT_ALLOWED;
+                }
+                if (result == COAP_405_METHOD_NOT_ALLOWED)
+#endif
+                {
+                    result = object_read(contextP,
+                                         uriP,
+                                         message->accept,
+                                         message->accept_num,
+                                         &format,
+                                         &buffer,
+                                         &length);
+                }
             }
             if (COAP_205_CONTENT == result)
             {

@@ -22,6 +22,12 @@
 uint8_t object_readData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, int *sizeP, lwm2m_data_t **dataP);
 uint8_t object_read(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, const uint16_t *accept, uint8_t acceptNum,
                     lwm2m_media_type_t *formatP, uint8_t **bufferP, size_t *lengthP);
+#ifdef LWM2M_RAW_BLOCK2_READS
+bool object_raw_block2_read_supported(lwm2m_context_t *contextP, lwm2m_uri_t *uriP);
+uint8_t object_raw_block2_read(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, const uint16_t *accept,
+                               uint8_t acceptNum, lwm2m_media_type_t *formatP, uint8_t **bufferP,
+                               size_t *lengthP, uint32_t block_num, uint16_t block_size, uint8_t *block_moreP);
+#endif
 uint8_t object_write(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_media_type_t format, uint8_t *buffer,
                      size_t length, bool partial);
 uint8_t object_create(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_media_type_t format, uint8_t *buffer,

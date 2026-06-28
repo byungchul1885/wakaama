@@ -309,6 +309,65 @@ uint8_t object_read(lwm2m_context_t * contextP,
     return result;
 }
 
+#ifdef LWM2M_RAW_BLOCK2_READS
+bool object_raw_block2_read_supported(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
+{
+    lwm2m_object_t *targetP;
+
+    if (contextP == NULL || uriP == NULL) return false;
+
+    targetP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+    return targetP != NULL && targetP->rawBlock2ReadFunc != NULL;
+}
+
+uint8_t object_raw_block2_read(lwm2m_context_t *contextP,
+                               lwm2m_uri_t *uriP,
+                               const uint16_t *accept,
+                               uint8_t acceptNum,
+                               lwm2m_media_type_t *formatP,
+                               uint8_t **bufferP,
+                               size_t *lengthP,
+                               uint32_t block_num,
+                               uint16_t block_size,
+                               uint8_t *block_moreP)
+{
+    lwm2m_object_t *targetP;
+
+    LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
+
+    if (contextP == NULL || uriP == NULL || formatP == NULL || bufferP == NULL || lengthP == NULL ||
+        block_moreP == NULL)
+    {
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+
+    *bufferP = NULL;
+    *lengthP = 0;
+    *block_moreP = 0;
+
+    targetP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+    if (targetP == NULL) return COAP_404_NOT_FOUND;
+    if (targetP->rawBlock2ReadFunc == NULL) return COAP_405_METHOD_NOT_ALLOWED;
+    if (LWM2M_URI_IS_SET_INSTANCE(uriP) &&
+        NULL == lwm2m_list_find(targetP->instanceList, uriP->instanceId))
+    {
+        return COAP_404_NOT_FOUND;
+    }
+
+    return targetP->rawBlock2ReadFunc(contextP,
+                                      uriP,
+                                      accept,
+                                      acceptNum,
+                                      formatP,
+                                      bufferP,
+                                      lengthP,
+                                      targetP,
+                                      block_num,
+                                      block_size,
+                                      block_moreP);
+}
+#endif
+
 // Get the short id from a server object. Valid range 1-65535. Returns 0 if error.
 static uint16_t prv_getServerShortId(lwm2m_context_t *contextP, lwm2m_object_t *serverObjectP, uint16_t instanceId)
 {

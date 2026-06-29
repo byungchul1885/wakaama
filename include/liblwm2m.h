@@ -836,6 +836,12 @@ typedef void (*lwm2m_bootstrap_command_callback_t)(lwm2m_context_t *contextP, lw
 typedef void (*lwm2m_bootstrap_log_callback_t)(lwm2m_context_t *contextP, const char *message, void *userData);
 #endif
 
+typedef bool (*lwm2m_registration_object_filter_t)(lwm2m_context_t *contextP,
+                                                   uint16_t shortServerID,
+                                                   const lwm2m_object_t *objectP,
+                                                   const lwm2m_list_t *instanceP,
+                                                   void *userData);
+
 #endif
 /*
  * LwM2M Context
@@ -866,6 +872,8 @@ struct _lwm2m_context_
     lwm2m_server_t *     serverList;
     lwm2m_object_t *     objectList;
     lwm2m_observed_t *   observedList;
+    lwm2m_registration_object_filter_t registrationObjectFilter;
+    void *               registrationObjectFilterUserData;
 #ifndef LWM2M_VERSION_1_0
     uint8_t              currentRequestToken[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t               currentRequestTokenLen;
@@ -914,6 +922,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 int lwm2m_configure(lwm2m_context_t * contextP, const char * endpointName, const char * msisdn, const char * altPath, uint16_t numObject, lwm2m_object_t * objectList[]);
 int lwm2m_add_object(lwm2m_context_t * contextP, lwm2m_object_t * objectP);
 int lwm2m_remove_object(lwm2m_context_t * contextP, uint16_t id);
+void lwm2m_set_registration_object_filter(lwm2m_context_t *contextP,
+                                          lwm2m_registration_object_filter_t callback,
+                                          void *userData);
 
 // send a registration update to the server specified by the server short identifier
 // or all if the ID is 0.

@@ -47,7 +47,9 @@ uint8_t object_discover(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_serv
 uint8_t object_checkReadable(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_attributes_t *attrP);
 bool object_isInstanceNew(lwm2m_context_t *contextP, uint16_t objectId, uint16_t instanceId);
 int object_getRegisterPayloadBufferLength(lwm2m_context_t *contextP);
+int object_getRegisterPayloadBufferLengthForServer(lwm2m_context_t *contextP, uint16_t shortServerID);
 int object_getRegisterPayload(lwm2m_context_t *contextP, uint8_t *buffer, size_t length);
+int object_getRegisterPayloadForServer(lwm2m_context_t *contextP, uint16_t shortServerID, uint8_t *buffer, size_t length);
 int object_getServers(lwm2m_context_t *contextP, bool checkOnly);
 uint8_t object_createInstance(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_data_t *dataP);
 uint8_t object_writeInstance(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_data_t *dataP);

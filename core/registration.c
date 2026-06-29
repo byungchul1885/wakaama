@@ -736,11 +736,11 @@ static uint8_t prv_register(lwm2m_context_t * contextP,
     lwm2m_transaction_t * transaction;
     uint8_t token[COAP_TOKEN_LEN];
 
-    payload_length = object_getRegisterPayloadBufferLength(contextP);
+    payload_length = object_getRegisterPayloadBufferLengthForServer(contextP, server->shortID);
     if(payload_length == 0) return COAP_500_INTERNAL_SERVER_ERROR;
     payload = (uint8_t*) lwm2m_malloc(payload_length);
     if(!payload) return COAP_500_INTERNAL_SERVER_ERROR;
-    payload_length = object_getRegisterPayload(contextP, payload, payload_length);
+    payload_length = object_getRegisterPayloadForServer(contextP, server->shortID, payload, payload_length);
     if(payload_length == 0)
     {
         lwm2m_free(payload);
@@ -887,7 +887,7 @@ static int prv_updateRegistration(lwm2m_context_t * contextP,
 
     if (withObjects == true)
     {
-        payload_length = object_getRegisterPayloadBufferLength(contextP);
+        payload_length = object_getRegisterPayloadBufferLengthForServer(contextP, server->shortID);
         if(payload_length == 0)
         {
             transaction_free(transaction);
@@ -901,7 +901,7 @@ static int prv_updateRegistration(lwm2m_context_t * contextP,
             return COAP_500_INTERNAL_SERVER_ERROR;
         }
 
-        payload_length = object_getRegisterPayload(contextP, payload, payload_length);
+        payload_length = object_getRegisterPayloadForServer(contextP, server->shortID, payload, payload_length);
         if(payload_length == 0)
         {
             transaction_free(transaction);
@@ -1021,6 +1021,19 @@ int lwm2m_update_registration(lwm2m_context_t * contextP,
     }
 
     return result;
+}
+
+void lwm2m_set_registration_object_filter(lwm2m_context_t *contextP,
+                                          lwm2m_registration_object_filter_t callback,
+                                          void *userData)
+{
+    if (contextP == NULL)
+    {
+        return;
+    }
+
+    contextP->registrationObjectFilter = callback;
+    contextP->registrationObjectFilterUserData = userData;
 }
 
 uint8_t registration_start(lwm2m_context_t * contextP, bool restartFailed)

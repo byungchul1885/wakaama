@@ -835,7 +835,47 @@ static int prv_getObjectTemplate(uint8_t * buffer,
     return index;
 }
 
+static bool prv_registrationObjectAllowed(lwm2m_context_t *contextP,
+                                          uint16_t shortServerID,
+                                          const lwm2m_object_t *objectP,
+                                          const lwm2m_list_t *instanceP)
+{
+    if (contextP->registrationObjectFilter == NULL)
+    {
+        return true;
+    }
+
+    return contextP->registrationObjectFilter(contextP,
+                                              shortServerID,
+                                              objectP,
+                                              instanceP,
+                                              contextP->registrationObjectFilterUserData);
+}
+
+static bool prv_hasAllowedRegistrationInstances(lwm2m_context_t *contextP,
+                                                uint16_t shortServerID,
+                                                const lwm2m_object_t *objectP)
+{
+    lwm2m_list_t *targetP;
+
+    for (targetP = objectP->instanceList; targetP != NULL; targetP = targetP->next)
+    {
+        if (prv_registrationObjectAllowed(contextP, shortServerID, objectP, targetP))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 int object_getRegisterPayloadBufferLength(lwm2m_context_t * contextP)
+{
+    return object_getRegisterPayloadBufferLengthForServer(contextP, 0);
+}
+
+int object_getRegisterPayloadBufferLengthForServer(lwm2m_context_t * contextP,
+                                                   uint16_t shortServerID)
 {
     size_t index;
     int result;
@@ -866,6 +906,10 @@ int object_getRegisterPayloadBufferLength(lwm2m_context_t * contextP)
 #ifndef LWM2M_VERSION_1_0
         if (objectP->objID == LWM2M_OSCORE_OBJECT_ID) continue;
 #endif
+        if (objectP->instanceList == NULL
+         && !prv_registrationObjectAllowed(contextP, shortServerID, objectP, NULL)) continue;
+        if (objectP->instanceList != NULL
+         && !prv_hasAllowedRegistrationInstances(contextP, shortServerID, objectP)) continue;
 
         start = index;
         result = prv_getObjectTemplate(buffer, sizeof(buffer), objectP->objID);
@@ -907,6 +951,8 @@ int object_getRegisterPayloadBufferLength(lwm2m_context_t * contextP)
             lwm2m_list_t * targetP;
             for (targetP = objectP->instanceList ; targetP != NULL ; targetP = targetP->next)
             {
+                if (!prv_registrationObjectAllowed(contextP, shortServerID, objectP, targetP)) continue;
+
                 if (index != start + length)
                 {
                     index += length;
@@ -935,6 +981,14 @@ int object_getRegisterPayloadBufferLength(lwm2m_context_t * contextP)
 int object_getRegisterPayload(lwm2m_context_t * contextP,
                            uint8_t * buffer,
                            size_t bufferLen)
+{
+    return object_getRegisterPayloadForServer(contextP, 0, buffer, bufferLen);
+}
+
+int object_getRegisterPayloadForServer(lwm2m_context_t * contextP,
+                                       uint16_t shortServerID,
+                                       uint8_t * buffer,
+                                       size_t bufferLen)
 {
     size_t index;
     int result;
@@ -970,6 +1024,10 @@ int object_getRegisterPayload(lwm2m_context_t * contextP,
         size_t length;
 
         if (objectP->objID == LWM2M_SECURITY_OBJECT_ID) continue;
+        if (objectP->instanceList == NULL
+         && !prv_registrationObjectAllowed(contextP, shortServerID, objectP, NULL)) continue;
+        if (objectP->instanceList != NULL
+         && !prv_hasAllowedRegistrationInstances(contextP, shortServerID, objectP)) continue;
 
         start = index;
         result = prv_getObjectTemplate(buffer + index, bufferLen - index, objectP->objID);
@@ -1020,6 +1078,8 @@ int object_getRegisterPayload(lwm2m_context_t * contextP,
             lwm2m_list_t * targetP;
             for (targetP = objectP->instanceList ; targetP != NULL ; targetP = targetP->next)
             {
+                if (!prv_registrationObjectAllowed(contextP, shortServerID, objectP, targetP)) continue;
+
                 if (index != start + length)
                 {
                     if (bufferLen - index <= length) return 0;

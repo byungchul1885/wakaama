@@ -1697,8 +1697,8 @@ static lwm2m_client_object_t *prv_decodeRegisterPayload(uint8_t *payload, size_t
                 if (instanceP == NULL)
                 {
                     instanceP = (lwm2m_list_t *)lwm2m_malloc(sizeof(lwm2m_list_t));
-                    instanceP->id = instance;
                     memset(instanceP, 0, sizeof(lwm2m_list_t));
+                    instanceP->id = instance;
                     objectP->instanceList = LWM2M_LIST_ADD(objectP->instanceList, instanceP);
                 }
             }

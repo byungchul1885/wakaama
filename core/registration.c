@@ -1932,7 +1932,15 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
 
             if (contextP->monitorCallback != NULL)
             {
-                contextP->monitorCallback(contextP, clientP->internalID, NULL, COAP_201_CREATED, NULL, LWM2M_CONTENT_TEXT, NULL, 0, contextP->monitorUserData);
+                contextP->monitorCallback(contextP,
+                                          clientP->internalID,
+                                          NULL,
+                                          COAP_201_CREATED,
+                                          NULL,
+                                          format,
+                                          message->payload,
+                                          message->payload_len,
+                                          contextP->monitorUserData);
             }
             result = COAP_201_CREATED;
         }
@@ -2026,7 +2034,15 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
 
             if (contextP->monitorCallback != NULL)
             {
-                contextP->monitorCallback(contextP, clientP->internalID, NULL, COAP_204_CHANGED, NULL, LWM2M_CONTENT_TEXT, NULL, 0, contextP->monitorUserData);
+                contextP->monitorCallback(contextP,
+                                          clientP->internalID,
+                                          NULL,
+                                          COAP_204_CHANGED,
+                                          NULL,
+                                          message->payload_len > 0 ? format : LWM2M_CONTENT_TEXT,
+                                          message->payload,
+                                          message->payload_len,
+                                          contextP->monitorUserData);
             }
             result = COAP_204_CHANGED;
         }

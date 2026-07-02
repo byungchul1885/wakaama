@@ -190,6 +190,27 @@ static const char * prv_bootstrapMediaTypeToString(lwm2m_media_type_t format)
     }
 }
 
+static const char * prv_bootstrapContentTypeFromPct(const char * pct)
+{
+    if (pct == NULL)
+    {
+        return "unknown";
+    }
+    if (strcmp(pct, REG_ATTR_CONTENT_SENML_CBOR) == 0)
+    {
+        return "senml-cbor";
+    }
+    if (strcmp(pct, REG_ATTR_CONTENT_SENML_JSON) == 0)
+    {
+        return "senml-json";
+    }
+    if (strcmp(pct, REG_ATTR_CONTENT_TLV) == 0)
+    {
+        return "tlv";
+    }
+    return "unknown";
+}
+
 static const char * prv_bootstrapOperationToString(uint8_t code,
                                                    lwm2m_uri_t * uriP,
                                                    coap_packet_t * message)
@@ -228,6 +249,35 @@ static const char * prv_bootstrapOperationToString(uint8_t code,
     }
 }
 
+static void prv_bootstrapLogCommandResponse(lwm2m_context_t * contextP,
+                                            const char * operation,
+                                            const char * method,
+                                            const char * uri,
+                                            const char * code)
+{
+    if (strcmp(operation, "Bootstrap-Write Security") == 0)
+    {
+        prv_bootstrapLog(contextP, "[BOOTSTRAP] write security %s ack -> %s", uri, code);
+    }
+    else if (strcmp(operation, "Bootstrap-Write Server") == 0)
+    {
+        prv_bootstrapLog(contextP, "[BOOTSTRAP] write server %s ack -> %s", uri, code);
+    }
+    else if (strcmp(operation, "Bootstrap-Delete") == 0)
+    {
+        prv_bootstrapLog(contextP, "[BOOTSTRAP] delete %s ack -> %s", uri, code);
+    }
+    else
+    {
+        prv_bootstrapLog(contextP,
+                         "[BOOTSTRAP] send %s response: %s %s -> %s",
+                         operation,
+                         method,
+                         uri,
+                         code);
+    }
+}
+
 static void prv_handleResponse(lwm2m_context_t * contextP,
                                lwm2m_server_t * bootstrapServer,
                                coap_packet_t * message)
@@ -236,8 +286,7 @@ static void prv_handleResponse(lwm2m_context_t * contextP,
 
     prv_bootstrapFormatCode(message->code, codeBuffer, sizeof(codeBuffer));
     prv_bootstrapLog(contextP,
-                     "[BOOTSTRAP] recv Bootstrap-Request response: POST /%s -> %s",
-                     URI_BOOTSTRAP_SEGMENT,
+                     "[BOOTSTRAP] request ack -> %s",
                      codeBuffer);
 
     if (COAP_204_CHANGED == message->code)
@@ -336,6 +385,7 @@ static void prv_requestBootstrap(lwm2m_context_t * context,
     {
         lwm2m_transaction_t * transaction = NULL;
         uint8_t token[COAP_TOKEN_LEN];
+        const char * pctValue = strchr(query, '&');
 
         LOG_DBG("Bootstrap server connection opened");
 
@@ -353,11 +403,19 @@ static void prv_requestBootstrap(lwm2m_context_t * context,
         transaction->callback = prv_handleBootstrapReply;
         transaction->userData = (void *)bootstrapServer;
         context->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(context->transactionList, transaction);
+        if (pctValue != NULL && strncmp(pctValue + 1, QUERY_PCT, QUERY_PCT_LEN) == 0)
+        {
+            pctValue += 1 + QUERY_PCT_LEN;
+        }
+        else
+        {
+            pctValue = "";
+        }
         prv_bootstrapLog(context,
-                         "[BOOTSTRAP] queue Bootstrap-Request: POST /%s%s endpoint=%s",
-                         URI_BOOTSTRAP_SEGMENT,
-                         query,
-                         context->endpointName != NULL ? context->endpointName : "");
+                         "[BOOTSTRAP] request queued ep=%s content=%s pct=%s",
+                         context->endpointName != NULL ? context->endpointName : "",
+                         prv_bootstrapContentTypeFromPct(pctValue),
+                         pctValue[0] != '\0' ? pctValue : "-");
         if (transaction_send(context, transaction) == 0)
         {
             LOG_DBG("CI bootstrap requested to BS server");
@@ -806,7 +864,7 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
     char codeBuffer[PRV_BOOTSTRAP_CODE_BUFFER_LENGTH];
 
     LOG_DBG("Entering");
-    prv_bootstrapLog(context, "[BOOTSTRAP] recv Bootstrap-Finish: POST /%s", URI_BOOTSTRAP_SEGMENT);
+    prv_bootstrapLog(context, "[BOOTSTRAP] finish recv");
     bootstrapServer = utils_findBootstrapServer(context, fromSessionH);
     if (bootstrapServer != NULL
      && bootstrapServer->status == STATE_BS_PENDING)
@@ -818,8 +876,7 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
             result = COAP_204_CHANGED;
             prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
             prv_bootstrapLog(context,
-                             "[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s",
-                             URI_BOOTSTRAP_SEGMENT,
+                             "[BOOTSTRAP] finish ack -> %s",
                              codeBuffer);
             return result;
         }
@@ -828,8 +885,7 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
            result = COAP_406_NOT_ACCEPTABLE;
            prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
            prv_bootstrapLog(context,
-                            "[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s",
-                            URI_BOOTSTRAP_SEGMENT,
+                            "[BOOTSTRAP] finish ack -> %s",
                             codeBuffer);
            return result;
         }
@@ -838,8 +894,7 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
     result = COAP_IGNORE;
     prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
     prv_bootstrapLog(context,
-                     "[BOOTSTRAP] send Bootstrap-Finish response: POST /%s -> %s",
-                     URI_BOOTSTRAP_SEGMENT,
+                     "[BOOTSTRAP] finish ack -> %s",
                      codeBuffer);
     return result;
 }
@@ -1013,7 +1068,7 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     else
     {
         prv_bootstrapLog(contextP,
-                         "[BOOTSTRAP] recv %s: %s %s format=%s payload=%zu bytes",
+                         "[BOOTSTRAP] recv %s: %s %s content=%s bytes=%zu",
                          operation,
                          method,
                          uriBuffer,
@@ -1025,12 +1080,7 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     if (result != COAP_NO_ERROR)
     {
         prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-        prv_bootstrapLog(contextP,
-                         "[BOOTSTRAP] send %s response: %s %s -> %s",
-                         operation,
-                         method,
-                         uriBuffer,
-                         codeBuffer);
+        prv_bootstrapLogCommandResponse(contextP, operation, method, uriBuffer, codeBuffer);
         return result;
     }
 
@@ -1235,12 +1285,7 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     }
     LOG_ARG_DBG("Server status: %s", STR_STATUS(serverP->status));
     prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-    prv_bootstrapLog(contextP,
-                     "[BOOTSTRAP] send %s response: %s %s -> %s",
-                     operation,
-                     method,
-                     uriBuffer,
-                     codeBuffer);
+    prv_bootstrapLogCommandResponse(contextP, operation, method, uriBuffer, codeBuffer);
 
     return result;
 }
@@ -1293,14 +1338,14 @@ uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
     char codeBuffer[PRV_BOOTSTRAP_CODE_BUFFER_LENGTH];
 
     LOG_DBG("Entering");
-    prv_bootstrapLog(contextP, "[BOOTSTRAP] recv Bootstrap-Delete: DELETE /");
+    prv_bootstrapLog(contextP, "[BOOTSTRAP] delete / recv");
     serverP = utils_findBootstrapServer(contextP, fromSessionH);
     if (serverP == NULL) return COAP_IGNORE;
     result = prv_checkServerStatus(serverP);
     if (result != COAP_NO_ERROR)
     {
         prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-        prv_bootstrapLog(contextP, "[BOOTSTRAP] send Bootstrap-Delete response: DELETE / -> %s", codeBuffer);
+        prv_bootstrapLog(contextP, "[BOOTSTRAP] delete / ack -> %s", codeBuffer);
         return result;
     }
 
@@ -1348,7 +1393,7 @@ uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
     }
 
     prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
-    prv_bootstrapLog(contextP, "[BOOTSTRAP] send Bootstrap-Delete response: DELETE / -> %s", codeBuffer);
+    prv_bootstrapLog(contextP, "[BOOTSTRAP] delete / ack -> %s", codeBuffer);
 
     return result;
 }

@@ -253,65 +253,12 @@ static int prv_getRegistrationQuery(lwm2m_context_t * contextP,
 }
 
 #ifndef LWM2M_VERSION_1_0
-static uint8_t prv_readUint(lwm2m_context_t *contextP,
-                            lwm2m_object_t *objP,
-                            uint16_t instanceId,
-                            uint16_t resourceId,
-                            uint64_t *valueP)
-{
-    uint8_t result = COAP_NO_ERROR;
-    int size = 1;
-    lwm2m_data_t * dataP = lwm2m_data_new(size);
-    if (dataP == NULL)
-    {
-        return COAP_500_INTERNAL_SERVER_ERROR;
-    }
-    dataP[0].id = resourceId;
-    result = objP->readFunc(contextP, instanceId, &size, &dataP, objP);
-    if (result == COAP_205_CONTENT)
-    {
-        if (lwm2m_data_decode_uint(dataP, valueP))
-        {
-            result = COAP_NO_ERROR;
-        }
-        else
-        {
-            result = COAP_400_BAD_REQUEST;
-        }
-    }
-    lwm2m_data_free(size, dataP);
-    return result;
-}
-
-static uint8_t prv_readBoolean(lwm2m_context_t *contextP,
-                               lwm2m_object_t *objP,
-                               uint16_t instanceId,
-                               uint16_t resourceId,
-                               bool *valueP)
-{
-    uint8_t result = COAP_NO_ERROR;
-    int size = 1;
-    lwm2m_data_t * dataP = lwm2m_data_new(size);
-    if (dataP == NULL)
-    {
-        return COAP_500_INTERNAL_SERVER_ERROR;
-    }
-    dataP[0].id = resourceId;
-    result = objP->readFunc(contextP, instanceId, &size, &dataP, objP);
-    if (result == COAP_205_CONTENT)
-    {
-        if (lwm2m_data_decode_bool(dataP, valueP))
-        {
-            result = COAP_NO_ERROR;
-        }
-        else
-        {
-            result = COAP_400_BAD_REQUEST;
-        }
-    }
-    lwm2m_data_free(size, dataP);
-    return result;
-}
+#define SMGW_REGISTRATION_ATTEMPT_LIMIT 3
+#define SMGW_REGISTRATION_ATTEMPT_DELAY 300
+#define SMGW_REGISTRATION_SEQUENCE_LIMIT 1
+#define SMGW_REGISTRATION_SEQUENCE_DELAY 300
+#define SMGW_DMS_SHORT_SERVER_ID 2
+#define SMGW_METERING_SHORT_SERVER_ID 1
 
 static uint8_t prv_getRegistrationOrder(lwm2m_context_t *contextP,
                                         lwm2m_server_t *targetP,
@@ -319,13 +266,10 @@ static uint8_t prv_getRegistrationOrder(lwm2m_context_t *contextP,
                                         bool *orderedP,
                                         uint64_t *orderP)
 {
-    uint64_t order;
-    uint8_t result = prv_readUint(contextP,
-                                  serverObjP,
-                                  targetP->servObjInstID,
-                                  LWM2M_SERVER_REG_ORDER_ID,
-                                  &order);
-    if (result == COAP_NO_ERROR)
+    (void)contextP;
+    (void)serverObjP;
+
+    if (targetP->shortID == SMGW_DMS_SHORT_SERVER_ID || targetP->shortID == SMGW_METERING_SHORT_SERVER_ID)
     {
         if (orderedP)
         {
@@ -333,18 +277,14 @@ static uint8_t prv_getRegistrationOrder(lwm2m_context_t *contextP,
         }
         if (orderP)
         {
-            *orderP = order;
+            *orderP = targetP->shortID == SMGW_DMS_SHORT_SERVER_ID ? 1 : 2;
         }
     }
-    else if (result == COAP_404_NOT_FOUND)
+    else if (orderedP)
     {
-        result = COAP_NO_ERROR;
-        if (orderedP)
-        {
-            *orderedP = false;
-        }
+        *orderedP = false;
     }
-    return result;
+    return COAP_NO_ERROR;
 }
 
 static uint8_t prv_getRegistrationFailureBlocking(lwm2m_context_t *contextP,
@@ -352,28 +292,14 @@ static uint8_t prv_getRegistrationFailureBlocking(lwm2m_context_t *contextP,
                                                   lwm2m_object_t *serverObjP,
                                                   bool *blockingP)
 {
-    bool blocking;
-    uint8_t result = prv_readBoolean(contextP,
-                                     serverObjP,
-                                     targetP->servObjInstID,
-                                     LWM2M_SERVER_REG_FAIL_BLOCK_ID,
-                                     &blocking);
-    if (result == COAP_NO_ERROR)
+    (void)contextP;
+    (void)targetP;
+    (void)serverObjP;
+    if (blockingP)
     {
-        if (blockingP)
-        {
-            *blockingP = blocking;
-        }
+        *blockingP = true;
     }
-    else if (result == COAP_404_NOT_FOUND)
-    {
-        result = COAP_NO_ERROR;
-        if (blockingP)
-        {
-            *blockingP = false;
-        }
-    }
-    return result;
+    return COAP_NO_ERROR;
 }
 
 static uint8_t prv_getRegistrationAttemptLimit(lwm2m_context_t *contextP,
@@ -382,47 +308,18 @@ static uint8_t prv_getRegistrationAttemptLimit(lwm2m_context_t *contextP,
                                                uint8_t *attemptLimitP,
                                                uint64_t *attemptDelayP)
 {
-    uint64_t attemptLimit;
-    uint64_t attemptDelay;
-    uint8_t result = prv_readUint(contextP,
-                                  serverObjP,
-                                  targetP->servObjInstID,
-                                  LWM2M_SERVER_COMM_RETRY_COUNT_ID,
-                                  &attemptLimit);
-    if (result == COAP_404_NOT_FOUND)
+    (void)contextP;
+    (void)targetP;
+    (void)serverObjP;
+    if (attemptLimitP)
     {
-        attemptLimit = 5;
-        result = COAP_NO_ERROR;
+        *attemptLimitP = SMGW_REGISTRATION_ATTEMPT_LIMIT;
     }
-    if (result == COAP_NO_ERROR)
+    if (attemptDelayP)
     {
-        result = prv_readUint(contextP,
-                              serverObjP,
-                              targetP->servObjInstID,
-                              LWM2M_SERVER_COMM_RETRY_TIMER_ID,
-                              &attemptDelay);
-        if (result == COAP_404_NOT_FOUND)
-        {
-            attemptDelay = 60;
-            result = COAP_NO_ERROR;
-        }
-        if (result == COAP_NO_ERROR)
-        {
-            if (attemptLimit > 254) /* Implementation limit */
-            {
-                attemptLimit = 254;
-            }
-            if (attemptLimitP)
-            {
-                *attemptLimitP = attemptLimit;
-            }
-            if (attemptDelayP)
-            {
-                *attemptDelayP = attemptDelay;
-            }
-        }
+        *attemptDelayP = SMGW_REGISTRATION_ATTEMPT_DELAY;
     }
-    return result;
+    return COAP_NO_ERROR;
 }
 
 static uint8_t prv_getRegistrationSequenceLimit(lwm2m_context_t *contextP,
@@ -431,47 +328,18 @@ static uint8_t prv_getRegistrationSequenceLimit(lwm2m_context_t *contextP,
                                                 uint8_t *sequenceLimitP,
                                                 uint64_t *sequenceDelayP)
 {
-    uint64_t sequenceLimit;
-    uint64_t sequenceDelay;
-    uint8_t result = prv_readUint(contextP,
-                                  serverObjP,
-                                  targetP->servObjInstID,
-                                  LWM2M_SERVER_SEQ_RETRY_COUNT_ID,
-                                  &sequenceLimit);
-    if (result == COAP_404_NOT_FOUND)
+    (void)contextP;
+    (void)targetP;
+    (void)serverObjP;
+    if (sequenceLimitP)
     {
-        sequenceLimit = 1;
-        result = COAP_NO_ERROR;
+        *sequenceLimitP = SMGW_REGISTRATION_SEQUENCE_LIMIT;
     }
-    if (result == COAP_NO_ERROR)
+    if (sequenceDelayP)
     {
-        result = prv_readUint(contextP,
-                              serverObjP,
-                              targetP->servObjInstID,
-                              LWM2M_SERVER_SEQ_DELAY_TIMER_ID,
-                              &sequenceDelay);
-        if (result == COAP_404_NOT_FOUND)
-        {
-            sequenceDelay = 86400;
-            result = COAP_NO_ERROR;
-        }
-        if (result == COAP_NO_ERROR)
-        {
-            if (sequenceLimit > 254) /* Implementation limit */
-            {
-                sequenceLimit = 254;
-            }
-            if (sequenceLimitP)
-            {
-                *sequenceLimitP = sequenceLimit;
-            }
-            if (sequenceDelayP)
-            {
-                *sequenceDelayP = sequenceDelay;
-            }
-        }
+        *sequenceDelayP = SMGW_REGISTRATION_SEQUENCE_DELAY;
     }
-    return result;
+    return COAP_NO_ERROR;
 }
 
 static uint8_t prv_getBootstrapOnRegistrationFailure(lwm2m_context_t *contextP,
@@ -479,52 +347,26 @@ static uint8_t prv_getBootstrapOnRegistrationFailure(lwm2m_context_t *contextP,
                                                      lwm2m_object_t *serverObjP,
                                                      bool *bootstrapP)
 {
-    bool bootstrap;
-    uint8_t result = prv_readBoolean(contextP,
-                                     serverObjP,
-                                     targetP->servObjInstID,
-                                     LWM2M_SERVER_REG_FAIL_BOOTSTRAP_ID,
-                                     &bootstrap);
-    if (result == COAP_NO_ERROR)
+    (void)contextP;
+    (void)targetP;
+    (void)serverObjP;
+    if (bootstrapP)
     {
-        if (bootstrapP)
-        {
-            *bootstrapP = bootstrap;
-        }
+        *bootstrapP = true;
     }
-    else if (result == COAP_404_NOT_FOUND)
-    {
-        result = COAP_NO_ERROR;
-        if (bootstrapP)
-        {
-            *bootstrapP = true;
-        }
-    }
-    return result;
+    return COAP_NO_ERROR;
 }
 
 static uint8_t prv_startRegistration(lwm2m_context_t *contextP,
                                      lwm2m_server_t* targetP,
                                      lwm2m_object_t* serverObjP)
 {
-    uint64_t delay;
-    uint8_t result = prv_readUint(contextP,
-                                  serverObjP,
-                                  targetP->servObjInstID,
-                                  LWM2M_SERVER_INITIAL_REG_DELAY_ID,
-                                  &delay);
-    if (result == COAP_404_NOT_FOUND)
-    {
-        delay = 0;
-        result = COAP_NO_ERROR;
-    }
-    if (result == COAP_NO_ERROR)
-    {
-        targetP->registration = lwm2m_gettime() + delay;
-        targetP->status = STATE_REG_HOLD_OFF;
-    }
+    (void)contextP;
+    (void)serverObjP;
 
-    return result;
+    targetP->registration = lwm2m_gettime();
+    targetP->status = STATE_REG_HOLD_OFF;
+    return COAP_NO_ERROR;
 }
 
 static void prv_handleRegistrationSequenceFailure(lwm2m_context_t *contextP, lwm2m_object_t *serverObjP, lwm2m_server_t *targetP)

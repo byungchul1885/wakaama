@@ -79,8 +79,31 @@ static void test_large_plain_request_requires_block1(void) {
     coap_free_header(&actual_response_packet);
 }
 
+static void test_unmatched_entity_too_large_ack_does_not_crash(void) {
+    coap_packet_t packet;
+    uint8_t coap_msg[LWM2M_COAP_MAX_MESSAGE_SIZE];
+    size_t msg_size;
+    lwm2m_context_t *server_ctx;
+
+    memset(&packet, 0, sizeof(packet));
+    memset(coap_msg, 0, sizeof(coap_msg));
+
+    coap_init_message(&packet, COAP_TYPE_ACK, COAP_413_ENTITY_TOO_LARGE, 0xbeef);
+    coap_set_header_size(&packet, (uint32_t)lwm2m_get_coap_block_size() * 2U);
+    msg_size = coap_serialize_message(&packet, coap_msg);
+    coap_free_header(&packet);
+    CU_ASSERT_TRUE_FATAL(msg_size > 0);
+
+    server_ctx = lwm2m_init(NULL);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(server_ctx);
+    lwm2m_handle_packet(server_ctx, coap_msg, msg_size, NULL);
+    CU_ASSERT_PTR_NULL(server_ctx->transactionList);
+    lwm2m_close(server_ctx);
+}
+
 static struct TestTable table[] = {
     {"test_large_plain_request_requires_block1", test_large_plain_request_requires_block1},
+    {"test_unmatched_entity_too_large_ack_does_not_crash", test_unmatched_entity_too_large_ack_does_not_crash},
     {NULL, NULL},
 };
 

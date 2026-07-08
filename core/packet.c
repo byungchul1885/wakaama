@@ -356,15 +356,28 @@ static lwm2m_transaction_t * prv_create_next_block_transaction(lwm2m_transaction
 static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t * previous, uint32_t block_num, uint16_t block_size)
 {
     lwm2m_transaction_t * next;
+    size_t block_offset;
+
+    if (contextP == NULL || previous == NULL || block_size == 0)
+        return COAP_500_INTERNAL_SERVER_ERROR;
+
+    if ((size_t)block_num > ((size_t)-1) / (size_t)block_size)
+        return COAP_400_BAD_REQUEST;
+
+    if (previous->payload_len > 0 && previous->payload == NULL)
+        return COAP_500_INTERNAL_SERVER_ERROR;
+
+    block_offset = (size_t)block_num * (size_t)block_size;
+
     // Done sending block
-    if (block_num * (size_t)block_size >= previous->payload_len)
+    if (block_offset >= previous->payload_len)
         return 0;
 
     next = prv_create_next_block_transaction(previous, contextP->nextMID++);
     if (next == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
 
-    size_t remaining_payload_length = next->payload_len - block_num * (size_t)block_size;
-    uint8_t *new_block_start = next->payload + block_num * block_size;
+    size_t remaining_payload_length = next->payload_len - block_offset;
+    uint8_t *new_block_start = next->payload + block_offset;
 
     coap_set_header_block1(next->message, block_num, remaining_payload_length > block_size, block_size);
     coap_set_payload(next->message, new_block_start, MIN(block_size, remaining_payload_length));
@@ -404,6 +417,7 @@ static int prv_change_to_block1(lwm2m_context_t * contextP, void * sessionH, uin
     uint16_t block_size = 16;
 
     transaction = prv_get_transaction(contextP, sessionH, mid);
+    if(transaction == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
 
     for (uint16_t n = 1; 16 << n <= (uint16_t)size; n++) {
         block_size = 16 << n;

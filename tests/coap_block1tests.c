@@ -148,10 +148,10 @@ static void test_block1_unbounded_allocation(void) {
     uint8_t *resultBuffer = NULL;
     size_t resultLen = 0;
 
-    const size_t max_message_size = LWM2M_COAP_MAX_MESSAGE_SIZE;
+    const size_t max_block_transfer_size = LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE;
     const size_t test_block_size = 128;
 
-    const size_t total_blocks_num = max_message_size / test_block_size;
+    const size_t total_blocks_num = max_block_transfer_size / test_block_size;
 
     uint8_t block_buffer[test_block_size];
     memset(block_buffer, 0xaf, test_block_size);
@@ -162,7 +162,7 @@ static void test_block1_unbounded_allocation(void) {
                                                    block_num, block_more, &resultBuffer, &resultLen);
         CU_ASSERT_PTR_NULL(resultBuffer)
         CU_ASSERT_PTR_NOT_NULL(blk1)
-        CU_ASSERT(blk1->blockBufferSize <= max_message_size)
+        CU_ASSERT(blk1->blockBufferSize <= max_block_transfer_size)
 
         if (total_blocks_num > block_num) {
             CU_ASSERT_EQUAL(blk1->blockNum, block_num)

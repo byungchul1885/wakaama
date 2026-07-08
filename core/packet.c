@@ -845,6 +845,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     if (peerP == NULL)
                     {
                         coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
+                        (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
                     }
                     else
                     {
@@ -875,6 +876,11 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                             prv_send_get_next_block2(contextP, fromSessionH, peerP->blockData, message->mid, block2_num, block2_size);
                             transaction_handleResponse(contextP, fromSessionH, message, NULL);
                             coap_error_code = NO_ERROR;
+                        }
+                        else if (coap_error_code >= COAP_400_BAD_REQUEST)
+                        {
+                            block2_delete(&peerP->blockData, message->mid);
+                            (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
                         }
                     }
                 } else if (message->code == COAP_413_ENTITY_TOO_LARGE) {

@@ -50,8 +50,17 @@ set(WAKAAMA_COAP_MAX_MESSAGE_SIZE
     CACHE STRING "Max. CoAP packet size."
 )
 
+set(WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE
+    ${WAKAAMA_COAP_MAX_MESSAGE_SIZE}
+    CACHE STRING "Max. assembled CoAP block-wise transfer payload size."
+)
+
 if(WAKAAMA_COAP_DEFAULT_BLOCK_SIZE GREATER WAKAAMA_COAP_MAX_MESSAGE_SIZE)
-    message(FATAL_ERROR "Packet size needs to be bigger than the block size.")
+    message(FATAL_ERROR "Packet size needs to be at least as large as the block size.")
+endif()
+
+if(WAKAAMA_COAP_DEFAULT_BLOCK_SIZE GREATER WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE)
+    message(FATAL_ERROR "Block transfer size needs to be at least as large as the block size.")
 endif()
 
 # The maximum number of retransmissions used for confirmable messages.
@@ -205,6 +214,10 @@ function(set_coap_defines)
     target_compile_definitions(${target} PUBLIC LWM2M_COAP_DEFAULT_BLOCK_SIZE=${WAKAAMA_COAP_DEFAULT_BLOCK_SIZE})
 
     target_compile_definitions(${target} PUBLIC LWM2M_COAP_MAX_MESSAGE_SIZE=${WAKAAMA_COAP_MAX_MESSAGE_SIZE})
+
+    target_compile_definitions(
+        ${target} PUBLIC LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE=${WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE}
+    )
 
     target_compile_definitions(
         ${target} PUBLIC LWM2M_COAP_DEFAULT_MAX_RETRANSMIT=${WAKAAMA_COAP_DEFAULT_MAX_RETRANSMIT}

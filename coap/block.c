@@ -47,6 +47,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE
+#define LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE LWM2M_COAP_MAX_MESSAGE_SIZE
+#endif
+
+static bool prv_block_transfer_exceeds_limit(size_t current_size, size_t append_size)
+{
+    const size_t limit = (size_t)LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE;
+
+    return current_size > limit || append_size > limit - current_size;
+}
+
 bool prv_matchBlock1 (block_data_identifier_t identifier, lwm2m_block_data_t * blockData)
     {
     if (blockData->identifier.uri == NULL || identifier.uri == NULL)
@@ -204,6 +215,10 @@ static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block
             blockData->blockBufferSize = 0;
         }
 
+        if (prv_block_transfer_exceeds_limit(0, length)) {
+            return COAP_413_ENTITY_TOO_LARGE;
+        }
+
         uint8_t * buf = (uint8_t *) lwm2m_malloc(length);
         if(buf == NULL){
             return COAP_500_INTERNAL_SERVER_ERROR;
@@ -240,12 +255,12 @@ static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block
               return COAP_408_REQ_ENTITY_INCOMPLETE;
           }
 
-          // re-alloc new buffer
-          const size_t new_size = oldSize + length;
-          if (LWM2M_COAP_MAX_MESSAGE_SIZE < new_size) {
+          if (prv_block_transfer_exceeds_limit(oldSize, length)) {
               return COAP_413_ENTITY_TOO_LARGE;
           }
+          const size_t new_size = oldSize + length;
 
+          // re-alloc new buffer
           blockData->blockBufferSize = new_size;
           blockData->blockBuffer = (uint8_t *) lwm2m_malloc(blockData->blockBufferSize);
           if (NULL == blockData->blockBuffer) return COAP_500_INTERNAL_SERVER_ERROR; //TODO: should we clean up

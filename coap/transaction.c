@@ -386,6 +386,41 @@ bool transaction_handleResponse(lwm2m_context_t * contextP,
     return false;
 }
 
+bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t mid, uint8_t code)
+{
+    lwm2m_transaction_t * transacP;
+
+    LOG_DBG("Entering");
+    transacP = contextP->transactionList;
+
+    while (NULL != transacP)
+    {
+        if (lwm2m_session_is_equal(fromSessionH, transacP->peerH, contextP->userData) == true
+         && transacP->mID == mid)
+        {
+            if (transacP->callback != NULL)
+            {
+                coap_packet_t message;
+                coap_packet_t * transactionMessage = (coap_packet_t *)transacP->message;
+
+                coap_init_message(&message, COAP_TYPE_ACK, code, mid);
+                if (transactionMessage != NULL && transactionMessage->token_len > 0)
+                {
+                    coap_set_header_token(&message, transactionMessage->token, transactionMessage->token_len);
+                }
+
+                transacP->callback(contextP, transacP, &message);
+                coap_free_header(&message);
+            }
+            transaction_remove(contextP, transacP);
+            return true;
+        }
+
+        transacP = transacP->next;
+    }
+    return false;
+}
+
 int transaction_send(lwm2m_context_t * contextP,
                      lwm2m_transaction_t * transacP)
 {

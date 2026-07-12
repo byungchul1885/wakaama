@@ -154,9 +154,50 @@ static void non_deferred_result_cancels_pending_request(void)
     lwm2m_close(contextP);
 }
 
+static void execute_with_token_preserves_caller_token(void)
+{
+    lwm2m_context_t *contextP = lwm2m_init(NULL);
+    lwm2m_client_t client;
+    lwm2m_uri_t uri;
+    coap_packet_t request;
+    static const uint8_t token[] = {0x01, 0x23, 0x45, 0x67, 0x89};
+    size_t requestLength;
+    uint8_t *requestBuffer;
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(contextP);
+    memset(&client, 0, sizeof(client));
+    client.internalID = 7;
+    client.sessionH = (void *)(uintptr_t)1;
+    contextP->clientList = &client;
+    prv_uri(&uri);
+
+    CU_ASSERT_EQUAL(lwm2m_dm_execute_with_token(contextP,
+                                                client.internalID,
+                                                &uri,
+                                                LWM2M_CONTENT_TEXT,
+                                                NULL,
+                                                0U,
+                                                token,
+                                                sizeof(token),
+                                                NULL,
+                                                NULL),
+                    NO_ERROR);
+    requestBuffer = test_get_response_buffer(&requestLength);
+    memset(&request, 0, sizeof(request));
+    CU_ASSERT_EQUAL(coap_parse_message(&request, requestBuffer, (uint16_t)requestLength), NO_ERROR);
+    CU_ASSERT_EQUAL(request.code, COAP_POST);
+    CU_ASSERT_EQUAL(request.token_len, sizeof(token));
+    CU_ASSERT_NSTRING_EQUAL(request.token, token, sizeof(token));
+
+    coap_free_header(&request);
+    contextP->clientList = NULL;
+    lwm2m_close(contextP);
+}
+
 static struct TestTable table[] = {
     {"deferred Execute completion", deferred_execute_deduplicates_and_completes},
     {"deferred Execute immediate failure", non_deferred_result_cancels_pending_request},
+    {"Execute caller token", execute_with_token_preserves_caller_token},
     {NULL, NULL},
 };
 

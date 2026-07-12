@@ -1041,6 +1041,16 @@ int lwm2m_dm_write(lwm2m_context_t *contextP, uint16_t clientID, lwm2m_uri_t *ur
 int lwm2m_dm_write_attributes(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_uri_t * uriP, lwm2m_attributes_t * attrP, lwm2m_result_callback_t callback, void * userData);
 int lwm2m_dm_execute(lwm2m_context_t *contextP, uint16_t clientID, lwm2m_uri_t *uriP, lwm2m_media_type_t format,
                      uint8_t *buffer, size_t length, lwm2m_result_callback_t callback, void *userData);
+int lwm2m_dm_execute_with_token(lwm2m_context_t *contextP,
+                                uint16_t clientID,
+                                lwm2m_uri_t *uriP,
+                                lwm2m_media_type_t format,
+                                uint8_t *buffer,
+                                size_t length,
+                                const uint8_t *token,
+                                size_t tokenLength,
+                                lwm2m_result_callback_t callback,
+                                void *userData);
 int lwm2m_dm_create(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_uri_t * uriP, int numData, lwm2m_data_t * dataP, lwm2m_result_callback_t callback, void * userData);
 int lwm2m_dm_delete(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_uri_t * uriP, lwm2m_result_callback_t callback, void * userData);
 

@@ -755,9 +755,17 @@ static void prv_resultCallback(lwm2m_context_t * contextP,
     transaction_free_userData(contextP, transacP);
 }
 
-static int prv_makeOperation(lwm2m_context_t *contextP, uint16_t clientID, lwm2m_uri_t *uriP, coap_method_t method,
-                             lwm2m_media_type_t format, uint8_t *buffer, size_t length,
-                             lwm2m_result_callback_t callback, void *userData) {
+static int prv_makeOperationWithToken(lwm2m_context_t *contextP,
+                                      uint16_t clientID,
+                                      lwm2m_uri_t *uriP,
+                                      coap_method_t method,
+                                      lwm2m_media_type_t format,
+                                      uint8_t *buffer,
+                                      size_t length,
+                                      uint8_t tokenLength,
+                                      const uint8_t *token,
+                                      lwm2m_result_callback_t callback,
+                                      void *userData) {
     lwm2m_client_t * clientP;
     lwm2m_transaction_t * transaction;
     dm_data_t * dataP;
@@ -765,7 +773,13 @@ static int prv_makeOperation(lwm2m_context_t *contextP, uint16_t clientID, lwm2m
     clientP = (lwm2m_client_t *)lwm2m_list_find((lwm2m_list_t *)contextP->clientList, clientID);
     if (clientP == NULL) return COAP_404_NOT_FOUND;
 
-    transaction = transaction_new(clientP->sessionH, method, clientP->altPath, uriP, contextP->nextMID++, 4, NULL);
+    transaction = transaction_new(clientP->sessionH,
+                                  method,
+                                  clientP->altPath,
+                                  uriP,
+                                  contextP->nextMID++,
+                                  tokenLength,
+                                  (uint8_t *)token);
     if (transaction == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
 
     if (method == COAP_GET)
@@ -801,6 +815,28 @@ static int prv_makeOperation(lwm2m_context_t *contextP, uint16_t clientID, lwm2m
     contextP->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transaction);
 
     return transaction_send(contextP, transaction);
+}
+
+static int prv_makeOperation(lwm2m_context_t *contextP,
+                             uint16_t clientID,
+                             lwm2m_uri_t *uriP,
+                             coap_method_t method,
+                             lwm2m_media_type_t format,
+                             uint8_t *buffer,
+                             size_t length,
+                             lwm2m_result_callback_t callback,
+                             void *userData) {
+    return prv_makeOperationWithToken(contextP,
+                                      clientID,
+                                      uriP,
+                                      method,
+                                      format,
+                                      buffer,
+                                      length,
+                                      4U,
+                                      NULL,
+                                      callback,
+                                      userData);
 }
 
 static
@@ -877,6 +913,36 @@ int lwm2m_dm_execute(lwm2m_context_t *contextP, uint16_t clientID, lwm2m_uri_t *
                               COAP_POST,
                               format, buffer, length,
                               callback, userData);
+}
+
+int lwm2m_dm_execute_with_token(lwm2m_context_t *contextP,
+                                uint16_t clientID,
+                                lwm2m_uri_t *uriP,
+                                lwm2m_media_type_t format,
+                                uint8_t *buffer,
+                                size_t length,
+                                const uint8_t *token,
+                                size_t tokenLength,
+                                lwm2m_result_callback_t callback,
+                                void *userData) {
+    LOG_ARG_DBG("clientID: %d, format: %s, length: %zd", clientID, STR_MEDIA_TYPE(format), length);
+    LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
+    if (!LWM2M_URI_IS_SET_RESOURCE(uriP) || token == NULL || tokenLength == 0U
+        || tokenLength > LWM2M_COAP_TOKEN_MAX_LEN)
+    {
+        return COAP_400_BAD_REQUEST;
+    }
+    return prv_makeOperationWithToken(contextP,
+                                      clientID,
+                                      uriP,
+                                      COAP_POST,
+                                      format,
+                                      buffer,
+                                      length,
+                                      (uint8_t)tokenLength,
+                                      token,
+                                      callback,
+                                      userData);
 }
 
 static

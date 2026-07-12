@@ -16,12 +16,15 @@ typedef struct {
     unsigned int calls;
     lwm2m_reporting_send_request_id_t requestId;
     uint8_t result;
+    uint16_t expectedMessageId;
+    const char *expectedToken;
 } callback_state_t;
 
 static uint8_t prv_asyncCallback(lwm2m_context_t *contextP,
                                  lwm2m_reporting_send_request_id_t requestId,
                                  uint16_t clientId,
                                  const char *endpointName,
+                                 uint16_t messageId,
                                  lwm2m_media_type_t format,
                                  const uint8_t *token,
                                  size_t tokenLength,
@@ -35,9 +38,10 @@ static uint8_t prv_asyncCallback(lwm2m_context_t *contextP,
     state->requestId = requestId;
     CU_ASSERT_EQUAL(clientId, 7);
     CU_ASSERT_STRING_EQUAL(endpointName, "endpoint-1");
+    CU_ASSERT_EQUAL(messageId, state->expectedMessageId);
     CU_ASSERT_EQUAL(format, LWM2M_CONTENT_SENML_CBOR);
     CU_ASSERT_EQUAL(tokenLength, 3);
-    CU_ASSERT_NSTRING_EQUAL(token, "tok", 3);
+    CU_ASSERT_NSTRING_EQUAL(token, state->expectedToken, 3);
     CU_ASSERT_EQUAL(dataLength, 2);
     CU_ASSERT_EQUAL(data[0], 0x81);
     CU_ASSERT_EQUAL(data[1], 0xA0);
@@ -72,12 +76,14 @@ static void prv_message(coap_packet_t *message, uint16_t mid) {
 
 static void async_send_defers_deduplicates_and_completes(void) {
     lwm2m_context_t *contextP = prv_context();
-    callback_state_t state = {0U, 0U, COAP_IGNORE};
+    callback_state_t state = {0U, 0U, COAP_IGNORE, 0x1234, "tok"};
     coap_packet_t message;
     coap_packet_t response;
     coap_packet_t finalResponse;
     size_t responseLength;
     uint8_t *responseBuffer;
+    lwm2m_reporting_send_request_id_t deferredRequestId;
+    static uint8_t differentToken[] = {'n', 'e', 'w'};
 
     memset(&message, 0, sizeof(message));
     memset(&response, 0, sizeof(response));
@@ -94,10 +100,18 @@ static void async_send_defers_deduplicates_and_completes(void) {
 
     CU_ASSERT_EQUAL(reporting_handleSend(contextP, (void *)(uintptr_t)1, &message, &response), NO_ERROR);
     CU_ASSERT_EQUAL(state.calls, 1);
+    deferredRequestId = state.requestId;
 
-    CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, state.requestId, COAP_204_CHANGED), NO_ERROR);
+    state.result = COAP_503_SERVICE_UNAVAILABLE;
+    state.expectedToken = "new";
+    coap_set_header_token(&message, differentToken, sizeof(differentToken));
+    CU_ASSERT_EQUAL(reporting_handleSend(contextP, (void *)(uintptr_t)1, &message, &response),
+                    COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_EQUAL(state.calls, 2);
+
+    CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, deferredRequestId, COAP_204_CHANGED), NO_ERROR);
     CU_ASSERT_PTR_NOT_NULL(contextP->transactionList);
-    CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, state.requestId, COAP_204_CHANGED), COAP_404_NOT_FOUND);
+    CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, deferredRequestId, COAP_204_CHANGED), COAP_404_NOT_FOUND);
 
     responseBuffer = test_get_response_buffer(&responseLength);
     memset(&finalResponse, 0, sizeof(finalResponse));
@@ -116,7 +130,7 @@ static void async_send_defers_deduplicates_and_completes(void) {
 
 static void async_send_can_reject_immediately(void) {
     lwm2m_context_t *contextP = prv_context();
-    callback_state_t state = {0U, 0U, COAP_503_SERVICE_UNAVAILABLE};
+    callback_state_t state = {0U, 0U, COAP_503_SERVICE_UNAVAILABLE, 0x5678, "tok"};
     coap_packet_t message;
     coap_packet_t response;
 

@@ -33,11 +33,15 @@ struct _lwm2m_reporting_send_request_ {
 
 static lwm2m_reporting_send_request_t *prv_findPendingByMessage(lwm2m_context_t *contextP,
                                                                uint16_t clientId,
-                                                               uint16_t messageId) {
+                                                               uint16_t messageId,
+                                                               const uint8_t *token,
+                                                               size_t tokenLength) {
     lwm2m_reporting_send_request_t *requestP;
 
     for (requestP = contextP->reportingSendRequestList; requestP != NULL; requestP = requestP->next) {
-        if (requestP->clientId == clientId && requestP->messageId == messageId) {
+        if (requestP->clientId == clientId && requestP->messageId == messageId
+            && requestP->tokenLength == tokenLength
+            && (tokenLength == 0U || memcmp(requestP->token, token, tokenLength) == 0)) {
             return requestP;
         }
     }
@@ -88,7 +92,8 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
         return COAP_400_BAD_REQUEST;
 
     for (clientP = contextP->clientList; clientP != NULL; clientP = clientP->next) {
-        if (clientP->sessionH == fromSessionH)
+        if (clientP->sessionH != NULL
+            && lwm2m_session_is_equal(fromSessionH, clientP->sessionH, contextP->userData))
             break;
     }
     if (clientP == NULL)
@@ -104,7 +109,12 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
         lwm2m_reporting_send_request_t *requestP;
         uint8_t callbackResult;
 
-        if (prv_findPendingByMessage(contextP, clientP->internalID, message->mid) != NULL) {
+        if (prv_findPendingByMessage(contextP,
+                                    clientP->internalID,
+                                    message->mid,
+                                    message->token,
+                                    message->token_len)
+            != NULL) {
             return prv_deferredResponse(message, response);
         }
 
@@ -127,6 +137,7 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
                                                               requestP->requestId,
                                                               clientP->internalID,
                                                               clientP->name,
+                                                              requestP->messageId,
                                                               format,
                                                               requestP->token,
                                                               requestP->tokenLength,
@@ -188,14 +199,13 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
         return COAP_404_NOT_FOUND;
     }
 
-    if (previousP == NULL) {
-        contextP->reportingSendRequestList = requestP->next;
-    } else {
-        previousP->next = requestP->next;
-    }
-
     clientP = (lwm2m_client_t *)lwm2m_list_find((lwm2m_list_t *)contextP->clientList, requestP->clientId);
     if (clientP == NULL) {
+        if (previousP == NULL) {
+            contextP->reportingSendRequestList = requestP->next;
+        } else {
+            previousP->next = requestP->next;
+        }
         lwm2m_free(requestP);
         return COAP_404_NOT_FOUND;
     }
@@ -207,10 +217,16 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
                                    contextP->nextMID++,
                                    (uint8_t)requestP->tokenLength,
                                    requestP->token);
-    lwm2m_free(requestP);
     if (transactionP == NULL) {
         return COAP_500_INTERNAL_SERVER_ERROR;
     }
+
+    if (previousP == NULL) {
+        contextP->reportingSendRequestList = requestP->next;
+    } else {
+        previousP->next = requestP->next;
+    }
+    lwm2m_free(requestP);
 
     contextP->transactionList =
         (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transactionP);

@@ -877,6 +877,7 @@ typedef uint8_t (*lwm2m_reporting_async_send_callback_t)(
     lwm2m_reporting_send_request_id_t requestId,
     uint16_t clientId,
     const char *endpointName,
+    uint16_t messageId,
     lwm2m_media_type_t format,
     const uint8_t *token,
     size_t tokenLength,

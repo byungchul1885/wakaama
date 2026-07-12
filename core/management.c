@@ -54,6 +54,183 @@
 
 
 #ifdef LWM2M_CLIENT_MODE
+#ifndef LWM2M_VERSION_1_0
+struct _lwm2m_deferred_request_
+{
+    lwm2m_deferred_request_t *next;
+    lwm2m_deferred_request_id_t requestId;
+    uint16_t serverShortId;
+    uint16_t messageId;
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t tokenLength;
+};
+
+static lwm2m_deferred_request_t *prv_findDeferredByMessage(lwm2m_context_t *contextP,
+                                                           uint16_t serverShortId,
+                                                           uint16_t messageId)
+{
+    lwm2m_deferred_request_t *requestP;
+
+    for (requestP = contextP->deferredRequestList; requestP != NULL; requestP = requestP->next)
+    {
+        if (requestP->serverShortId == serverShortId && requestP->messageId == messageId)
+            return requestP;
+    }
+    return NULL;
+}
+
+static lwm2m_deferred_request_id_t prv_nextDeferredRequestId(lwm2m_context_t *contextP)
+{
+    lwm2m_deferred_request_id_t candidate;
+    lwm2m_deferred_request_t *requestP;
+    bool found;
+
+    do
+    {
+        candidate = ++contextP->nextDeferredRequestId;
+        if (candidate == 0U)
+            candidate = ++contextP->nextDeferredRequestId;
+        found = false;
+        for (requestP = contextP->deferredRequestList; requestP != NULL; requestP = requestP->next)
+        {
+            if (requestP->requestId == candidate)
+            {
+                found = true;
+                break;
+            }
+        }
+    } while (found);
+    return candidate;
+}
+
+static uint8_t prv_deferredResponse(coap_packet_t *message, coap_packet_t *response)
+{
+    if (message->type != COAP_TYPE_CON)
+        return COAP_IGNORE;
+    coap_init_message(response, COAP_TYPE_ACK, COAP_EMPTY_MESSAGE_CODE, message->mid);
+    return NO_ERROR;
+}
+
+static lwm2m_deferred_request_t *prv_findDeferredById(lwm2m_context_t *contextP,
+                                                      lwm2m_deferred_request_id_t requestId,
+                                                      lwm2m_deferred_request_t **previousPP)
+{
+    lwm2m_deferred_request_t *previousP = NULL;
+    lwm2m_deferred_request_t *requestP = contextP->deferredRequestList;
+
+    while (requestP != NULL && requestP->requestId != requestId)
+    {
+        previousP = requestP;
+        requestP = requestP->next;
+    }
+    if (previousPP != NULL)
+        *previousPP = previousP;
+    return requestP;
+}
+
+static void prv_removeDeferred(lwm2m_context_t *contextP,
+                               lwm2m_deferred_request_t *requestP,
+                               lwm2m_deferred_request_t *previousP)
+{
+    if (previousP == NULL)
+        contextP->deferredRequestList = requestP->next;
+    else
+        previousP->next = requestP->next;
+    lwm2m_free(requestP);
+}
+
+int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t *requestIdP)
+{
+    lwm2m_deferred_request_t *requestP;
+
+    if (contextP == NULL || requestIdP == NULL || !contextP->currentDmRequestActive
+        || contextP->currentDmDeferredRequestId != 0U)
+        return COAP_400_BAD_REQUEST;
+    requestP = (lwm2m_deferred_request_t *)lwm2m_malloc(sizeof(*requestP));
+    if (requestP == NULL)
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    memset(requestP, 0, sizeof(*requestP));
+    requestP->requestId = prv_nextDeferredRequestId(contextP);
+    requestP->serverShortId = contextP->currentDmServerShortId;
+    requestP->messageId = contextP->currentDmMessageId;
+    requestP->tokenLength = contextP->currentRequestTokenLen;
+    if (requestP->tokenLength > 0U)
+        memcpy(requestP->token, contextP->currentRequestToken, requestP->tokenLength);
+    requestP->next = contextP->deferredRequestList;
+    contextP->deferredRequestList = requestP;
+    contextP->currentDmDeferredRequestId = requestP->requestId;
+    *requestIdP = requestP->requestId;
+    return NO_ERROR;
+}
+
+int lwm2m_cancel_deferred_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t requestId)
+{
+    lwm2m_deferred_request_t *previousP;
+    lwm2m_deferred_request_t *requestP;
+
+    if (contextP == NULL || requestId == 0U)
+        return COAP_400_BAD_REQUEST;
+    requestP = prv_findDeferredById(contextP, requestId, &previousP);
+    if (requestP == NULL)
+        return COAP_404_NOT_FOUND;
+    prv_removeDeferred(contextP, requestP, previousP);
+    if (contextP->currentDmDeferredRequestId == requestId)
+        contextP->currentDmDeferredRequestId = 0U;
+    return NO_ERROR;
+}
+
+int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
+                                    lwm2m_deferred_request_id_t requestId,
+                                    uint8_t responseCode)
+{
+    lwm2m_deferred_request_t *previousP;
+    lwm2m_deferred_request_t *requestP;
+    lwm2m_server_t *serverP;
+    lwm2m_transaction_t *transactionP;
+
+    if (contextP == NULL || requestId == 0U
+        || ((responseCode >> 5) != 2U && (responseCode >> 5) != 4U && (responseCode >> 5) != 5U))
+        return COAP_400_BAD_REQUEST;
+    requestP = prv_findDeferredById(contextP, requestId, &previousP);
+    if (requestP == NULL)
+        return COAP_404_NOT_FOUND;
+    for (serverP = contextP->serverList; serverP != NULL; serverP = serverP->next)
+    {
+        if (serverP->shortID == requestP->serverShortId && serverP->sessionH != NULL)
+            break;
+    }
+    if (serverP == NULL)
+        return COAP_503_SERVICE_UNAVAILABLE;
+    transactionP = transaction_new(serverP->sessionH,
+                                   (coap_method_t)responseCode,
+                                   NULL,
+                                   NULL,
+                                   contextP->nextMID++,
+                                   (uint8_t)requestP->tokenLength,
+                                   requestP->token);
+    if (transactionP == NULL)
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    contextP->transactionList =
+        (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transactionP);
+    prv_removeDeferred(contextP, requestP, previousP);
+    return transaction_send(contextP, transactionP);
+}
+
+void dm_clearDeferredRequests(lwm2m_context_t *contextP)
+{
+    if (contextP == NULL)
+        return;
+    while (contextP->deferredRequestList != NULL)
+    {
+        lwm2m_deferred_request_t *requestP = contextP->deferredRequestList;
+        contextP->deferredRequestList = requestP->next;
+        lwm2m_free(requestP);
+    }
+    contextP->currentDmDeferredRequestId = 0U;
+    contextP->currentDmRequestActive = false;
+}
+#endif
+
 static int prv_readAttributes(multi_option_t * query,
                               lwm2m_attributes_t * attrP)
 {
@@ -377,6 +554,18 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
 #ifndef LWM2M_VERSION_1_0
                     uint8_t previousToken[LWM2M_COAP_TOKEN_MAX_LEN];
                     size_t previousTokenLen = contextP->currentRequestTokenLen;
+                    bool previousRequestActive = contextP->currentDmRequestActive;
+                    uint16_t previousServerShortId = contextP->currentDmServerShortId;
+                    uint16_t previousMessageId = contextP->currentDmMessageId;
+                    lwm2m_deferred_request_id_t previousDeferredRequestId =
+                        contextP->currentDmDeferredRequestId;
+                    lwm2m_deferred_request_id_t deferredRequestId;
+
+                    if (prv_findDeferredByMessage(contextP, serverP->shortID, message->mid) != NULL)
+                    {
+                        result = prv_deferredResponse(message, response);
+                        break;
+                    }
 
                     if (previousTokenLen > 0)
                     {
@@ -387,13 +576,29 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                     {
                         memcpy(contextP->currentRequestToken, message->token, message->token_len);
                     }
+                    contextP->currentDmRequestActive = true;
+                    contextP->currentDmServerShortId = serverP->shortID;
+                    contextP->currentDmMessageId = message->mid;
+                    contextP->currentDmDeferredRequestId = 0U;
 #endif
                     result = object_execute(contextP, uriP, message->payload, message->payload_len);
 #ifndef LWM2M_VERSION_1_0
+                    deferredRequestId = contextP->currentDmDeferredRequestId;
                     contextP->currentRequestTokenLen = previousTokenLen;
                     if (previousTokenLen > 0)
                     {
                         memcpy(contextP->currentRequestToken, previousToken, previousTokenLen);
+                    }
+                    contextP->currentDmRequestActive = previousRequestActive;
+                    contextP->currentDmServerShortId = previousServerShortId;
+                    contextP->currentDmMessageId = previousMessageId;
+                    contextP->currentDmDeferredRequestId = previousDeferredRequestId;
+                    if (deferredRequestId != 0U)
+                    {
+                        if (result == COAP_IGNORE)
+                            result = prv_deferredResponse(message, response);
+                        else
+                            (void)lwm2m_cancel_deferred_request(contextP, deferredRequestId);
                     }
 #endif
                 }

@@ -115,6 +115,11 @@ int main(void) {
 #endif
 #endif
 
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+   if (CUE_SUCCESS != create_management_deferred_test_suit())
+       goto exit;
+#endif
+
    if (CUE_SUCCESS != create_utils_suit())
        goto exit;
 

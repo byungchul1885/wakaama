@@ -194,6 +194,9 @@ void lwm2m_close(lwm2m_context_t * contextP)
 #ifdef LWM2M_CLIENT_MODE
 
     LOG_DBG("Entering");
+#ifndef LWM2M_VERSION_1_0
+    dm_clearDeferredRequests(contextP);
+#endif
     lwm2m_deregister(contextP);
     prv_deleteServerList(contextP);
     prv_deleteBootstrapServerList(contextP);

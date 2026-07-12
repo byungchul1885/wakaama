@@ -22,5 +22,8 @@
 
 uint8_t dm_handleRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP, coap_packet_t *message,
                          coap_packet_t *response);
+#ifndef LWM2M_VERSION_1_0
+void dm_clearDeferredRequests(lwm2m_context_t *contextP);
+#endif
 
 #endif /* WAKAAMA_MANAGEMENT_H */

@@ -885,6 +885,11 @@ typedef uint8_t (*lwm2m_reporting_async_send_callback_t)(
     void *userData);
 #endif
 
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+typedef uint32_t lwm2m_deferred_request_id_t;
+typedef struct _lwm2m_deferred_request_ lwm2m_deferred_request_t;
+#endif
+
 struct _lwm2m_context_
 {
 #ifdef LWM2M_CLIENT_MODE
@@ -901,6 +906,12 @@ struct _lwm2m_context_
 #ifndef LWM2M_VERSION_1_0
     uint8_t              currentRequestToken[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t               currentRequestTokenLen;
+    bool                 currentDmRequestActive;
+    uint16_t             currentDmServerShortId;
+    uint16_t             currentDmMessageId;
+    lwm2m_deferred_request_id_t currentDmDeferredRequestId;
+    lwm2m_deferred_request_t *deferredRequestList;
+    lwm2m_deferred_request_id_t nextDeferredRequestId;
     lwm2m_random_callback_t randomCallback;
     void *               randomCallbackUserData;
 #endif
@@ -953,6 +964,18 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 // its matching LwM2M Server Object (ID 1) instance
 int lwm2m_configure(lwm2m_context_t * contextP, const char * endpointName, const char * msisdn, const char * altPath, uint16_t numObject, lwm2m_object_t * objectList[]);
 int lwm2m_add_object(lwm2m_context_t * contextP, lwm2m_object_t * objectP);
+#ifndef LWM2M_VERSION_1_0
+/*
+ * Defers the response to the Device Management request currently executing an
+ * object callback. The callback must return COAP_IGNORE after this succeeds.
+ * Completion must run on the liblwm2m event-loop thread.
+ */
+int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t *requestIdP);
+int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
+                                    lwm2m_deferred_request_id_t requestId,
+                                    uint8_t responseCode);
+int lwm2m_cancel_deferred_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t requestId);
+#endif
 int lwm2m_remove_object(lwm2m_context_t * contextP, uint16_t id);
 void lwm2m_set_registration_object_filter(lwm2m_context_t *contextP,
                                           lwm2m_registration_object_filter_t callback,

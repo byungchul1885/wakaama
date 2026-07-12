@@ -752,6 +752,7 @@ typedef struct _lwm2m_client_
 typedef struct _lwm2m_transaction_ lwm2m_transaction_t;
 
 typedef void (*lwm2m_transaction_callback_t) (lwm2m_context_t * contextP, lwm2m_transaction_t * transacP, void * message);
+typedef int (*lwm2m_random_callback_t)(void *userData, uint8_t *buffer, size_t length);
 
 #define LWM2M_COAP_TOKEN_MAX_LEN 8
 #define LWM2M_DEVICE_TOKEN_PREFIX 0xFF
@@ -877,6 +878,8 @@ struct _lwm2m_context_
 #ifndef LWM2M_VERSION_1_0
     uint8_t              currentRequestToken[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t               currentRequestTokenLen;
+    lwm2m_random_callback_t randomCallback;
+    void *               randomCallbackUserData;
 #endif
 #ifdef LWM2M_BOOTSTRAP
     lwm2m_bootstrap_command_callback_t bootstrapCommandCallback;
@@ -958,6 +961,11 @@ int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *u
 int lwm2m_send_with_token(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
                           const uint8_t *token, size_t tokenLen, lwm2m_transaction_callback_t callback,
                           void *userData);
+int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServerID,
+                                  lwm2m_media_type_t format, const uint8_t *payload, size_t payloadLen,
+                                  const uint8_t *token, size_t tokenLen,
+                                  lwm2m_transaction_callback_t callback, void *userData);
+void lwm2m_set_random_callback(lwm2m_context_t *contextP, lwm2m_random_callback_t callback, void *userData);
 size_t lwm2m_get_current_request_token(lwm2m_context_t *contextP, uint8_t *buffer, size_t bufferLen);
 #endif
 #endif

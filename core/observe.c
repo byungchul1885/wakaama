@@ -867,7 +867,20 @@ static size_t prv_prepareSendToken(lwm2m_context_t *contextP,
         return contextP->currentRequestTokenLen;
     }
 
-    transaction_generate_device_token(preparedToken);
+    preparedToken[0] = LWM2M_DEVICE_TOKEN_PREFIX;
+    if (contextP != NULL && contextP->randomCallback != NULL)
+    {
+        if (contextP->randomCallback(contextP->randomCallbackUserData,
+                                     preparedToken + 1,
+                                     COAP_TOKEN_LEN - 1) != 0)
+        {
+            return 0;
+        }
+    }
+    else
+    {
+        transaction_generate_device_token(preparedToken);
+    }
     return COAP_TOKEN_LEN;
 }
 #endif
@@ -981,7 +994,11 @@ static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
 
         coap_set_header_uri_path(transactionP->message, "/" URI_SEND_SEGMENT);
         coap_set_header_content_type(transactionP->message, format);
-        coap_set_payload(transactionP->message, buffer, length);
+        if (!transaction_set_payload(transactionP, buffer, (size_t)length)) {
+            transaction_free(transactionP);
+            ret = COAP_500_INTERNAL_SERVER_ERROR;
+            break;
+        }
 
         transactionP->callback = callback;
         transactionP->userData = userData;
@@ -994,7 +1011,6 @@ static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
         } else {
             LOG_ARG_DBG("transaction_send failed for %d: 0x%02X!", targetP->shortID, ret);
         }
-        coap_set_payload(transactionP->message, NULL, 0); // Clear the payload
         if (shortServerID != 0)
             break;
     }
@@ -1027,6 +1043,120 @@ int lwm2m_send_with_token(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
                           const uint8_t *token, size_t tokenLen, lwm2m_transaction_callback_t callback,
                           void *userData) {
     return prv_lwm2m_send(contextP, shortServerID, urisP, numUris, token, tokenLen, callback, userData);
+}
+
+int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServerID,
+                                  lwm2m_media_type_t format, const uint8_t *payload, size_t payloadLen,
+                                  const uint8_t *token, size_t tokenLen,
+                                  lwm2m_transaction_callback_t callback, void *userData)
+{
+#if defined(LWM2M_SUPPORT_SENML_CBOR) || defined(LWM2M_SUPPORT_SENML_JSON)
+    lwm2m_server_t *targetP;
+    uint8_t preparedToken[COAP_TOKEN_LEN];
+    size_t preparedTokenLen;
+    int ret = COAP_404_NOT_FOUND;
+    bool oneGood = false;
+
+    if (contextP == NULL || payload == NULL || payloadLen == 0 || payloadLen > 65536)
+        return COAP_400_BAD_REQUEST;
+    if (format != LWM2M_CONTENT_SENML_CBOR && format != LWM2M_CONTENT_SENML_JSON)
+        return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+    if (tokenLen > 0 && token == NULL)
+        return COAP_400_BAD_REQUEST;
+
+    preparedTokenLen = prv_prepareSendToken(contextP, token, tokenLen, preparedToken);
+    if (preparedTokenLen == 0)
+        return COAP_500_INTERNAL_SERVER_ERROR;
+
+    if (shortServerID == 0 && contextP->serverList != NULL && contextP->serverList->next == NULL)
+        shortServerID = contextP->serverList->shortID;
+
+    for (targetP = contextP->serverList; targetP != NULL; targetP = targetP->next)
+    {
+        lwm2m_transaction_t *transactionP;
+        lwm2m_uri_t uri;
+        bool mute = true;
+        lwm2m_data_t *muteDataP;
+        int muteSize;
+
+        if (shortServerID != 0 && shortServerID != targetP->shortID)
+            continue;
+        if (targetP->sessionH == NULL ||
+            (targetP->status != STATE_REGISTERED && targetP->status != STATE_REG_UPDATE_PENDING &&
+             targetP->status != STATE_REG_UPDATE_NEEDED && targetP->status != STATE_REG_FULL_UPDATE_NEEDED))
+        {
+            if (ret == COAP_404_NOT_FOUND)
+                ret = COAP_405_METHOD_NOT_ALLOWED;
+            if (shortServerID == 0)
+                continue;
+            break;
+        }
+
+        LWM2M_URI_RESET(&uri);
+        uri.objectId = LWM2M_SERVER_OBJECT_ID;
+        uri.instanceId = targetP->servObjInstID;
+        uri.resourceId = LWM2M_SERVER_MUTE_SEND_ID;
+        if (COAP_205_CONTENT == object_readData(contextP, &uri, &muteSize, &muteDataP))
+        {
+            lwm2m_data_decode_bool(muteDataP, &mute);
+            lwm2m_data_free(muteSize, muteDataP);
+        }
+        if (mute)
+        {
+            if (ret == COAP_404_NOT_FOUND)
+                ret = COAP_405_METHOD_NOT_ALLOWED;
+            if (shortServerID == 0)
+                continue;
+            break;
+        }
+
+        LWM2M_URI_RESET(&uri);
+        transactionP = transaction_new(targetP->sessionH, COAP_POST, NULL, &uri, contextP->nextMID++,
+                                       (uint8_t)preparedTokenLen, preparedToken);
+        if (transactionP == NULL)
+        {
+            ret = COAP_500_INTERNAL_SERVER_ERROR;
+            break;
+        }
+        coap_set_header_uri_path(transactionP->message, "/" URI_SEND_SEGMENT);
+        coap_set_header_content_type(transactionP->message, format);
+        if (!transaction_set_payload(transactionP, (uint8_t *)payload, payloadLen))
+        {
+            transaction_free(transactionP);
+            ret = COAP_500_INTERNAL_SERVER_ERROR;
+            break;
+        }
+        transactionP->callback = callback;
+        transactionP->userData = userData;
+        contextP->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transactionP);
+
+        ret = transaction_send(contextP, transactionP);
+        if (ret == NO_ERROR)
+            oneGood = true;
+        if (shortServerID != 0)
+            break;
+    }
+    return oneGood ? NO_ERROR : ret;
+#else
+    (void)contextP;
+    (void)shortServerID;
+    (void)format;
+    (void)payload;
+    (void)payloadLen;
+    (void)token;
+    (void)tokenLen;
+    (void)callback;
+    (void)userData;
+    return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+#endif
+}
+
+void lwm2m_set_random_callback(lwm2m_context_t *contextP, lwm2m_random_callback_t callback, void *userData)
+{
+    if (contextP == NULL)
+        return;
+    contextP->randomCallback = callback;
+    contextP->randomCallbackUserData = userData;
 }
 
 size_t lwm2m_get_current_request_token(lwm2m_context_t *contextP, uint8_t *buffer, size_t bufferLen) {

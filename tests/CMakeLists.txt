@@ -15,6 +15,7 @@ set(TEST_SOURCES
     core_logging_tests.c
     core_message_size_test.c
     core_registration_tests.c
+    core_reporting_tests.c
     core_transaction_tests.c
     core_uritests.c
     core_utils_tests.c

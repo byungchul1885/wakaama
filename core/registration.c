@@ -1586,6 +1586,9 @@ static lwm2m_client_t * prv_getClientByName(lwm2m_context_t * contextP,
 
 void registration_freeClient(lwm2m_context_t *const context, lwm2m_client_t *clientP) {
     LOG_DBG("Entering");
+#ifndef LWM2M_VERSION_1_0
+    reporting_clearClient(context, clientP->internalID);
+#endif
     if (clientP->name != NULL) lwm2m_free(clientP->name);
     if (clientP->msisdn != NULL) lwm2m_free(clientP->msisdn);
     if (clientP->altPath != NULL) lwm2m_free(clientP->altPath);

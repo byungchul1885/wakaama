@@ -862,6 +862,29 @@ typedef int (*lwm2m_bootstrap_callback_t)(lwm2m_context_t *contextP, void *sessi
                                           void *userData);
 #endif
 
+#if defined(LWM2M_SERVER_MODE) && !defined(LWM2M_VERSION_1_0)
+typedef uint32_t lwm2m_reporting_send_request_id_t;
+typedef struct _lwm2m_reporting_send_request_ lwm2m_reporting_send_request_t;
+
+/*
+ * The payload, token and endpoint name are borrowed and remain valid only while
+ * this callback is running. Return COAP_IGNORE to defer the final response.
+ * Any other CoAP response code is returned immediately and does not create a
+ * pending request.
+ */
+typedef uint8_t (*lwm2m_reporting_async_send_callback_t)(
+    lwm2m_context_t *contextP,
+    lwm2m_reporting_send_request_id_t requestId,
+    uint16_t clientId,
+    const char *endpointName,
+    lwm2m_media_type_t format,
+    const uint8_t *token,
+    size_t tokenLength,
+    const uint8_t *data,
+    size_t dataLength,
+    void *userData);
+#endif
+
 struct _lwm2m_context_
 {
 #ifdef LWM2M_CLIENT_MODE
@@ -896,6 +919,12 @@ struct _lwm2m_context_
     void *                  monitorUserData;
     lwm2m_result_callback_t reportingSendCallback;
     void *reportingSendUserData;
+#ifndef LWM2M_VERSION_1_0
+    lwm2m_reporting_async_send_callback_t reportingAsyncSendCallback;
+    void *reportingAsyncSendUserData;
+    lwm2m_reporting_send_request_t *reportingSendRequestList;
+    lwm2m_reporting_send_request_id_t nextReportingSendRequestId;
+#endif
 #endif
 #ifdef LWM2M_BOOTSTRAP_SERVER_MODE
     lwm2m_bootstrap_callback_t bootstrapCallback;
@@ -998,6 +1027,14 @@ int lwm2m_observe_cancel(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_ur
 
 // Send resources Reporting API.
 void lwm2m_reporting_set_send_callback(lwm2m_context_t *contextP, lwm2m_result_callback_t callback, void *userData);
+#ifndef LWM2M_VERSION_1_0
+void lwm2m_reporting_set_async_send_callback(lwm2m_context_t *contextP,
+                                             lwm2m_reporting_async_send_callback_t callback,
+                                             void *userData);
+int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
+                                  lwm2m_reporting_send_request_id_t requestId,
+                                  uint8_t responseCode);
+#endif
 #endif
 
 #ifdef LWM2M_BOOTSTRAP_SERVER_MODE

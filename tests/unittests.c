@@ -109,6 +109,10 @@ int main(void) {
 #ifdef LWM2M_SERVER_MODE
    if (CUE_SUCCESS != create_message_size_test_suit())
        goto exit;
+#ifndef LWM2M_VERSION_1_0
+   if (CUE_SUCCESS != create_reporting_test_suit())
+       goto exit;
+#endif
 #endif
 
    if (CUE_SUCCESS != create_utils_suit())

@@ -19,7 +19,12 @@
 #define WAKAAMA_REPORTING_H
 
 #if defined(LWM2M_SERVER_MODE) && !defined(LWM2M_VERSION_1_0)
-uint8_t reporting_handleSend(lwm2m_context_t *contextP, void *fromSessionH, coap_packet_t *message);
+uint8_t reporting_handleSend(lwm2m_context_t *contextP,
+                             void *fromSessionH,
+                             coap_packet_t *message,
+                             coap_packet_t *response);
+void reporting_clearClient(lwm2m_context_t *contextP, uint16_t clientId);
+void reporting_clear(lwm2m_context_t *contextP);
 #endif
 
 #endif /* WAKAAMA_REPORTING_H */

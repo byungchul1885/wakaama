@@ -211,6 +211,7 @@ void lwm2m_close(lwm2m_context_t * contextP)
 #endif
 
 #ifdef LWM2M_SERVER_MODE
+    reporting_clear(contextP);
     while (NULL != contextP->clientList)
     {
         lwm2m_client_t * clientP;

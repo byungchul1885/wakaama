@@ -202,7 +202,7 @@ static uint8_t handle_request(lwm2m_context_t * contextP,
         break;
 #ifndef LWM2M_VERSION_1_0
     case LWM2M_REQUEST_TYPE_SEND:
-        result = reporting_handleSend(contextP, fromSessionH, message);
+        result = reporting_handleSend(contextP, fromSessionH, message, response);
         break;
 #endif
 #endif

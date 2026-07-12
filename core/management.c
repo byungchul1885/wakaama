@@ -67,13 +67,17 @@ struct _lwm2m_deferred_request_
 
 static lwm2m_deferred_request_t *prv_findDeferredByMessage(lwm2m_context_t *contextP,
                                                            uint16_t serverShortId,
-                                                           uint16_t messageId)
+                                                           uint16_t messageId,
+                                                           const uint8_t *token,
+                                                           size_t tokenLength)
 {
     lwm2m_deferred_request_t *requestP;
 
     for (requestP = contextP->deferredRequestList; requestP != NULL; requestP = requestP->next)
     {
-        if (requestP->serverShortId == serverShortId && requestP->messageId == messageId)
+        if (requestP->serverShortId == serverShortId && requestP->messageId == messageId
+            && requestP->tokenLength == tokenLength
+            && (tokenLength == 0U || memcmp(requestP->token, token, tokenLength) == 0))
             return requestP;
     }
     return NULL;
@@ -561,7 +565,12 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                         contextP->currentDmDeferredRequestId;
                     lwm2m_deferred_request_id_t deferredRequestId;
 
-                    if (prv_findDeferredByMessage(contextP, serverP->shortID, message->mid) != NULL)
+                    if (prv_findDeferredByMessage(contextP,
+                                                 serverP->shortID,
+                                                 message->mid,
+                                                 message->token,
+                                                 message->token_len)
+                        != NULL)
                     {
                         result = prv_deferredResponse(message, response);
                         break;

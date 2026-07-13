@@ -951,31 +951,11 @@ static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
 
     ret = COAP_404_NOT_FOUND;
     for (targetP = contextP->serverList; targetP != NULL; targetP = targetP->next) {
-        bool mute = true;
-        lwm2m_data_t *muteDataP;
-        int muteSize;
-
         if (shortServerID != 0 && shortServerID != targetP->shortID)
             continue;
         if (targetP->sessionH == NULL ||
             (targetP->status != STATE_REGISTERED && targetP->status != STATE_REG_UPDATE_PENDING &&
              targetP->status != STATE_REG_UPDATE_NEEDED && targetP->status != STATE_REG_FULL_UPDATE_NEEDED)) {
-            if (ret == COAP_404_NOT_FOUND)
-                ret = COAP_405_METHOD_NOT_ALLOWED;
-            if (shortServerID == 0)
-                continue;
-            break;
-        }
-
-        LWM2M_URI_RESET(&uri);
-        uri.objectId = LWM2M_SERVER_OBJECT_ID;
-        uri.instanceId = targetP->servObjInstID;
-        uri.resourceId = LWM2M_SERVER_MUTE_SEND_ID;
-        if (COAP_205_CONTENT == object_readData(contextP, &uri, &muteSize, &muteDataP)) {
-            lwm2m_data_decode_bool(muteDataP, &mute);
-            lwm2m_data_free(muteSize, muteDataP);
-        }
-        if (mute) {
             if (ret == COAP_404_NOT_FOUND)
                 ret = COAP_405_METHOD_NOT_ALLOWED;
             if (shortServerID == 0)
@@ -1075,33 +1055,12 @@ int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServe
     {
         lwm2m_transaction_t *transactionP;
         lwm2m_uri_t uri;
-        bool mute = true;
-        lwm2m_data_t *muteDataP;
-        int muteSize;
 
         if (shortServerID != 0 && shortServerID != targetP->shortID)
             continue;
         if (targetP->sessionH == NULL ||
             (targetP->status != STATE_REGISTERED && targetP->status != STATE_REG_UPDATE_PENDING &&
              targetP->status != STATE_REG_UPDATE_NEEDED && targetP->status != STATE_REG_FULL_UPDATE_NEEDED))
-        {
-            if (ret == COAP_404_NOT_FOUND)
-                ret = COAP_405_METHOD_NOT_ALLOWED;
-            if (shortServerID == 0)
-                continue;
-            break;
-        }
-
-        LWM2M_URI_RESET(&uri);
-        uri.objectId = LWM2M_SERVER_OBJECT_ID;
-        uri.instanceId = targetP->servObjInstID;
-        uri.resourceId = LWM2M_SERVER_MUTE_SEND_ID;
-        if (COAP_205_CONTENT == object_readData(contextP, &uri, &muteSize, &muteDataP))
-        {
-            lwm2m_data_decode_bool(muteDataP, &mute);
-            lwm2m_data_free(muteSize, muteDataP);
-        }
-        if (mute)
         {
             if (ret == COAP_404_NOT_FOUND)
                 ret = COAP_405_METHOD_NOT_ALLOWED;

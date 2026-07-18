@@ -1054,6 +1054,11 @@ int lwm2m_dm_execute_with_token(lwm2m_context_t *contextP,
                                 void *userData);
 int lwm2m_dm_create(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_uri_t * uriP, int numData, lwm2m_data_t * dataP, lwm2m_result_callback_t callback, void * userData);
 int lwm2m_dm_delete(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_uri_t * uriP, lwm2m_result_callback_t callback, void * userData);
+int lwm2m_dm_get_block1_progress(lwm2m_context_t *contextP,
+                                 lwm2m_result_callback_t callback,
+                                 void *userData,
+                                 size_t *confirmedBytesP,
+                                 size_t *totalBytesP);
 
 // Information Reporting APIs
 int lwm2m_observe(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_uri_t * uriP, lwm2m_result_callback_t callback, void * userData);

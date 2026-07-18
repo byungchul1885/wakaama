@@ -705,6 +705,8 @@ static void prv_resultCallback(lwm2m_context_t * contextP,
                                void * message)
 {
     dm_data_t * dataP = (dm_data_t *)transacP->userData;
+    uint8_t callbackStatus = COAP_500_INTERNAL_SERVER_ERROR;
+    bool invokeCallback = true;
 
     (void)contextP; /* unused */
 
@@ -732,49 +734,62 @@ static void prv_resultCallback(lwm2m_context_t * contextP,
             {
                 LOG_DBG("Error: coap_get_multi_option_as_path_string() failed for Location_path option in "
                         "prv_resultCallback()");
-                return;
+                invokeCallback = false;
             }
-
-            result = lwm2m_stringToUri(locationString, strlen(locationString), &locationUri);
-            if (result == 0)
+            else
             {
-                LOG_DBG("Error: lwm2m_stringToUri() failed for Location_path option in prv_resultCallback()");
+                result = lwm2m_stringToUri(locationString, strlen(locationString), &locationUri);
+                if (result == 0)
+                {
+                    LOG_DBG("Error: lwm2m_stringToUri() failed for Location_path option in prv_resultCallback()");
+                    invokeCallback = false;
+                }
+                else if (!LWM2M_URI_IS_SET_OBJECT(&locationUri) ||
+                         !LWM2M_URI_IS_SET_INSTANCE(&locationUri) ||
+                         LWM2M_URI_IS_SET_RESOURCE(&locationUri) ||
+                         locationUri.objectId != dataP->uri.objectId)
+                {
+                    LOG_DBG("Error: invalid Location_path option in prv_resultCallback()");
+                    invokeCallback = false;
+                }
+                else
+                {
+                    memcpy(&dataP->uri, &locationUri, sizeof(locationUri));
+                }
                 lwm2m_free(locationString);
-                return;
             }
-            if (!LWM2M_URI_IS_SET_OBJECT(&locationUri) ||
-                !LWM2M_URI_IS_SET_INSTANCE(&locationUri) ||
-                LWM2M_URI_IS_SET_RESOURCE(&locationUri) ||
-                locationUri.objectId != ((dm_data_t*)transacP->userData)->uri.objectId)
-            {
-                LOG_DBG("Error: invalid Location_path option in prv_resultCallback()");
-                lwm2m_free(locationString);
-                return;
-            }
-
-            memcpy(&((dm_data_t*)transacP->userData)->uri, &locationUri, sizeof(locationUri));
-
-            lwm2m_free(locationString);
         }
 
-        uint32_t block_num = 0;
-        uint16_t block_size = 0;
-        uint8_t block_more = 0;
-        block_info_t block_info;
-        int has_block2 = coap_get_header_block2(message, &block_num, &block_more, &block_size, NULL);
-        if (has_block2)
+        if (invokeCallback)
         {
-            block_info.block_num = block_num;
-            block_info.block_size = block_size;
-            block_info.block_more = block_more;
+            uint32_t block_num = 0;
+            uint16_t block_size = 0;
+            uint8_t block_more = 0;
+            block_info_t block_info;
+            int has_block2 = coap_get_header_block2(message, &block_num, &block_more, &block_size, NULL);
+            if (has_block2)
+            {
+                block_info.block_num = block_num;
+                block_info.block_size = block_size;
+                block_info.block_more = block_more;
+                dataP->callback(contextP, dataP->clientID,
+                                &dataP->uri, packet->code, &block_info,
+                                utils_convertMediaType(packet->content_type), packet->payload, packet->payload_len,
+                                dataP->userData);
+            }
+            else
+            {
+                dataP->callback(contextP, dataP->clientID,
+                                &dataP->uri, packet->code, NULL,
+                                utils_convertMediaType(packet->content_type), packet->payload, packet->payload_len,
+                                dataP->userData);
+            }
+        }
+        else
+        {
             dataP->callback(contextP, dataP->clientID,
-                            &dataP->uri, packet->code, &block_info,
-                            utils_convertMediaType(packet->content_type), packet->payload, packet->payload_len,
-                            dataP->userData);
-        } else {
-            dataP->callback(contextP, dataP->clientID,
-                            &dataP->uri, packet->code, NULL,
-                            utils_convertMediaType(packet->content_type), packet->payload, packet->payload_len,
+                            &dataP->uri, callbackStatus, NULL,
+                            LWM2M_CONTENT_TEXT, NULL, 0,
                             dataP->userData);
         }
     }
@@ -936,9 +951,9 @@ int lwm2m_dm_execute(lwm2m_context_t *contextP, uint16_t clientID, lwm2m_uri_t *
     }
 
     return prv_makeOperation(contextP, clientID, uriP,
-                              COAP_POST,
-                              format, buffer, length,
-                              callback, userData);
+                             COAP_POST,
+                             format, buffer, length,
+                             callback, userData);
 }
 
 int lwm2m_dm_execute_with_token(lwm2m_context_t *contextP,
@@ -1011,10 +1026,14 @@ int prv_lwm2m_dm_create(lwm2m_context_t * contextP,
 
     if (length <= 0) return COAP_400_BAD_REQUEST;
 
-    return prv_makeOperation(contextP, clientID, uriP,
-                              COAP_POST,
-                              format, buffer, length,
-                              callback, userData);
+    {
+        int result = prv_makeOperation(contextP, clientID, uriP,
+                                       COAP_POST,
+                                       format, buffer, (size_t)length,
+                                       callback, userData);
+        lwm2m_free(buffer);
+        return result;
+    }
 }
 
 int lwm2m_dm_create(lwm2m_context_t * contextP,
@@ -1046,6 +1065,57 @@ int lwm2m_dm_delete(lwm2m_context_t * contextP,
                               COAP_DELETE,
                               LWM2M_CONTENT_TEXT, NULL, 0,
                               callback, userData);
+}
+
+int lwm2m_dm_get_block1_progress(lwm2m_context_t *contextP,
+                                 lwm2m_result_callback_t callback,
+                                 void *userData,
+                                 size_t *confirmedBytesP,
+                                 size_t *totalBytesP)
+{
+    lwm2m_transaction_t *transactionP;
+
+    if (contextP == NULL || callback == NULL || confirmedBytesP == NULL || totalBytesP == NULL)
+    {
+        return -1;
+    }
+
+    *confirmedBytesP = 0U;
+    *totalBytesP = 0U;
+    for (transactionP = contextP->transactionList; transactionP != NULL; transactionP = transactionP->next)
+    {
+        dm_data_t *dataP;
+        coap_packet_t *messageP;
+        uint32_t blockNum = 0U;
+        uint16_t blockSize = 0U;
+        size_t confirmedBytes = 0U;
+
+        if (transactionP->callback != prv_resultCallback || transactionP->userData == NULL)
+        {
+            continue;
+        }
+        dataP = (dm_data_t *)transactionP->userData;
+        if (dataP->callback != callback || dataP->userData != userData)
+        {
+            continue;
+        }
+
+        *totalBytesP = transactionP->payload_len;
+        messageP = (coap_packet_t *)transactionP->message;
+        if (messageP != NULL && coap_get_header_block1(messageP, &blockNum, NULL, &blockSize, NULL)
+            && blockSize > 0U && (size_t)blockNum <= SIZE_MAX / (size_t)blockSize)
+        {
+            confirmedBytes = (size_t)blockNum * (size_t)blockSize;
+            if (confirmedBytes > *totalBytesP)
+            {
+                confirmedBytes = *totalBytesP;
+            }
+        }
+        *confirmedBytesP = confirmedBytes;
+        return 1;
+    }
+
+    return 0;
 }
 
 int lwm2m_dm_write_attributes(lwm2m_context_t * contextP,

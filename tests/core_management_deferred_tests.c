@@ -194,10 +194,167 @@ static void execute_with_token_preserves_caller_token(void)
     lwm2m_close(contextP);
 }
 
+#ifdef LWM2M_SERVER_MODE
+typedef struct
+{
+    unsigned int calls;
+    int status;
+} result_state_t;
+
+static void prv_result(lwm2m_context_t *contextP,
+                       uint16_t clientID,
+                       lwm2m_uri_t *uriP,
+                       int status,
+                       block_info_t *blockInfoP,
+                       lwm2m_media_type_t format,
+                       uint8_t *data,
+                       size_t dataLength,
+                       void *userData)
+{
+    result_state_t *stateP = (result_state_t *)userData;
+
+    (void)contextP;
+    (void)clientID;
+    (void)uriP;
+    (void)blockInfoP;
+    (void)format;
+    (void)data;
+    (void)dataLength;
+    stateP->calls++;
+    stateP->status = status;
+}
+
+static lwm2m_context_t *prv_server_context(lwm2m_client_t *clientP)
+{
+    lwm2m_context_t *contextP = lwm2m_init(NULL);
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(contextP);
+    memset(clientP, 0, sizeof(*clientP));
+    clientP->internalID = 7;
+    clientP->sessionH = (void *)(uintptr_t)1;
+    clientP->format = LWM2M_CONTENT_TLV;
+    contextP->clientList = clientP;
+    return contextP;
+}
+
+static void block1_progress_tracks_confirmed_bytes(void)
+{
+    lwm2m_client_t client;
+    lwm2m_context_t *contextP = prv_server_context(&client);
+    lwm2m_uri_t uri;
+    result_state_t resultState = {0U, 0};
+    uint8_t payload[1536];
+    uint8_t ackBuffer[64];
+    coap_packet_t request;
+    coap_packet_t ack;
+    uint8_t *requestBuffer;
+    size_t requestLength;
+    size_t confirmedBytes = 99U;
+    size_t totalBytes = 99U;
+    uint16_t ackLength;
+    uint32_t blockNum = 99U;
+    uint8_t blockMore = 0U;
+    uint16_t blockSize = 0U;
+
+    memset(payload, 0xA5, sizeof(payload));
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = 27348;
+    uri.instanceId = 0;
+    uri.resourceId = 14;
+    CU_ASSERT_EQUAL(lwm2m_dm_write(contextP,
+                                   client.internalID,
+                                   &uri,
+                                   LWM2M_CONTENT_OPAQUE,
+                                   payload,
+                                   sizeof(payload),
+                                   false,
+                                   prv_result,
+                                   &resultState),
+                    NO_ERROR);
+    CU_ASSERT_EQUAL(lwm2m_dm_get_block1_progress(contextP,
+                                                 prv_result,
+                                                 &resultState,
+                                                 &confirmedBytes,
+                                                 &totalBytes),
+                    1);
+    CU_ASSERT_EQUAL(confirmedBytes, 0U);
+    CU_ASSERT_EQUAL(totalBytes, sizeof(payload));
+
+    requestBuffer = test_get_response_buffer(&requestLength);
+    memset(&request, 0, sizeof(request));
+    CU_ASSERT_EQUAL(coap_parse_message(&request, requestBuffer, (uint16_t)requestLength), NO_ERROR);
+    CU_ASSERT_TRUE(coap_get_header_block1(&request, &blockNum, &blockMore, &blockSize, NULL));
+    CU_ASSERT_EQUAL(blockNum, 0U);
+    CU_ASSERT_TRUE(blockMore);
+
+    coap_init_message(&ack, COAP_TYPE_ACK, COAP_231_CONTINUE, request.mid);
+    coap_set_header_token(&ack, request.token, request.token_len);
+    coap_set_header_block1(&ack, blockNum, blockMore, blockSize);
+    ackLength = coap_serialize_message(&ack, ackBuffer);
+    CU_ASSERT_NOT_EQUAL(ackLength, 0U);
+    lwm2m_handle_packet(contextP, ackBuffer, ackLength, client.sessionH);
+
+    CU_ASSERT_EQUAL(lwm2m_dm_get_block1_progress(contextP,
+                                                 prv_result,
+                                                 &resultState,
+                                                 &confirmedBytes,
+                                                 &totalBytes),
+                    1);
+    CU_ASSERT_EQUAL(confirmedBytes, blockSize);
+    CU_ASSERT_EQUAL(totalBytes, sizeof(payload));
+
+    coap_free_header(&ack);
+    coap_free_header(&request);
+    contextP->clientList = NULL;
+    lwm2m_close(contextP);
+    CU_ASSERT_EQUAL(resultState.calls, 1U);
+    CU_ASSERT_EQUAL(resultState.status, COAP_503_SERVICE_UNAVAILABLE);
+}
+
+static void create_releases_serialized_source_after_queue(void)
+{
+    lwm2m_client_t client;
+    lwm2m_context_t *contextP = prv_server_context(&client);
+    lwm2m_uri_t uri;
+    lwm2m_data_t *instanceP = lwm2m_data_new(1);
+    result_state_t resultState = {0U, 0};
+
+    CU_ASSERT_PTR_NOT_NULL_FATAL(instanceP);
+    instanceP[0].id = 0;
+    instanceP[0].type = LWM2M_TYPE_OBJECT_INSTANCE;
+    instanceP[0].value.asChildren.count = 1;
+    instanceP[0].value.asChildren.array = lwm2m_data_new(1);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(instanceP[0].value.asChildren.array);
+    instanceP[0].value.asChildren.array[0].id = 0;
+    lwm2m_data_encode_string("5100A030200815", &instanceP[0].value.asChildren.array[0]);
+
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = 27348;
+    CU_ASSERT_EQUAL(lwm2m_dm_create(contextP,
+                                    client.internalID,
+                                    &uri,
+                                    1,
+                                    instanceP,
+                                    prv_result,
+                                    &resultState),
+                    NO_ERROR);
+    lwm2m_data_free(1, instanceP);
+
+    contextP->clientList = NULL;
+    lwm2m_close(contextP);
+    CU_ASSERT_EQUAL(resultState.calls, 1U);
+    CU_ASSERT_EQUAL(resultState.status, COAP_503_SERVICE_UNAVAILABLE);
+}
+#endif
+
 static struct TestTable table[] = {
     {"deferred Execute completion", deferred_execute_deduplicates_and_completes},
     {"deferred Execute immediate failure", non_deferred_result_cancels_pending_request},
     {"Execute caller token", execute_with_token_preserves_caller_token},
+#ifdef LWM2M_SERVER_MODE
+    {"Block1 confirmed byte progress", block1_progress_tracks_confirmed_bytes},
+    {"Create serialized source ownership", create_releases_serialized_source_after_queue},
+#endif
     {NULL, NULL},
 };
 

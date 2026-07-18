@@ -107,11 +107,18 @@ lwm2m_block_data_t * prv_block_insert(lwm2m_block_data_t ** pBlockDataHead, bloc
 {
     lwm2m_block_data_t * blockData = (lwm2m_block_data_t *) lwm2m_malloc(sizeof(lwm2m_block_data_t));
     if (NULL == blockData) return NULL;
+    memset(blockData, 0, sizeof(*blockData));
     blockData->next = *pBlockDataHead;
     blockData->blockType = blockType;
     blockData->identifier = identifier;
-    if (blockType == BLOCK_1) {
+    if (blockType == BLOCK_1)
+    {
         blockData->identifier.uri = lwm2m_strdup(identifier.uri);
+        if (blockData->identifier.uri == NULL)
+        {
+            lwm2m_free(blockData);
+            return NULL;
+        }
     }
     *pBlockDataHead = blockData;
     return blockData;
@@ -158,6 +165,10 @@ static uint8_t prv_coap_raw_block_handler(lwm2m_block_data_t **pBlockDataHead, b
         if (blockData == NULL)
         {
             blockData = prv_block_insert(pBlockDataHead, identifier, blockType);
+            if (blockData == NULL)
+            {
+                return COAP_500_INTERNAL_SERVER_ERROR;
+            }
         }
         else if (blockData->mid == mid)
         {
@@ -176,6 +187,10 @@ static uint8_t prv_coap_raw_block_handler(lwm2m_block_data_t **pBlockDataHead, b
         if (blockNum <= blockData->blockNum){
             // this is a retransmissiion, ignore
             return COAP_IGNORE;
+        }
+        if (blockNum != blockData->blockNum + 1)
+        {
+            return COAP_408_REQ_ENTITY_INCOMPLETE;
         }
     }
 
@@ -206,6 +221,10 @@ static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block
         if (blockData == NULL)
         {
             blockData = prv_block_insert(pBlockDataHead, identifier, blockType);
+            if (blockData == NULL)
+            {
+                return COAP_500_INTERNAL_SERVER_ERROR;
+            }
         }
         else
         {
@@ -312,14 +331,21 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **pBlockDataHead,
                             uint16_t mid,
 #endif
                             const uint8_t *buffer, size_t length, uint16_t blockSize, uint32_t blockNum, bool blockMore,
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+                            bool rawBlock1,
+#endif
                             uint8_t **outputBuffer, size_t *outputLength) {
     block_data_identifier_t identifier;
     identifier.uri = (char *) uri;
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
-    return prv_coap_raw_block_handler(pBlockDataHead, identifier, mid, BLOCK_1, buffer, length, blockSize, blockNum, blockMore);
-#else
-    return prv_coap_block_handler(pBlockDataHead, identifier, BLOCK_1, buffer, length, blockSize, blockNum, blockMore, outputBuffer, outputLength);
+    if (rawBlock1)
+    {
+        return prv_coap_raw_block_handler(pBlockDataHead, identifier, mid, BLOCK_1, buffer, length, blockSize,
+                                          blockNum, blockMore);
+    }
 #endif
+    return prv_coap_block_handler(pBlockDataHead, identifier, BLOCK_1, buffer, length, blockSize, blockNum, blockMore,
+                                  outputBuffer, outputLength);
 }
 
 lwm2m_block_data_t * block2_create(lwm2m_block_data_t ** pBlockDataHead, uint16_t mid)

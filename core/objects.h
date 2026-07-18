@@ -34,6 +34,9 @@ uint8_t object_create(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_media_
                       size_t length);
 uint8_t object_execute(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, uint8_t *buffer, size_t length);
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
+bool object_raw_block1_write_supported(lwm2m_context_t *contextP, lwm2m_uri_t *uriP);
+bool object_raw_block1_create_supported(lwm2m_context_t *contextP, lwm2m_uri_t *uriP);
+bool object_raw_block1_execute_supported(lwm2m_context_t *contextP, lwm2m_uri_t *uriP);
 uint8_t object_raw_block1_write(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_media_type_t format,
                                 uint8_t *buffer, size_t length, uint32_t block_num, uint8_t block_more);
 uint8_t object_raw_block1_create(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_media_type_t format,

@@ -335,7 +335,7 @@ int json_findAndCheckData(const lwm2m_uri_t * uriP, uri_depth_t baseLevel, size_
 // defined in block.c
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
 uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, uint16_t mid, const uint8_t *buffer,
-                            size_t length, uint16_t blockSize, uint32_t blockNum, bool blockMore,
+                            size_t length, uint16_t blockSize, uint32_t blockNum, bool blockMore, bool rawBlock1,
                             uint8_t **outputBuffer, size_t *outputLength);
 #else
 uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, const uint8_t *buffer, size_t length,

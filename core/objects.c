@@ -576,6 +576,30 @@ exit:
 }
 
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
+bool object_raw_block1_write_supported(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
+{
+    lwm2m_object_t *targetP;
+
+    targetP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+    return targetP != NULL && targetP->rawBlock1WriteFunc != NULL;
+}
+
+bool object_raw_block1_create_supported(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
+{
+    lwm2m_object_t *targetP;
+
+    targetP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+    return targetP != NULL && targetP->rawBlock1CreateFunc != NULL;
+}
+
+bool object_raw_block1_execute_supported(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
+{
+    lwm2m_object_t *targetP;
+
+    targetP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+    return targetP != NULL && targetP->rawBlock1ExecuteFunc != NULL;
+}
+
 uint8_t object_raw_block1_write(lwm2m_context_t * contextP,
                             lwm2m_uri_t * uriP,
                             lwm2m_media_type_t format,

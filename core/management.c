@@ -503,19 +503,34 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
             if (IS_OPTION(message, COAP_OPTION_BLOCK1))
             {
-                if (!LWM2M_URI_IS_SET_INSTANCE(uriP))
+                if (!LWM2M_URI_IS_SET_INSTANCE(uriP)
+                    && object_raw_block1_create_supported(contextP, uriP))
                 {
                     result = object_raw_block1_create(contextP, uriP, format, message->payload, message->payload_len, message->block1_num, message->block1_more);
+                    break;
                 }
-                else if (!LWM2M_URI_IS_SET_RESOURCE(uriP))
+                if (LWM2M_URI_IS_SET_INSTANCE(uriP)
+                    && !LWM2M_URI_IS_SET_RESOURCE(uriP)
+                    && object_raw_block1_write_supported(contextP, uriP))
                 {
                     result = object_raw_block1_write(contextP, uriP, format, message->payload, message->payload_len, message->block1_num, message->block1_more);
+                    break;
                 }
-                else
+                if (LWM2M_URI_IS_SET_RESOURCE(uriP)
+                    && (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) || format == LWM2M_CONTENT_TEXT)
+                    && object_raw_block1_execute_supported(contextP, uriP))
                 {
                     result = object_raw_block1_execute(contextP, uriP, message->payload, message->payload_len, message->block1_num, message->block1_more);
+                    break;
                 }
-                break;
+                if (LWM2M_URI_IS_SET_RESOURCE(uriP)
+                    && IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)
+                    && format != LWM2M_CONTENT_TEXT
+                    && object_raw_block1_write_supported(contextP, uriP))
+                {
+                    result = object_raw_block1_write(contextP, uriP, format, message->payload, message->payload_len, message->block1_num, message->block1_more);
+                    break;
+                }
             }
 #endif
             if (!LWM2M_URI_IS_SET_INSTANCE(uriP))
@@ -622,7 +637,9 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
     case COAP_PUT:
         {
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
-            if (IS_OPTION(message, COAP_OPTION_BLOCK1))
+            if (IS_OPTION(message, COAP_OPTION_BLOCK1)
+                && !IS_OPTION(message, COAP_OPTION_URI_QUERY)
+                && object_raw_block1_write_supported(contextP, uriP))
             {
                 result = object_raw_block1_write(contextP, uriP, format, message->payload, message->payload_len, message->block1_num, message->block1_more);
                 break;

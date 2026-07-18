@@ -54,10 +54,8 @@ int main(void) {
     /* initialize the CUnit test registry */
     if (CUE_SUCCESS != CU_initialize_registry())
         return CU_get_error();
-#ifndef LWM2M_RAW_BLOCK1_REQUESTS
     if (CUE_SUCCESS != create_block1_suit())
         goto exit;
-#endif
     if (CUE_SUCCESS != create_block2_suit())
         goto exit;
 

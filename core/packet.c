@@ -137,6 +137,48 @@ static void handle_reset(lwm2m_context_t * contextP,
 #endif
 }
 
+#if defined(LWM2M_CLIENT_MODE) && defined(LWM2M_RAW_BLOCK1_REQUESTS)
+static bool prv_uses_raw_block1(lwm2m_context_t *contextP, void *fromSessionH, coap_packet_t *message)
+{
+    lwm2m_uri_t uri;
+    lwm2m_request_type_t requestType;
+    lwm2m_media_type_t format;
+
+    requestType = uri_decode(contextP->altPath, message->uri_path, message->code, &uri);
+    if (requestType != LWM2M_REQUEST_TYPE_DM || utils_findServer(contextP, fromSessionH) == NULL)
+    {
+        return false;
+    }
+
+    if (message->code == COAP_PUT)
+    {
+        return !IS_OPTION(message, COAP_OPTION_URI_QUERY)
+            && object_raw_block1_write_supported(contextP, &uri);
+    }
+    if (message->code != COAP_POST)
+    {
+        return false;
+    }
+    if (!LWM2M_URI_IS_SET_INSTANCE(&uri))
+    {
+        return object_raw_block1_create_supported(contextP, &uri);
+    }
+    if (!LWM2M_URI_IS_SET_RESOURCE(&uri))
+    {
+        return object_raw_block1_write_supported(contextP, &uri);
+    }
+
+    format = IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)
+           ? utils_convertMediaType(message->content_type)
+           : LWM2M_CONTENT_TLV;
+    if (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) || format == LWM2M_CONTENT_TEXT)
+    {
+        return object_raw_block1_execute_supported(contextP, &uri);
+    }
+    return object_raw_block1_write_supported(contextP, &uri);
+}
+#endif
+
 static uint8_t handle_request(lwm2m_context_t * contextP,
                               void * fromSessionH,
                               coap_packet_t * message,
@@ -539,6 +581,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             uint32_t block_num = 0;
             uint16_t block_size = lwm2m_get_coap_block_size();
             uint32_t block_offset = 0;
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+            bool rawBlock1 = false;
+#endif
 
             /* prepare response */
             if (message->type == COAP_TYPE_CON)
@@ -611,7 +656,6 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     uint16_t block1_size;
                     uint8_t * complete_buffer = NULL;
                     size_t complete_buffer_size;
-
                     // parse block1 header
                     coap_get_header_block1(message, &block1_num, &block1_more, &block1_size, NULL);
                     LOG_ARG_DBG("Blockwise: block1 request NUM %u (SZX %u/ SZX Max%u) MORE %u", block1_num, block1_size,
@@ -623,26 +667,34 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     } else {
                     // handle block 1
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
-                        coap_error_code = coap_block1_handler(&peerP->blockData, uri, message->mid, message->payload, message->payload_len, block1_size, block1_num, block1_more, &complete_buffer, &complete_buffer_size);
+#ifdef LWM2M_CLIENT_MODE
+                        rawBlock1 = prv_uses_raw_block1(contextP, fromSessionH, message);
+#endif
+                        coap_error_code = coap_block1_handler(&peerP->blockData, uri, message->mid, message->payload,
+                                                             message->payload_len, block1_size, block1_num,
+                                                             block1_more, rawBlock1, &complete_buffer,
+                                                             &complete_buffer_size);
 #else
                         coap_error_code = coap_block1_handler(&peerP->blockData, uri, message->payload, message->payload_len, block1_size, block1_num, block1_more, &complete_buffer, &complete_buffer_size);
 #endif
                         lwm2m_free(uri);
                     }
-#ifndef LWM2M_RAW_BLOCK1_REQUESTS
                     // if payload is complete, replace it in the coap message.
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+                    if (!rawBlock1 && coap_error_code == NO_ERROR)
+#else
                     if (coap_error_code == NO_ERROR)
+#endif
                     {
                         message->payload = complete_buffer;
                         message->payload_len = complete_buffer_size;
                     }
-#endif
                     block1_size = MIN(block1_size, lwm2m_get_coap_block_size());
                     coap_set_header_block1(response, block1_num, block1_more, block1_size);
                 }
             }
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
-            if (coap_error_code == NO_ERROR || coap_error_code == COAP_231_CONTINUE )
+            if (coap_error_code == NO_ERROR || (rawBlock1 && coap_error_code == COAP_231_CONTINUE))
 #else
             if (coap_error_code == NO_ERROR)
 #endif

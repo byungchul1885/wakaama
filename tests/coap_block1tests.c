@@ -212,8 +212,10 @@ static uint8_t dispatch_raw_write(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, 
     CU_ASSERT_EQUAL(uriP->resourceId, 14)
     CU_ASSERT_EQUAL(format, LWM2M_CONTENT_OPAQUE)
     CU_ASSERT_TRUE_FATAL(length >= 0)
-    CU_ASSERT_TRUE_FATAL(state->payloadLength + (size_t)length <= sizeof(state->payload))
-    memcpy(state->payload + state->payloadLength, buffer, (size_t)length);
+    if (state->payloadLength + (size_t)length <= sizeof(state->payload))
+    {
+        memcpy(state->payload + state->payloadLength, buffer, (size_t)length);
+    }
     state->payloadLength += (size_t)length;
     state->rawCalls++;
     return COAP_204_CHANGED;
@@ -259,12 +261,12 @@ static lwm2m_context_t *dispatch_context(lwm2m_server_t *serverP, lwm2m_object_t
     return contextP;
 }
 
-static uint8_t dispatch_block(lwm2m_context_t *contextP, uint16_t mid, uint32_t blockNum, bool blockMore,
-                              const uint8_t *payload, size_t payloadLength) {
+static uint8_t dispatch_block_sized(lwm2m_context_t *contextP, uint16_t mid, uint32_t blockNum, bool blockMore,
+                                    uint16_t blockSize, const uint8_t *payload, size_t payloadLength) {
     static uint8_t token[] = {'b', 'l', 'k', '1'};
     coap_packet_t request;
     coap_packet_t response;
-    uint8_t serialized[256];
+    uint8_t serialized[2048];
     size_t serializedLength;
     size_t responseLength;
     uint8_t *responseBuffer;
@@ -275,7 +277,7 @@ static uint8_t dispatch_block(lwm2m_context_t *contextP, uint16_t mid, uint32_t 
     coap_set_header_uri_host(&request, "localhost");
     coap_set_header_uri_path(&request, "27348/0/14");
     coap_set_header_content_type(&request, LWM2M_CONTENT_OPAQUE);
-    coap_set_header_block1(&request, blockNum, blockMore, 16);
+    coap_set_header_block1(&request, blockNum, blockMore, blockSize);
     coap_set_payload(&request, (uint8_t *)payload, payloadLength);
     serializedLength = coap_serialize_message(&request, serialized);
     coap_free_header(&request);
@@ -288,6 +290,11 @@ static uint8_t dispatch_block(lwm2m_context_t *contextP, uint16_t mid, uint32_t 
     uint8_t code = response.code;
     coap_free_header(&response);
     return code;
+}
+
+static uint8_t dispatch_block(lwm2m_context_t *contextP, uint16_t mid, uint32_t blockNum, bool blockMore,
+                              const uint8_t *payload, size_t payloadLength) {
+    return dispatch_block_sized(contextP, mid, blockNum, blockMore, 16, payload, payloadLength);
 }
 
 static void dispatch_context_close(lwm2m_context_t *contextP, lwm2m_server_t *serverP) {
@@ -388,6 +395,38 @@ static void test_packet_assembles_when_raw_callback_is_missing(void) {
 
     dispatch_context_close(contextP, &server);
 }
+
+static void test_packet_streams_two_megabytes_without_assembly(void) {
+    enum { IMAGE_BYTES = 2 * 1024 * 1024, BLOCK_BYTES = 1024 };
+    uint8_t block[BLOCK_BYTES];
+    const uint32_t blockCount = IMAGE_BYTES / BLOCK_BYTES;
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {0};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, true);
+    uint32_t blockNum;
+
+    memset(block, 0xA5, sizeof(block));
+    for (blockNum = 0; blockNum < blockCount; blockNum++)
+    {
+        bool blockMore = blockNum + 1U < blockCount;
+        uint8_t expected = blockMore ? COAP_231_CONTINUE : COAP_204_CHANGED;
+        CU_ASSERT_EQUAL_FATAL(dispatch_block_sized(contextP,
+                                                   (uint16_t)(1000U + blockNum),
+                                                   blockNum,
+                                                   blockMore,
+                                                   BLOCK_BYTES,
+                                                   block,
+                                                   sizeof(block)),
+                              expected)
+    }
+    CU_ASSERT_EQUAL(state.rawCalls, blockCount)
+    CU_ASSERT_EQUAL(state.writeCalls, 0)
+    CU_ASSERT_EQUAL(state.payloadLength, IMAGE_BYTES)
+
+    dispatch_context_close(contextP, &server);
+}
 #endif
 
 static struct TestTable table[] = {
@@ -400,6 +439,7 @@ static struct TestTable table[] = {
     {"raw Block1 rejects gap", test_raw_block1_rejects_gap_without_advancing},
     {"packet dispatches supported raw callback", test_packet_dispatches_raw_callback_when_supported},
     {"packet assembles without raw callback", test_packet_assembles_when_raw_callback_is_missing},
+    {"packet streams two MiB through raw callback", test_packet_streams_two_megabytes_without_assembly},
 #endif
     {NULL, NULL},
 };

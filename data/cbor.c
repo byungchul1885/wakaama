@@ -542,6 +542,9 @@ int cbor_put_singular(uint8_t *buffer, size_t bufferLen, const lwm2m_data_t *dat
             if (res <= 0)
                 return 0;
             result += res;
+            if ((size_t)result > bufferLen ||
+                dataP->value.asBuffer.length > bufferLen - (size_t)result)
+                return 0;
             memcpy(buffer + result, dataP->value.asBuffer.buffer, dataP->value.asBuffer.length);
             res = dataP->value.asBuffer.length;
         }

@@ -253,12 +253,42 @@ static int prv_getRegistrationQuery(lwm2m_context_t * contextP,
 }
 
 #ifndef LWM2M_VERSION_1_0
-#define SMGW_REGISTRATION_ATTEMPT_LIMIT 3
-#define SMGW_REGISTRATION_ATTEMPT_DELAY 300
+#define SMGW_REGISTRATION_ATTEMPT_LIMIT_FALLBACK 4
+#define SMGW_REGISTRATION_ATTEMPT_DELAY_FALLBACK 300
 #define SMGW_REGISTRATION_SEQUENCE_LIMIT 1
 #define SMGW_REGISTRATION_SEQUENCE_DELAY 300
 #define SMGW_DMS_SHORT_SERVER_ID 2
 #define SMGW_METERING_SHORT_SERVER_ID 1
+
+static uint8_t prv_readUint(lwm2m_context_t *contextP,
+                            lwm2m_object_t *objP,
+                            uint16_t instanceId,
+                            uint16_t resourceId,
+                            uint64_t *valueP)
+{
+    uint8_t result = COAP_NO_ERROR;
+    int size = 1;
+    lwm2m_data_t *dataP = lwm2m_data_new(size);
+    if (dataP == NULL)
+    {
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+    dataP[0].id = resourceId;
+    result = objP->readFunc(contextP, instanceId, &size, &dataP, objP);
+    if (result == COAP_205_CONTENT)
+    {
+        if (lwm2m_data_decode_uint(dataP, valueP))
+        {
+            result = COAP_NO_ERROR;
+        }
+        else
+        {
+            result = COAP_400_BAD_REQUEST;
+        }
+    }
+    lwm2m_data_free(size, dataP);
+    return result;
+}
 
 static uint8_t prv_getRegistrationOrder(lwm2m_context_t *contextP,
                                         lwm2m_server_t *targetP,
@@ -305,21 +335,50 @@ static uint8_t prv_getRegistrationFailureBlocking(lwm2m_context_t *contextP,
 static uint8_t prv_getRegistrationAttemptLimit(lwm2m_context_t *contextP,
                                                lwm2m_server_t *targetP,
                                                lwm2m_object_t *serverObjP,
-                                               uint8_t *attemptLimitP,
+                                               uint16_t *attemptLimitP,
                                                uint64_t *attemptDelayP)
 {
-    (void)contextP;
-    (void)targetP;
-    (void)serverObjP;
-    if (attemptLimitP)
+    uint64_t attemptLimit;
+    uint64_t attemptDelay;
+    uint8_t result = prv_readUint(contextP,
+                                  serverObjP,
+                                  targetP->servObjInstID,
+                                  LWM2M_SERVER_COMM_RETRY_COUNT_ID,
+                                  &attemptLimit);
+    if (result == COAP_404_NOT_FOUND)
     {
-        *attemptLimitP = SMGW_REGISTRATION_ATTEMPT_LIMIT;
+        attemptLimit = SMGW_REGISTRATION_ATTEMPT_LIMIT_FALLBACK;
+        result = COAP_NO_ERROR;
     }
-    if (attemptDelayP)
+    if (result == COAP_NO_ERROR)
     {
-        *attemptDelayP = SMGW_REGISTRATION_ATTEMPT_DELAY;
+        result = prv_readUint(contextP,
+                              serverObjP,
+                              targetP->servObjInstID,
+                              LWM2M_SERVER_COMM_RETRY_TIMER_ID,
+                              &attemptDelay);
+        if (result == COAP_404_NOT_FOUND)
+        {
+            attemptDelay = SMGW_REGISTRATION_ATTEMPT_DELAY_FALLBACK;
+            result = COAP_NO_ERROR;
+        }
+        if (result == COAP_NO_ERROR)
+        {
+            if (attemptLimit > UINT16_MAX)
+            {
+                attemptLimit = UINT16_MAX;
+            }
+            if (attemptLimitP)
+            {
+                *attemptLimitP = (uint16_t)attemptLimit;
+            }
+            if (attemptDelayP)
+            {
+                *attemptDelayP = attemptDelay;
+            }
+        }
     }
-    return COAP_NO_ERROR;
+    return result;
 }
 
 static uint8_t prv_getRegistrationSequenceLimit(lwm2m_context_t *contextP,
@@ -438,7 +497,7 @@ static void prv_handleRegistrationAttemptFailure(lwm2m_context_t *contextP, lwm2
     serverObjP = (lwm2m_object_t*)LWM2M_LIST_FIND(contextP->objectList, LWM2M_SERVER_OBJECT_ID);
     if (serverObjP)
     {
-        uint8_t attemptLimit;
+        uint16_t attemptLimit;
         uint64_t attemptDelay;
         uint8_t result;
 
@@ -472,6 +531,22 @@ static void prv_handleRegistrationAttemptFailure(lwm2m_context_t *contextP, lwm2
         LOG_ARG_DBG("%d Registration failed", targetP->shortID);
     }
 }
+
+#ifdef WAKAAMA_REGISTRATION_TEST_API
+uint8_t registration_test_get_attempt_policy(lwm2m_context_t *contextP,
+                                             lwm2m_server_t *targetP,
+                                             lwm2m_object_t *serverObjP,
+                                             uint16_t *attemptLimitP,
+                                             uint64_t *attemptDelayP)
+{
+    return prv_getRegistrationAttemptLimit(contextP, targetP, serverObjP, attemptLimitP, attemptDelayP);
+}
+
+void registration_test_handle_attempt_failure(lwm2m_context_t *contextP, lwm2m_server_t *targetP)
+{
+    prv_handleRegistrationAttemptFailure(contextP, targetP);
+}
+#endif
 #endif
 
 typedef struct

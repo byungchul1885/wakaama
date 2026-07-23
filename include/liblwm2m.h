@@ -641,7 +641,7 @@ typedef struct _lwm2m_server_
     lwm2m_block_data_t *    blockData;   // list to handle temporary block data.
 #ifndef LWM2M_VERSION_1_0
     uint16_t                servObjInstID;// Server object instance ID if not a bootstrap server.
-    uint8_t                 attempt;      // Current registration attempt
+    uint16_t                attempt;      // Current registration attempt
     uint8_t                 sequence;     // Current registration sequence
 #endif
 } lwm2m_server_t;

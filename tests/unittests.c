@@ -99,6 +99,10 @@ int main(void) {
    if (CUE_SUCCESS != create_registration_test_suit())
        goto exit;
 #endif
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+   if (CUE_SUCCESS != create_registration_retry_test_suit())
+       goto exit;
+#endif
 
 #if LWM2M_LOG_LEVEL != LWM2M_LOG_DISABLED
    if (CUE_SUCCESS != create_logging_test_suit())

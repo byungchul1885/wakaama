@@ -15,6 +15,7 @@ set(TEST_SOURCES
     core_logging_tests.c
     core_management_deferred_tests.c
     core_message_size_test.c
+    core_registration_retry_tests.c
     core_registration_tests.c
     core_reporting_tests.c
     core_transaction_tests.c
@@ -42,6 +43,7 @@ target_link_libraries(${TARGET_NAME} PRIVATE PkgConfig::CUNIT)
 
 # Our tests are designed for POSIX systems
 target_compile_definitions(${TARGET_NAME} PRIVATE _POSIX_C_SOURCE=200809)
+target_compile_definitions(${TARGET_NAME} PRIVATE WAKAAMA_REGISTRATION_TEST_API)
 
 target_sources_wakaama(${TARGET_NAME})
 

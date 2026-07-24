@@ -63,6 +63,8 @@ CU_ErrorCode create_reporting_test_suit(void);
 #endif
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
 CU_ErrorCode create_management_deferred_test_suit(void);
+void test_reset_close_connection_count(void);
+size_t test_get_close_connection_count(void);
 #endif
 CU_ErrorCode create_utils_suit(void);
 CU_ErrorCode create_transaction_test_suit(void);

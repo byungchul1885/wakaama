@@ -307,6 +307,38 @@ void transaction_remove(lwm2m_context_t * contextP,
     transaction_free(transacP);
 }
 
+size_t transaction_abort_session(lwm2m_context_t *contextP, void *sessionH)
+{
+    size_t aborted = 0U;
+
+    if (contextP == NULL || sessionH == NULL)
+        return 0U;
+    while (true)
+    {
+        lwm2m_transaction_t **cursorP = &contextP->transactionList;
+        lwm2m_transaction_t *transactionP;
+        lwm2m_transaction_callback_t callback;
+
+        while (*cursorP != NULL
+               && !lwm2m_session_is_equal((*cursorP)->peerH,
+                                          sessionH,
+                                          contextP->userData))
+            cursorP = &(*cursorP)->next;
+        transactionP = *cursorP;
+        if (transactionP == NULL)
+            break;
+
+        *cursorP = transactionP->next;
+        transactionP->next = NULL;
+        callback = transactionP->callback;
+        if (callback != NULL)
+            callback(contextP, transactionP, NULL);
+        transaction_free(transactionP);
+        aborted++;
+    }
+    return aborted;
+}
+
 bool transaction_handleResponse(lwm2m_context_t * contextP,
                                  void * fromSessionH,
                                  coap_packet_t * message,

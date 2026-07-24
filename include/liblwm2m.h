@@ -635,6 +635,9 @@ typedef struct _lwm2m_server_
     time_t                  registration; // date of the last registration in sec or end of client hold off time for bootstrap servers or end of hold off time for registration holds.
     lwm2m_binding_t         binding;      // client connection mode with this server
     void *                  sessionH;
+#ifndef LWM2M_VERSION_1_0
+    uint64_t                sessionGeneration; // positive random generation for the active transport session
+#endif
     lwm2m_status_t          status;
     char *                  location;
     bool                    dirty;
@@ -911,6 +914,7 @@ struct _lwm2m_context_
     bool                 currentDmRequestHasContentFormat;
     lwm2m_media_type_t    currentDmRequestContentFormat;
     uint16_t             currentDmServerShortId;
+    uint64_t             currentDmSessionGeneration;
     uint16_t             currentDmMessageId;
     lwm2m_deferred_request_id_t currentDmDeferredRequestId;
     lwm2m_deferred_request_t *deferredRequestList;
@@ -966,6 +970,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 // LwM2M Security Object (ID 0) must be present with either a bootstrap server or a LWM2M server and
 // its matching LwM2M Server Object (ID 1) instance
 int lwm2m_configure(lwm2m_context_t * contextP, const char * endpointName, const char * msisdn, const char * altPath, uint16_t numObject, lwm2m_object_t * objectList[]);
+// Invalidates all work owned by serverP's current session before closing the
+// platform connection. Repeated calls for an already closed session are no-op.
+void lwm2m_close_server_session(lwm2m_context_t *contextP, lwm2m_server_t *serverP);
 int lwm2m_add_object(lwm2m_context_t * contextP, lwm2m_object_t * objectP);
 #ifndef LWM2M_VERSION_1_0
 /*
@@ -1038,6 +1045,11 @@ int lwm2m_copy_current_request_token(lwm2m_context_t *contextP,
 int lwm2m_get_current_request_content_format(lwm2m_context_t *contextP,
                                              bool *hasContentFormatP,
                                              lwm2m_media_type_t *formatP);
+int lwm2m_get_current_request_identity(lwm2m_context_t *contextP,
+                                       uint16_t *serverShortIdP,
+                                       uint64_t *sessionGenerationP,
+                                       uint16_t *messageIdP);
+int lwm2m_refresh_session_generation(lwm2m_context_t *contextP, void *sessionH);
 #endif
 #endif
 

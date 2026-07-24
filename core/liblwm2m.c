@@ -51,6 +51,7 @@
 */
 
 #include "internals.h"
+#include "management.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -76,6 +77,41 @@ lwm2m_context_t * lwm2m_init(void * userData)
 }
 
 #ifdef LWM2M_CLIENT_MODE
+static void prv_clear_server_block_data(lwm2m_server_t *serverP)
+{
+    while (serverP->blockData != NULL)
+    {
+        lwm2m_block_data_t *blockDataP = serverP->blockData;
+
+        serverP->blockData = blockDataP->next;
+        blockDataP->next = NULL;
+        free_block_data(blockDataP);
+    }
+}
+
+void lwm2m_close_server_session(lwm2m_context_t *contextP, lwm2m_server_t *serverP)
+{
+    void *sessionH;
+
+    if (contextP == NULL || serverP == NULL)
+        return;
+    if (serverP->sessionH == NULL)
+    {
+        prv_clear_server_block_data(serverP);
+        return;
+    }
+    sessionH = serverP->sessionH;
+    serverP->sessionH = NULL;
+#ifndef LWM2M_VERSION_1_0
+    (void)dm_remove_deferred_for_generation(contextP,
+                                            serverP->shortID,
+                                            serverP->sessionGeneration);
+#endif
+    (void)transaction_abort_session(contextP, sessionH);
+    prv_clear_server_block_data(serverP);
+    lwm2m_close_connection(sessionH, contextP->userData);
+}
+
 void lwm2m_deregister(lwm2m_context_t * context)
 {
     lwm2m_server_t * server = context->serverList;
@@ -88,13 +124,10 @@ void lwm2m_deregister(lwm2m_context_t * context)
     }
 }
 
-static void prv_deleteServer(lwm2m_server_t * serverP, void *userData)
+static void prv_deleteServer(lwm2m_context_t *contextP, lwm2m_server_t *serverP)
 {
     // TODO parse transaction and observation to remove the ones related to this server
-    if (serverP->sessionH != NULL)
-    {
-         lwm2m_close_connection(serverP->sessionH, userData);
-    }
+    lwm2m_close_server_session(contextP, serverP);
     if (NULL != serverP->location)
     {
         lwm2m_free(serverP->location);
@@ -118,17 +151,16 @@ static void prv_deleteServerList(lwm2m_context_t * context)
         lwm2m_server_t * server;
         server = context->serverList;
         context->serverList = server->next;
-        prv_deleteServer(server, context->userData);
+        prv_deleteServer(context, server);
     }
 }
 
-static void prv_deleteBootstrapServer(lwm2m_server_t * serverP, void *userData)
+static void prv_deleteBootstrapServer(lwm2m_context_t *contextP,
+                                      lwm2m_server_t *serverP)
 {
     LOG_DBG("Entering");
     // TODO should we parse transaction and observation to remove the ones related to this server ?
-    if (serverP->sessionH != NULL) {
-        lwm2m_close_connection(serverP->sessionH, userData);
-    }
+    lwm2m_close_server_session(contextP, serverP);
 
     lwm2m_free(serverP->location);
 
@@ -149,7 +181,7 @@ static void prv_deleteBootstrapServerList(lwm2m_context_t * context)
         lwm2m_server_t * server;
         server = context->bootstrapServerList;
         context->bootstrapServerList = server->next;
-        prv_deleteBootstrapServer(server, context->userData);
+        prv_deleteBootstrapServer(context, server);
     }
 }
 
@@ -250,7 +282,7 @@ static int prv_refreshServerList(lwm2m_context_t * contextP)
         }
         else
         {
-            prv_deleteServer(targetP, contextP->userData);
+            prv_deleteServer(contextP, targetP);
         }
         targetP = nextP;
     }
@@ -267,7 +299,7 @@ static int prv_refreshServerList(lwm2m_context_t * contextP)
         }
         else
         {
-            prv_deleteServer(targetP, contextP->userData);
+            prv_deleteServer(contextP, targetP);
         }
         targetP = nextP;
     }

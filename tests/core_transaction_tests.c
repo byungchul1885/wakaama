@@ -33,7 +33,7 @@ static void transaction_payload_is_owned_and_starts_block1(void)
     coap_free_header(&message);
 }
 
-#ifdef LWM2M_CLIENT_MODE
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
 static int deterministic_random(void *userData, uint8_t *buffer, size_t length)
 {
     memset(buffer, *(const uint8_t *)userData, length);
@@ -51,6 +51,27 @@ static void random_callback_is_owned_by_context(void)
     CU_ASSERT_PTR_EQUAL(context.randomCallbackUserData, &value);
 }
 
+static void session_generation_is_positive_and_changes_per_connection_epoch(void)
+{
+    lwm2m_context_t context;
+    lwm2m_server_t server;
+    uint8_t value = 0x2A;
+    uint64_t firstGeneration;
+
+    memset(&context, 0, sizeof(context));
+    memset(&server, 0, sizeof(server));
+    server.sessionH = (void *)(uintptr_t)1;
+    context.serverList = &server;
+    lwm2m_set_random_callback(&context, deterministic_random, &value);
+
+    CU_ASSERT_EQUAL(lwm2m_refresh_session_generation(&context, server.sessionH), NO_ERROR);
+    CU_ASSERT_NOT_EQUAL(server.sessionGeneration, 0U);
+    firstGeneration = server.sessionGeneration;
+    CU_ASSERT_EQUAL(lwm2m_refresh_session_generation(&context, server.sessionH), NO_ERROR);
+    CU_ASSERT_NOT_EQUAL(server.sessionGeneration, firstGeneration);
+    CU_ASSERT_EQUAL(lwm2m_refresh_session_generation(&context, (void *)(uintptr_t)2),
+                    COAP_404_NOT_FOUND);
+}
 static void preencoded_send_rejects_invalid_payload_contract(void)
 {
     lwm2m_context_t context;
@@ -109,8 +130,13 @@ CU_ErrorCode create_transaction_test_suit(void)
         return CU_get_error();
     if (CU_add_test(suite, "payload ownership and proactive Block1", transaction_payload_is_owned_and_starts_block1) == NULL)
         return CU_get_error();
-#ifdef LWM2M_CLIENT_MODE
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
     if (CU_add_test(suite, "random callback registration", random_callback_is_owned_by_context) == NULL)
+        return CU_get_error();
+    if (CU_add_test(suite,
+                    "session generation connection epoch",
+                    session_generation_is_positive_and_changes_per_connection_epoch)
+        == NULL)
         return CU_get_error();
     if (CU_add_test(suite, "preencoded Send input validation", preencoded_send_rejects_invalid_payload_contract) == NULL)
         return CU_get_error();

@@ -22,6 +22,8 @@
 
 #include "tests.h"
 
+static size_t close_connection_count;
+
 // stub function
 void * lwm2m_connect_server(uint16_t secObjInstID,
                             void * userData)
@@ -35,7 +37,17 @@ void lwm2m_close_connection(void * sessionH,
 {
     (void)sessionH;
     (void)userData;
-    return;
+    close_connection_count++;
+}
+
+void test_reset_close_connection_count(void)
+{
+    close_connection_count = 0U;
+}
+
+size_t test_get_close_connection_count(void)
+{
+    return close_connection_count;
 }
 
 CU_ErrorCode add_tests(CU_pSuite pSuite, struct TestTable* testTable)

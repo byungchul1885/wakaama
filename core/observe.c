@@ -50,6 +50,7 @@
 */
 
 #include "internals.h"
+#include "management.h"
 #include <stdio.h>
 
 
@@ -1164,6 +1165,84 @@ int lwm2m_get_current_request_content_format(lwm2m_context_t *contextP,
     *hasContentFormatP = contextP->currentDmRequestHasContentFormat;
     *formatP = contextP->currentDmRequestContentFormat;
     return NO_ERROR;
+}
+
+int lwm2m_get_current_request_identity(lwm2m_context_t *contextP,
+                                       uint16_t *serverShortIdP,
+                                       uint64_t *sessionGenerationP,
+                                       uint16_t *messageIdP)
+{
+    if (contextP == NULL || serverShortIdP == NULL || sessionGenerationP == NULL
+        || messageIdP == NULL || !contextP->currentDmRequestActive)
+        return COAP_400_BAD_REQUEST;
+    *serverShortIdP = contextP->currentDmServerShortId;
+    *sessionGenerationP = contextP->currentDmSessionGeneration;
+    *messageIdP = contextP->currentDmMessageId;
+    return NO_ERROR;
+}
+
+static int prv_refreshServerSessionGeneration(lwm2m_context_t *contextP,
+                                              lwm2m_server_t *serverP,
+                                              void *sessionH)
+{
+    uint64_t generation;
+    uint64_t previousGeneration;
+
+    if (serverP->sessionH != sessionH)
+        return 0;
+    previousGeneration = serverP->sessionGeneration;
+    if (contextP->randomCallback != NULL)
+    {
+        if (contextP->randomCallback(contextP->randomCallbackUserData,
+                                     (uint8_t *)&generation,
+                                     sizeof(generation)) != 0)
+            return -1;
+        generation &= UINT64_C(0x7FFFFFFFFFFFFFFF);
+        if (generation == 0U)
+            generation = 1U;
+        if (generation == previousGeneration)
+        {
+            generation++;
+            if (generation > UINT64_C(0x7FFFFFFFFFFFFFFF))
+                generation = 1U;
+        }
+    }
+    else
+    {
+        generation = previousGeneration + 1U;
+        if (generation == 0U || generation > UINT64_C(0x7FFFFFFFFFFFFFFF))
+            generation = 1U;
+    }
+    if (previousGeneration != 0U)
+        (void)dm_remove_deferred_for_generation(contextP,
+                                                serverP->shortID,
+                                                previousGeneration);
+    serverP->sessionGeneration = generation;
+    return 1;
+}
+
+int lwm2m_refresh_session_generation(lwm2m_context_t *contextP, void *sessionH)
+{
+    lwm2m_server_t *serverP;
+    int result;
+
+    if (contextP == NULL || sessionH == NULL)
+        return COAP_400_BAD_REQUEST;
+    for (serverP = contextP->serverList; serverP != NULL; serverP = serverP->next)
+    {
+        result = prv_refreshServerSessionGeneration(contextP, serverP, sessionH);
+        if (result != 0)
+            return result > 0 ? NO_ERROR : COAP_500_INTERNAL_SERVER_ERROR;
+    }
+#ifdef LWM2M_BOOTSTRAP
+    for (serverP = contextP->bootstrapServerList; serverP != NULL; serverP = serverP->next)
+    {
+        result = prv_refreshServerSessionGeneration(contextP, serverP, sessionH);
+        if (result != 0)
+            return result > 0 ? NO_ERROR : COAP_500_INTERNAL_SERVER_ERROR;
+    }
+#endif
+    return COAP_404_NOT_FOUND;
 }
 #endif
 

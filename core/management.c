@@ -60,6 +60,7 @@ struct _lwm2m_deferred_request_
     lwm2m_deferred_request_t *next;
     lwm2m_deferred_request_id_t requestId;
     uint16_t serverShortId;
+    uint64_t sessionGeneration;
     uint16_t messageId;
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t tokenLength;
@@ -67,6 +68,7 @@ struct _lwm2m_deferred_request_
 
 static lwm2m_deferred_request_t *prv_findDeferredByMessage(lwm2m_context_t *contextP,
                                                            uint16_t serverShortId,
+                                                           uint64_t sessionGeneration,
                                                            uint16_t messageId,
                                                            const uint8_t *token,
                                                            size_t tokenLength)
@@ -75,7 +77,9 @@ static lwm2m_deferred_request_t *prv_findDeferredByMessage(lwm2m_context_t *cont
 
     for (requestP = contextP->deferredRequestList; requestP != NULL; requestP = requestP->next)
     {
-        if (requestP->serverShortId == serverShortId && requestP->messageId == messageId
+        if (requestP->serverShortId == serverShortId
+            && requestP->sessionGeneration == sessionGeneration
+            && requestP->messageId == messageId
             && requestP->tokenLength == tokenLength
             && (tokenLength == 0U || memcmp(requestP->token, token, tokenLength) == 0))
             return requestP;
@@ -155,6 +159,7 @@ int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_reques
         for (requestP = contextP->deferredRequestList; requestP != NULL; requestP = requestP->next)
         {
             if (requestP->serverShortId == contextP->currentDmServerShortId
+                && requestP->sessionGeneration == contextP->currentDmSessionGeneration
                 && requestP->tokenLength == 0U)
                 return COAP_412_PRECONDITION_FAILED;
         }
@@ -165,6 +170,7 @@ int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_reques
     memset(requestP, 0, sizeof(*requestP));
     requestP->requestId = prv_nextDeferredRequestId(contextP);
     requestP->serverShortId = contextP->currentDmServerShortId;
+    requestP->sessionGeneration = contextP->currentDmSessionGeneration;
     requestP->messageId = contextP->currentDmMessageId;
     requestP->tokenLength = contextP->currentRequestTokenLen;
     if (requestP->tokenLength > 0U)
@@ -209,11 +215,26 @@ int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
         return COAP_404_NOT_FOUND;
     for (serverP = contextP->serverList; serverP != NULL; serverP = serverP->next)
     {
-        if (serverP->shortID == requestP->serverShortId && serverP->sessionH != NULL)
+        if (serverP->shortID == requestP->serverShortId
+            && serverP->sessionGeneration == requestP->sessionGeneration
+            && serverP->sessionH != NULL)
             break;
     }
     if (serverP == NULL)
+    {
+        lwm2m_server_t *currentP;
+
+        for (currentP = contextP->serverList; currentP != NULL; currentP = currentP->next)
+        {
+            if (currentP->shortID == requestP->serverShortId
+                && currentP->sessionGeneration != requestP->sessionGeneration)
+            {
+                prv_removeDeferred(contextP, requestP, previousP);
+                return COAP_404_NOT_FOUND;
+            }
+        }
         return COAP_503_SERVICE_UNAVAILABLE;
+    }
     transactionP = transaction_new(serverP->sessionH,
                                    (coap_method_t)responseCode,
                                    NULL,
@@ -241,6 +262,37 @@ void dm_clearDeferredRequests(lwm2m_context_t *contextP)
     }
     contextP->currentDmDeferredRequestId = 0U;
     contextP->currentDmRequestActive = false;
+}
+
+size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
+                                         uint16_t shortServerId,
+                                         uint64_t generation)
+{
+    lwm2m_deferred_request_t **cursorP;
+    size_t removed = 0U;
+
+    if (contextP == NULL || generation == 0U)
+        return 0U;
+    cursorP = &contextP->deferredRequestList;
+    while (*cursorP != NULL)
+    {
+        lwm2m_deferred_request_t *requestP = *cursorP;
+
+        if (requestP->serverShortId == shortServerId
+            && requestP->sessionGeneration == generation)
+        {
+            *cursorP = requestP->next;
+            if (contextP->currentDmDeferredRequestId == requestP->requestId)
+                contextP->currentDmDeferredRequestId = 0U;
+            lwm2m_free(requestP);
+            removed++;
+        }
+        else
+        {
+            cursorP = &requestP->next;
+        }
+    }
+    return removed;
 }
 #endif
 
@@ -577,6 +629,8 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                     lwm2m_media_type_t previousContentFormat =
                         contextP->currentDmRequestContentFormat;
                     uint16_t previousServerShortId = contextP->currentDmServerShortId;
+                    uint64_t previousSessionGeneration =
+                        contextP->currentDmSessionGeneration;
                     uint16_t previousMessageId = contextP->currentDmMessageId;
                     lwm2m_deferred_request_id_t previousDeferredRequestId =
                         contextP->currentDmDeferredRequestId;
@@ -584,6 +638,7 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
 
                     if (prv_findDeferredByMessage(contextP,
                                                  serverP->shortID,
+                                                 serverP->sessionGeneration,
                                                  message->mid,
                                                  message->token,
                                                  message->token_len)
@@ -607,6 +662,7 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                         IS_OPTION(message, COAP_OPTION_CONTENT_TYPE);
                     contextP->currentDmRequestContentFormat = format;
                     contextP->currentDmServerShortId = serverP->shortID;
+                    contextP->currentDmSessionGeneration = serverP->sessionGeneration;
                     contextP->currentDmMessageId = message->mid;
                     contextP->currentDmDeferredRequestId = 0U;
 #endif
@@ -622,6 +678,7 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                     contextP->currentDmRequestHasContentFormat = previousHasContentFormat;
                     contextP->currentDmRequestContentFormat = previousContentFormat;
                     contextP->currentDmServerShortId = previousServerShortId;
+                    contextP->currentDmSessionGeneration = previousSessionGeneration;
                     contextP->currentDmMessageId = previousMessageId;
                     contextP->currentDmDeferredRequestId = previousDeferredRequestId;
                     if (deferredRequestId != 0U)

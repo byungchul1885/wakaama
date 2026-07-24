@@ -262,6 +262,7 @@ lwm2m_transaction_t * transaction_new(void * sessionH, coap_method_t method, cha
 int transaction_send(lwm2m_context_t * contextP, lwm2m_transaction_t * transacP);
 void transaction_free(lwm2m_transaction_t * transacP);
 void transaction_remove(lwm2m_context_t * contextP, lwm2m_transaction_t * transacP);
+size_t transaction_abort_session(lwm2m_context_t *contextP, void *sessionH);
 bool transaction_handleResponse(lwm2m_context_t * contextP, void * fromSessionH, coap_packet_t * message, coap_packet_t * response);
 bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t mid, uint8_t code);
 void transaction_step(lwm2m_context_t * contextP, time_t currentTime, time_t * timeoutP);

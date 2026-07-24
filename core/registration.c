@@ -686,6 +686,13 @@ static uint8_t prv_register(lwm2m_context_t * contextP,
     if (server->sessionH == NULL)
     {
         server->sessionH = lwm2m_connect_server(server->secObjInstID, contextP->userData);
+#ifndef LWM2M_VERSION_1_0
+        if (server->sessionH != NULL
+            && lwm2m_refresh_session_generation(contextP, server->sessionH) != NO_ERROR)
+        {
+            lwm2m_close_server_session(contextP, server);
+        }
+#endif
     }
 
     if (NULL == server->sessionH)
@@ -780,12 +787,62 @@ static void prv_handleRegistrationUpdateReply(lwm2m_context_t * contextP,
             LOG_ARG_DBG("%d Registration update failed", dataP->server->shortID);
         }
     }
-    if (packet != NULL && packet->code != COAP_231_CONTINUE)
+    if (packet == NULL || packet->code != COAP_231_CONTINUE)
     {
-        lwm2m_free(dataP->payload);
-        transaction_free_userData(contextP, transacP);
+        uint8_t *payload = dataP->payload;
+
+        if (transaction_free_userData(contextP, transacP))
+            lwm2m_free(payload);
     }
 }
+
+#ifdef WAKAAMA_REGISTRATION_TEST_API
+int registration_test_add_shared_update_transactions(lwm2m_context_t *contextP,
+                                                      lwm2m_server_t *serverP,
+                                                      void *sessionH)
+{
+    registration_data_t *dataP;
+    lwm2m_transaction_t *firstP;
+    lwm2m_transaction_t *secondP;
+
+    if (contextP == NULL || serverP == NULL || sessionH == NULL)
+        return -1;
+    dataP = (registration_data_t *)lwm2m_malloc(sizeof(*dataP));
+    if (dataP == NULL)
+        return -1;
+    memset(dataP, 0, sizeof(*dataP));
+    dataP->payload = (uint8_t *)lwm2m_malloc(16U);
+    if (dataP->payload == NULL)
+    {
+        lwm2m_free(dataP);
+        return -1;
+    }
+    memset(dataP->payload, 0xA5, 16U);
+    dataP->server = serverP;
+
+    firstP = transaction_new(sessionH, COAP_POST, NULL, NULL, 0x7A01, 0, NULL);
+    secondP = transaction_new(sessionH, COAP_POST, NULL, NULL, 0x7A02, 0, NULL);
+    if (firstP == NULL || secondP == NULL)
+    {
+        if (firstP != NULL)
+            transaction_free(firstP);
+        if (secondP != NULL)
+            transaction_free(secondP);
+        lwm2m_free(dataP->payload);
+        lwm2m_free(dataP);
+        return -1;
+    }
+    firstP->callback = prv_handleRegistrationUpdateReply;
+    firstP->userData = dataP;
+    secondP->callback = prv_handleRegistrationUpdateReply;
+    secondP->userData = dataP;
+    contextP->transactionList =
+        (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, firstP);
+    contextP->transactionList =
+        (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, secondP);
+    return 0;
+}
+#endif
 
 static int prv_updateRegistration(lwm2m_context_t * contextP,
                                   lwm2m_server_t * server,
@@ -2078,8 +2135,7 @@ void registration_step(lwm2m_context_t * contextP,
         case STATE_REG_FAILED:
             if (targetP->sessionH != NULL)
             {
-                lwm2m_close_connection(targetP->sessionH, contextP->userData);
-                targetP->sessionH = NULL;
+                lwm2m_close_server_session(contextP, targetP);
             }
             break;
 

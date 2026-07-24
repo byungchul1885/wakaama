@@ -379,6 +379,13 @@ static void prv_requestBootstrap(lwm2m_context_t * context,
     if (bootstrapServer->sessionH == NULL)
     {
         bootstrapServer->sessionH = lwm2m_connect_server(bootstrapServer->secObjInstID, context->userData);
+#ifndef LWM2M_VERSION_1_0
+        if (bootstrapServer->sessionH != NULL
+            && lwm2m_refresh_session_generation(context, bootstrapServer->sessionH) != NO_ERROR)
+        {
+            lwm2m_close_server_session(context, bootstrapServer);
+        }
+#endif
     }
 
     if (bootstrapServer->sessionH != NULL)
@@ -831,8 +838,7 @@ void bootstrap_step(lwm2m_context_t * contextP,
         case STATE_BS_FINISHING:
             if (targetP->sessionH != NULL)
             {
-                lwm2m_close_connection(targetP->sessionH, contextP->userData);
-                targetP->sessionH = NULL;
+                lwm2m_close_server_session(contextP, targetP);
             }
             targetP->status = STATE_BS_FINISHED;
             *timeoutP = 0;
@@ -841,8 +847,7 @@ void bootstrap_step(lwm2m_context_t * contextP,
         case STATE_BS_FAILING:
             if (targetP->sessionH != NULL)
             {
-                lwm2m_close_connection(targetP->sessionH, contextP->userData);
-                targetP->sessionH = NULL;
+                lwm2m_close_server_session(contextP, targetP);
             }
             targetP->status = STATE_BS_FAILED;
             *timeoutP = 0;
@@ -917,6 +922,13 @@ void bootstrap_start(lwm2m_context_t * contextP)
         if (targetP->sessionH == NULL)
         {
             targetP->sessionH = lwm2m_connect_server(targetP->secObjInstID, contextP->userData);
+#ifndef LWM2M_VERSION_1_0
+            if (targetP->sessionH != NULL
+                && lwm2m_refresh_session_generation(contextP, targetP->sessionH) != NO_ERROR)
+            {
+                lwm2m_close_server_session(contextP, targetP);
+            }
+#endif
         }
         targetP = targetP->next;
     }

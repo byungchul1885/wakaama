@@ -142,8 +142,6 @@ static bool prv_uses_raw_block1(lwm2m_context_t *contextP, void *fromSessionH, c
 {
     lwm2m_uri_t uri;
     lwm2m_request_type_t requestType;
-    lwm2m_media_type_t format;
-
     requestType = uri_decode(contextP->altPath, message->uri_path, message->code, &uri);
     if (requestType != LWM2M_REQUEST_TYPE_DM || utils_findServer(contextP, fromSessionH) == NULL)
     {
@@ -168,14 +166,7 @@ static bool prv_uses_raw_block1(lwm2m_context_t *contextP, void *fromSessionH, c
         return object_raw_block1_write_supported(contextP, &uri);
     }
 
-    format = IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)
-           ? utils_convertMediaType(message->content_type)
-           : LWM2M_CONTENT_TLV;
-    if (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) || format == LWM2M_CONTENT_TEXT)
-    {
-        return object_raw_block1_execute_supported(contextP, &uri);
-    }
-    return object_raw_block1_write_supported(contextP, &uri);
+    return object_raw_block1_execute_supported(contextP, &uri);
 }
 #endif
 

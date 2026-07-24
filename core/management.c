@@ -150,6 +150,15 @@ int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_reques
     if (contextP == NULL || requestIdP == NULL || !contextP->currentDmRequestActive
         || contextP->currentDmDeferredRequestId != 0U)
         return COAP_400_BAD_REQUEST;
+    if (contextP->currentRequestTokenLen == 0U)
+    {
+        for (requestP = contextP->deferredRequestList; requestP != NULL; requestP = requestP->next)
+        {
+            if (requestP->serverShortId == contextP->currentDmServerShortId
+                && requestP->tokenLength == 0U)
+                return COAP_412_PRECONDITION_FAILED;
+        }
+    }
     requestP = (lwm2m_deferred_request_t *)lwm2m_malloc(sizeof(*requestP));
     if (requestP == NULL)
         return COAP_500_INTERNAL_SERVER_ERROR;
@@ -517,18 +526,9 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                     break;
                 }
                 if (LWM2M_URI_IS_SET_RESOURCE(uriP)
-                    && (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) || format == LWM2M_CONTENT_TEXT)
                     && object_raw_block1_execute_supported(contextP, uriP))
                 {
                     result = object_raw_block1_execute(contextP, uriP, message->payload, message->payload_len, message->block1_num, message->block1_more);
-                    break;
-                }
-                if (LWM2M_URI_IS_SET_RESOURCE(uriP)
-                    && IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)
-                    && format != LWM2M_CONTENT_TEXT
-                    && object_raw_block1_write_supported(contextP, uriP))
-                {
-                    result = object_raw_block1_write(contextP, uriP, format, message->payload, message->payload_len, message->block1_num, message->block1_more);
                     break;
                 }
             }
@@ -557,14 +557,13 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                     lwm2m_update_registration(contextP, 0, true);
                 }
             }
-            else if (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)
-                  || format == LWM2M_CONTENT_TEXT)
+            else if (LWM2M_URI_IS_SET_RESOURCE(uriP))
             {
-                if (!LWM2M_URI_IS_SET_RESOURCE(uriP)
 #ifndef LWM2M_VERSION_1_0
-                 || LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP)
+                if (LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP))
+#else
+                if (false)
 #endif
-                   )
                 {
                     result = COAP_400_BAD_REQUEST;
                 }
@@ -574,6 +573,9 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                     uint8_t previousToken[LWM2M_COAP_TOKEN_MAX_LEN];
                     size_t previousTokenLen = contextP->currentRequestTokenLen;
                     bool previousRequestActive = contextP->currentDmRequestActive;
+                    bool previousHasContentFormat = contextP->currentDmRequestHasContentFormat;
+                    lwm2m_media_type_t previousContentFormat =
+                        contextP->currentDmRequestContentFormat;
                     uint16_t previousServerShortId = contextP->currentDmServerShortId;
                     uint16_t previousMessageId = contextP->currentDmMessageId;
                     lwm2m_deferred_request_id_t previousDeferredRequestId =
@@ -601,6 +603,9 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                         memcpy(contextP->currentRequestToken, message->token, message->token_len);
                     }
                     contextP->currentDmRequestActive = true;
+                    contextP->currentDmRequestHasContentFormat =
+                        IS_OPTION(message, COAP_OPTION_CONTENT_TYPE);
+                    contextP->currentDmRequestContentFormat = format;
                     contextP->currentDmServerShortId = serverP->shortID;
                     contextP->currentDmMessageId = message->mid;
                     contextP->currentDmDeferredRequestId = 0U;
@@ -614,6 +619,8 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                         memcpy(contextP->currentRequestToken, previousToken, previousTokenLen);
                     }
                     contextP->currentDmRequestActive = previousRequestActive;
+                    contextP->currentDmRequestHasContentFormat = previousHasContentFormat;
+                    contextP->currentDmRequestContentFormat = previousContentFormat;
                     contextP->currentDmServerShortId = previousServerShortId;
                     contextP->currentDmMessageId = previousMessageId;
                     contextP->currentDmDeferredRequestId = previousDeferredRequestId;
@@ -626,6 +633,11 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                     }
 #endif
                 }
+            }
+            else if (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)
+                  || format == LWM2M_CONTENT_TEXT)
+            {
+                result = COAP_400_BAD_REQUEST;
             }
             else
             {
@@ -968,7 +980,8 @@ int lwm2m_dm_execute_with_token(lwm2m_context_t *contextP,
                                 void *userData) {
     LOG_ARG_DBG("clientID: %d, format: %s, length: %zd", clientID, STR_MEDIA_TYPE(format), length);
     LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
-    if (!LWM2M_URI_IS_SET_RESOURCE(uriP) || token == NULL || tokenLength == 0U
+    if (!LWM2M_URI_IS_SET_RESOURCE(uriP)
+        || (tokenLength > 0U && token == NULL)
         || tokenLength > LWM2M_COAP_TOKEN_MAX_LEN)
     {
         return COAP_400_BAD_REQUEST;

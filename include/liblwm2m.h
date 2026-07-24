@@ -908,6 +908,8 @@ struct _lwm2m_context_
     uint8_t              currentRequestToken[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t               currentRequestTokenLen;
     bool                 currentDmRequestActive;
+    bool                 currentDmRequestHasContentFormat;
+    lwm2m_media_type_t    currentDmRequestContentFormat;
     uint16_t             currentDmServerShortId;
     uint16_t             currentDmMessageId;
     lwm2m_deferred_request_id_t currentDmDeferredRequestId;
@@ -1006,6 +1008,9 @@ int lwm2m_request_bootstrap(lwm2m_context_t *contextP);
 #endif
 
 #ifndef LWM2M_VERSION_1_0
+#ifndef LWM2M_SEND_PAYLOAD_MAX_LEN
+#define LWM2M_SEND_PAYLOAD_MAX_LEN 262144U
+#endif
 // send resources specified by URIs to the server specified by the server short
 // identifier or all if the ID is 0. NO_ERROR is returned if sending to any
 // server is successful.
@@ -1014,12 +1019,25 @@ int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *u
 int lwm2m_send_with_token(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
                           const uint8_t *token, size_t tokenLen, lwm2m_transaction_callback_t callback,
                           void *userData);
+// The payload is copied before this function returns. A non-NULL token with
+// tokenLen == 0 requests an explicit zero-length CoAP Token. A NULL token with
+// tokenLen == 0 inherits the active request Token, or creates an autonomous
+// device Token when there is no active request.
 int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServerID,
                                   lwm2m_media_type_t format, const uint8_t *payload, size_t payloadLen,
                                   const uint8_t *token, size_t tokenLen,
                                   lwm2m_transaction_callback_t callback, void *userData);
 void lwm2m_set_random_callback(lwm2m_context_t *contextP, lwm2m_random_callback_t callback, void *userData);
 size_t lwm2m_get_current_request_token(lwm2m_context_t *contextP, uint8_t *buffer, size_t bufferLen);
+// These accessors are valid only during an Execute callback. They copy Token
+// bytes or scalar metadata; callers must not retain callback-owned pointers.
+int lwm2m_copy_current_request_token(lwm2m_context_t *contextP,
+                                     uint8_t *buffer,
+                                     size_t bufferLen,
+                                     size_t *tokenLenP);
+int lwm2m_get_current_request_content_format(lwm2m_context_t *contextP,
+                                             bool *hasContentFormatP,
+                                             lwm2m_media_type_t *formatP);
 #endif
 #endif
 

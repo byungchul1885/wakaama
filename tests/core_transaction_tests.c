@@ -55,6 +55,8 @@ static void preencoded_send_rejects_invalid_payload_contract(void)
 {
     lwm2m_context_t context;
     uint8_t payload = 0;
+    uint8_t emptyTokenMarker = 0;
+    int result;
 
     memset(&context, 0, sizeof(context));
     CU_ASSERT_EQUAL(lwm2m_send_payload_with_token(&context,
@@ -77,6 +79,26 @@ static void preencoded_send_rejects_invalid_payload_contract(void)
                                                   NULL,
                                                   NULL),
                     COAP_415_UNSUPPORTED_CONTENT_FORMAT);
+    CU_ASSERT_EQUAL(lwm2m_send_payload_with_token(&context,
+                                                  1,
+                                                  LWM2M_CONTENT_SENML_CBOR,
+                                                  &payload,
+                                                  LWM2M_SEND_PAYLOAD_MAX_LEN + 1U,
+                                                  &emptyTokenMarker,
+                                                  0,
+                                                  NULL,
+                                                  NULL),
+                    COAP_400_BAD_REQUEST);
+    result = lwm2m_send_payload_with_token(&context,
+                                           1,
+                                           LWM2M_CONTENT_SENML_CBOR,
+                                           &payload,
+                                           LWM2M_SEND_PAYLOAD_MAX_LEN,
+                                           &emptyTokenMarker,
+                                           0,
+                                           NULL,
+                                           NULL);
+    CU_ASSERT_NOT_EQUAL(result, COAP_400_BAD_REQUEST);
 }
 #endif
 

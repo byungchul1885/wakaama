@@ -847,24 +847,29 @@ void observe_step(lwm2m_context_t * contextP,
 
 #ifndef LWM2M_VERSION_1_0
 #if defined(LWM2M_SUPPORT_SENML_CBOR) || defined(LWM2M_SUPPORT_SENML_JSON)
-static size_t prv_prepareSendToken(lwm2m_context_t *contextP,
-                                   const uint8_t *token,
-                                   size_t tokenLen,
-                                   uint8_t preparedToken[COAP_TOKEN_LEN])
+static int prv_prepareSendToken(lwm2m_context_t *contextP,
+                                const uint8_t *token,
+                                size_t tokenLen,
+                                uint8_t preparedToken[COAP_TOKEN_LEN],
+                                size_t *preparedTokenLenP)
 {
-    if (tokenLen > COAP_TOKEN_LEN)
+    if (preparedTokenLenP == NULL || tokenLen > COAP_TOKEN_LEN)
     {
-        return 0;
+        return COAP_400_BAD_REQUEST;
     }
-    if (token != NULL && tokenLen > 0)
+    if (token != NULL)
     {
-        memcpy(preparedToken, token, tokenLen);
-        return tokenLen;
+        if (tokenLen > 0U)
+            memcpy(preparedToken, token, tokenLen);
+        *preparedTokenLenP = tokenLen;
+        return NO_ERROR;
     }
-    if (contextP != NULL && contextP->currentRequestTokenLen > 0)
+    if (contextP != NULL && contextP->currentDmRequestActive)
     {
-        memcpy(preparedToken, contextP->currentRequestToken, contextP->currentRequestTokenLen);
-        return contextP->currentRequestTokenLen;
+        if (contextP->currentRequestTokenLen > 0U)
+            memcpy(preparedToken, contextP->currentRequestToken, contextP->currentRequestTokenLen);
+        *preparedTokenLenP = contextP->currentRequestTokenLen;
+        return NO_ERROR;
     }
 
     preparedToken[0] = LWM2M_DEVICE_TOKEN_PREFIX;
@@ -874,14 +879,15 @@ static size_t prv_prepareSendToken(lwm2m_context_t *contextP,
                                      preparedToken + 1,
                                      COAP_TOKEN_LEN - 1) != 0)
         {
-            return 0;
+            return COAP_500_INTERNAL_SERVER_ERROR;
         }
     }
     else
     {
         transaction_generate_device_token(preparedToken);
     }
-    return COAP_TOKEN_LEN;
+    *preparedTokenLenP = COAP_TOKEN_LEN;
+    return NO_ERROR;
 }
 #endif
 
@@ -921,9 +927,9 @@ static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
 
     if (tokenLen > 0 && token == NULL)
         return COAP_400_BAD_REQUEST;
-    preparedTokenLen = prv_prepareSendToken(contextP, token, tokenLen, preparedToken);
-    if (preparedTokenLen == 0)
-        return COAP_400_BAD_REQUEST;
+    ret = prv_prepareSendToken(contextP, token, tokenLen, preparedToken, &preparedTokenLen);
+    if (ret != NO_ERROR)
+        return ret;
 
     ret = object_readCompositeData(contextP, urisP, numUris, &size, &dataP);
     if (ret != COAP_205_CONTENT)
@@ -1037,16 +1043,17 @@ int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServe
     int ret = COAP_404_NOT_FOUND;
     bool oneGood = false;
 
-    if (contextP == NULL || payload == NULL || payloadLen == 0 || payloadLen > 65536)
+    if (contextP == NULL || payload == NULL || payloadLen == 0
+        || payloadLen > LWM2M_SEND_PAYLOAD_MAX_LEN)
         return COAP_400_BAD_REQUEST;
     if (format != LWM2M_CONTENT_SENML_CBOR && format != LWM2M_CONTENT_SENML_JSON)
         return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
     if (tokenLen > 0 && token == NULL)
         return COAP_400_BAD_REQUEST;
 
-    preparedTokenLen = prv_prepareSendToken(contextP, token, tokenLen, preparedToken);
-    if (preparedTokenLen == 0)
-        return COAP_500_INTERNAL_SERVER_ERROR;
+    ret = prv_prepareSendToken(contextP, token, tokenLen, preparedToken, &preparedTokenLen);
+    if (ret != NO_ERROR)
+        return ret;
 
     if (shortServerID == 0 && contextP->serverList != NULL && contextP->serverList->next == NULL)
         shortServerID = contextP->serverList->shortID;
@@ -1127,6 +1134,36 @@ size_t lwm2m_get_current_request_token(lwm2m_context_t *contextP, uint8_t *buffe
     }
 
     return contextP->currentRequestTokenLen;
+}
+
+int lwm2m_copy_current_request_token(lwm2m_context_t *contextP,
+                                     uint8_t *buffer,
+                                     size_t bufferLen,
+                                     size_t *tokenLenP)
+{
+    size_t tokenLen;
+
+    if (contextP == NULL || tokenLenP == NULL || !contextP->currentDmRequestActive)
+        return COAP_400_BAD_REQUEST;
+    tokenLen = contextP->currentRequestTokenLen;
+    if (tokenLen > bufferLen || (tokenLen > 0U && buffer == NULL))
+        return COAP_413_ENTITY_TOO_LARGE;
+    if (tokenLen > 0U)
+        memcpy(buffer, contextP->currentRequestToken, tokenLen);
+    *tokenLenP = tokenLen;
+    return NO_ERROR;
+}
+
+int lwm2m_get_current_request_content_format(lwm2m_context_t *contextP,
+                                             bool *hasContentFormatP,
+                                             lwm2m_media_type_t *formatP)
+{
+    if (contextP == NULL || hasContentFormatP == NULL || formatP == NULL
+        || !contextP->currentDmRequestActive)
+        return COAP_400_BAD_REQUEST;
+    *hasContentFormatP = contextP->currentDmRequestHasContentFormat;
+    *formatP = contextP->currentDmRequestContentFormat;
+    return NO_ERROR;
 }
 #endif
 

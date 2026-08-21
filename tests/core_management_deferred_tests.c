@@ -20,8 +20,13 @@ typedef struct
 {
     unsigned int calls;
     unsigned int writeCalls;
+    unsigned int createCalls;
+    unsigned int deleteCalls;
     lwm2m_deferred_request_id_t requestId;
     uint8_t callbackResult;
+    uint8_t writeResult;
+    uint8_t createResult;
+    uint8_t deleteResult;
     int deferResult;
     int tokenCopyResult;
     int contentFormatResult;
@@ -33,6 +38,15 @@ typedef struct
     uint16_t serverShortId;
     uint64_t sessionGeneration;
     uint16_t messageId;
+    lwm2m_list_t createdInstance;
+    lwm2m_server_t *serverP;
+    bool closeSessionOnWrite;
+    bool reenterDeleteOnWrite;
+    bool attemptDeferOnWrite;
+    int mutationDeferResult;
+    int nestedResult;
+    uint16_t nestedMessageId;
+    uint16_t restoredMessageId;
     const uint8_t *expectedPayload;
     size_t expectedPayloadLength;
 } execute_state_t;
@@ -42,6 +56,24 @@ typedef struct
     unsigned int calls;
     lwm2m_server_t *serverP;
 } abort_state_t;
+
+static void prv_capture_request(lwm2m_context_t *contextP, execute_state_t *stateP)
+{
+    stateP->tokenCopyResult =
+        lwm2m_copy_current_request_token(contextP,
+                                         stateP->token,
+                                         sizeof(stateP->token),
+                                         &stateP->tokenLength);
+    stateP->contentFormatResult =
+        lwm2m_get_current_request_content_format(contextP,
+                                                 &stateP->hasContentFormat,
+                                                 &stateP->contentFormat);
+    stateP->identityResult =
+        lwm2m_get_current_request_identity(contextP,
+                                           &stateP->serverShortId,
+                                           &stateP->sessionGeneration,
+                                           &stateP->messageId);
+}
 
 static void prv_aborted_transaction(lwm2m_context_t *contextP,
                                     lwm2m_transaction_t *transactionP,
@@ -71,20 +103,7 @@ static uint8_t prv_execute(lwm2m_context_t *contextP,
     if (state->expectedPayloadLength > 0U)
         CU_ASSERT_NSTRING_EQUAL(buffer, state->expectedPayload, state->expectedPayloadLength);
     state->calls++;
-    state->tokenCopyResult =
-        lwm2m_copy_current_request_token(contextP,
-                                         state->token,
-                                         sizeof(state->token),
-                                         &state->tokenLength);
-    state->contentFormatResult =
-        lwm2m_get_current_request_content_format(contextP,
-                                                 &state->hasContentFormat,
-                                                 &state->contentFormat);
-    state->identityResult =
-        lwm2m_get_current_request_identity(contextP,
-                                           &state->serverShortId,
-                                           &state->sessionGeneration,
-                                           &state->messageId);
+    prv_capture_request(contextP, state);
     state->deferResult = lwm2m_defer_current_request(contextP, &state->requestId);
     if (state->deferResult != NO_ERROR)
         return (uint8_t)state->deferResult;
@@ -100,13 +119,73 @@ static uint8_t prv_write(lwm2m_context_t *contextP,
 {
     execute_state_t *state = (execute_state_t *)objectP->userData;
 
-    (void)contextP;
     (void)instanceId;
     (void)numData;
     (void)dataArray;
     (void)writeType;
     state->writeCalls++;
-    return COAP_204_CHANGED;
+    prv_capture_request(contextP, state);
+    if (state->attemptDeferOnWrite)
+        state->mutationDeferResult = lwm2m_defer_current_request(contextP, &state->requestId);
+    if (state->reenterDeleteOnWrite)
+    {
+        lwm2m_uri_t nestedUri;
+        coap_packet_t nestedMessage;
+        coap_packet_t nestedResponse;
+
+        LWM2M_URI_RESET(&nestedUri);
+        nestedUri.objectId = objectP->objID;
+        nestedUri.instanceId = instanceId;
+        memset(&nestedMessage, 0, sizeof(nestedMessage));
+        memset(&nestedResponse, 0, sizeof(nestedResponse));
+        coap_init_message(&nestedMessage, COAP_TYPE_CON, COAP_DELETE, 0x8F02);
+        state->nestedResult = dm_handleRequest(contextP,
+                                               &nestedUri,
+                                               state->serverP,
+                                               &nestedMessage,
+                                               &nestedResponse);
+        state->nestedMessageId = state->messageId;
+        prv_capture_request(contextP, state);
+        state->restoredMessageId = state->messageId;
+        coap_free_header(&nestedMessage);
+        coap_free_header(&nestedResponse);
+    }
+    if (state->closeSessionOnWrite)
+    {
+        lwm2m_close_server_session(contextP, state->serverP);
+        prv_capture_request(contextP, state);
+    }
+    return state->writeResult == NO_ERROR ? COAP_204_CHANGED : state->writeResult;
+}
+
+static uint8_t prv_create(lwm2m_context_t *contextP,
+                          uint16_t instanceId,
+                          int numData,
+                          lwm2m_data_t *dataArray,
+                          lwm2m_object_t *objectP)
+{
+    execute_state_t *state = (execute_state_t *)objectP->userData;
+
+    (void)numData;
+    (void)dataArray;
+    memset(&state->createdInstance, 0, sizeof(state->createdInstance));
+    state->createdInstance.id = instanceId;
+    objectP->instanceList = LWM2M_LIST_ADD(objectP->instanceList, &state->createdInstance);
+    state->createCalls++;
+    prv_capture_request(contextP, state);
+    return state->createResult == NO_ERROR ? COAP_201_CREATED : state->createResult;
+}
+
+static uint8_t prv_delete(lwm2m_context_t *contextP,
+                          uint16_t instanceId,
+                          lwm2m_object_t *objectP)
+{
+    execute_state_t *state = (execute_state_t *)objectP->userData;
+
+    CU_ASSERT_EQUAL(instanceId, 0U);
+    state->deleteCalls++;
+    prv_capture_request(contextP, state);
+    return state->deleteResult == NO_ERROR ? COAP_202_DELETED : state->deleteResult;
 }
 
 static lwm2m_context_t *prv_context(lwm2m_server_t *serverP,
@@ -123,6 +202,7 @@ static lwm2m_context_t *prv_context(lwm2m_server_t *serverP,
     serverP->status = STATE_REGISTERED;
     serverP->sessionH = (void *)(uintptr_t)1;
     contextP->serverList = serverP;
+    stateP->serverP = serverP;
 
     memset(instanceP, 0, sizeof(*instanceP));
     memset(objectP, 0, sizeof(*objectP));
@@ -130,6 +210,8 @@ static lwm2m_context_t *prv_context(lwm2m_server_t *serverP,
     objectP->instanceList = instanceP;
     objectP->writeFunc = prv_write;
     objectP->executeFunc = prv_execute;
+    objectP->createFunc = prv_create;
+    objectP->deleteFunc = prv_delete;
     objectP->userData = stateP;
     contextP->objectList = objectP;
     return contextP;
@@ -154,6 +236,259 @@ static void prv_uri(lwm2m_uri_t *uriP)
     uriP->objectId = 27341;
     uriP->instanceId = 0;
     uriP->resourceId = 103;
+}
+
+static void prv_assert_request_inactive(lwm2m_context_t *contextP)
+{
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t tokenLength = 0U;
+    bool hasContentFormat = false;
+    lwm2m_media_type_t format = LWM2M_CONTENT_TEXT;
+    uint16_t serverShortId = 0U;
+    uint64_t sessionGeneration = 0U;
+    uint16_t messageId = 0U;
+
+    CU_ASSERT_EQUAL(lwm2m_copy_current_request_token(contextP,
+                                                     token,
+                                                     sizeof(token),
+                                                     &tokenLength),
+                    COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL(lwm2m_get_current_request_content_format(contextP,
+                                                             &hasContentFormat,
+                                                             &format),
+                    COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL(lwm2m_get_current_request_identity(contextP,
+                                                       &serverShortId,
+                                                       &sessionGeneration,
+                                                       &messageId),
+                    COAP_400_BAD_REQUEST);
+}
+
+static void prv_assert_captured_request(const execute_state_t *stateP,
+                                        const uint8_t *token,
+                                        size_t tokenLength,
+                                        bool hasContentFormat,
+                                        lwm2m_media_type_t format,
+                                        uint16_t messageId)
+{
+    CU_ASSERT_EQUAL(stateP->tokenCopyResult, NO_ERROR);
+    CU_ASSERT_EQUAL(stateP->tokenLength, tokenLength);
+    if (tokenLength > 0U)
+        CU_ASSERT_NSTRING_EQUAL(stateP->token, token, tokenLength);
+    CU_ASSERT_EQUAL(stateP->contentFormatResult, NO_ERROR);
+    CU_ASSERT_EQUAL(stateP->hasContentFormat, hasContentFormat);
+    CU_ASSERT_EQUAL(stateP->contentFormat, format);
+    CU_ASSERT_EQUAL(stateP->identityResult, NO_ERROR);
+    CU_ASSERT_EQUAL(stateP->serverShortId, 1U);
+    CU_ASSERT_EQUAL(stateP->sessionGeneration, 1U);
+    CU_ASSERT_EQUAL(stateP->messageId, messageId);
+}
+
+static void mutation_callbacks_expose_borrowed_request_metadata(void)
+{
+    static const uint8_t createToken[] = {'c', 'r', 't'};
+    static const uint8_t writeToken[] = {'w', 'r'};
+    static const uint8_t createPayload[] = {0xC1, 0x00, 0x01};
+    static const uint8_t writePayload[] = {0xC1, 0x67, 0x01};
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    execute_state_t state = {0};
+    lwm2m_context_t *contextP = prv_context(&server, &object, &instance, &state);
+    lwm2m_uri_t uri;
+    coap_packet_t message;
+    coap_packet_t response;
+
+    object.instanceList = NULL;
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    memset(&message, 0, sizeof(message));
+    memset(&response, 0, sizeof(response));
+    coap_init_message(&message, COAP_TYPE_CON, COAP_POST, 0x8100);
+    coap_set_header_token(&message, createToken, sizeof(createToken));
+    coap_set_header_content_type(&message, LWM2M_CONTENT_TLV);
+    coap_set_payload(&message, (uint8_t *)createPayload, sizeof(createPayload));
+    CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &server, &message, &response),
+                    COAP_201_CREATED);
+    CU_ASSERT_EQUAL(state.createCalls, 1U);
+    prv_assert_captured_request(&state,
+                                createToken,
+                                sizeof(createToken),
+                                true,
+                                LWM2M_CONTENT_TLV,
+                                0x8100U);
+    prv_assert_request_inactive(contextP);
+    coap_free_header(&message);
+    coap_free_header(&response);
+
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    uri.instanceId = 0U;
+    memset(&message, 0, sizeof(message));
+    memset(&response, 0, sizeof(response));
+    coap_init_message(&message, COAP_TYPE_CON, COAP_PUT, 0x8101);
+    coap_set_header_token(&message, writeToken, sizeof(writeToken));
+    coap_set_header_content_type(&message, LWM2M_CONTENT_TLV);
+    coap_set_payload(&message, (uint8_t *)writePayload, sizeof(writePayload));
+    state.attemptDeferOnWrite = true;
+    CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &server, &message, &response),
+                    COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(state.writeCalls, 1U);
+    CU_ASSERT_EQUAL(state.mutationDeferResult, COAP_400_BAD_REQUEST);
+    prv_assert_captured_request(&state,
+                                writeToken,
+                                sizeof(writeToken),
+                                true,
+                                LWM2M_CONTENT_TLV,
+                                0x8101U);
+    prv_assert_request_inactive(contextP);
+    coap_free_header(&message);
+    coap_free_header(&response);
+
+    memset(&message, 0, sizeof(message));
+    memset(&response, 0, sizeof(response));
+    coap_init_message(&message, COAP_TYPE_CON, COAP_DELETE, 0x8102);
+    CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &server, &message, &response),
+                    COAP_202_DELETED);
+    CU_ASSERT_EQUAL(state.deleteCalls, 1U);
+    prv_assert_captured_request(&state,
+                                NULL,
+                                0U,
+                                false,
+                                LWM2M_CONTENT_TLV,
+                                0x8102U);
+    prv_assert_request_inactive(contextP);
+
+    coap_free_header(&message);
+    coap_free_header(&response);
+    object.instanceList = NULL;
+    contextP->serverList = NULL;
+    contextP->objectList = NULL;
+    lwm2m_close(contextP);
+}
+
+static void mutation_callback_failure_restores_inactive_scope(void)
+{
+    static const uint8_t token[] = {'f', 'a', 'i', 'l'};
+    static const uint8_t payload[] = {0xC1, 0x67, 0x01};
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    execute_state_t state = {.writeResult = COAP_503_SERVICE_UNAVAILABLE};
+    lwm2m_context_t *contextP = prv_context(&server, &object, &instance, &state);
+    lwm2m_uri_t uri;
+    coap_packet_t message;
+    coap_packet_t response;
+
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    uri.instanceId = 0U;
+    memset(&message, 0, sizeof(message));
+    memset(&response, 0, sizeof(response));
+    coap_init_message(&message, COAP_TYPE_CON, COAP_PUT, 0x8200);
+    coap_set_header_token(&message, token, sizeof(token));
+    coap_set_header_content_type(&message, LWM2M_CONTENT_TLV);
+    coap_set_payload(&message, (uint8_t *)payload, sizeof(payload));
+    CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &server, &message, &response),
+                    COAP_503_SERVICE_UNAVAILABLE);
+    prv_assert_captured_request(&state,
+                                token,
+                                sizeof(token),
+                                true,
+                                LWM2M_CONTENT_TLV,
+                                0x8200U);
+    prv_assert_request_inactive(contextP);
+
+    coap_free_header(&message);
+    coap_free_header(&response);
+    contextP->serverList = NULL;
+    contextP->objectList = NULL;
+    lwm2m_close(contextP);
+}
+
+static void nested_mutation_callback_restores_outer_scope(void)
+{
+    static const uint8_t token[] = {'o', 'u', 't'};
+    static const uint8_t payload[] = {0xC1, 0x67, 0x01};
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    execute_state_t state = {.reenterDeleteOnWrite = true};
+    lwm2m_context_t *contextP = prv_context(&server, &object, &instance, &state);
+    lwm2m_uri_t uri;
+    coap_packet_t message;
+    coap_packet_t response;
+
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    uri.instanceId = 0U;
+    memset(&message, 0, sizeof(message));
+    memset(&response, 0, sizeof(response));
+    coap_init_message(&message, COAP_TYPE_CON, COAP_PUT, 0x8F01);
+    coap_set_header_token(&message, token, sizeof(token));
+    coap_set_header_content_type(&message, LWM2M_CONTENT_TLV);
+    coap_set_payload(&message, (uint8_t *)payload, sizeof(payload));
+    CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &server, &message, &response),
+                    COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(state.nestedResult, COAP_202_DELETED);
+    CU_ASSERT_EQUAL(state.deleteCalls, 1U);
+    CU_ASSERT_EQUAL(state.nestedMessageId, 0x8F02U);
+    CU_ASSERT_EQUAL(state.restoredMessageId, 0x8F01U);
+    prv_assert_captured_request(&state,
+                                token,
+                                sizeof(token),
+                                true,
+                                LWM2M_CONTENT_TLV,
+                                0x8F01U);
+    prv_assert_request_inactive(contextP);
+
+    coap_free_header(&message);
+    coap_free_header(&response);
+    contextP->serverList = NULL;
+    contextP->objectList = NULL;
+    lwm2m_close(contextP);
+}
+
+static void closing_session_inside_callback_keeps_copied_identity_safe(void)
+{
+    static const uint8_t token[] = {'c', 'l', 'o', 's', 'e'};
+    static const uint8_t payload[] = {0xC1, 0x67, 0x01};
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    execute_state_t state = {.closeSessionOnWrite = true};
+    lwm2m_context_t *contextP = prv_context(&server, &object, &instance, &state);
+    lwm2m_uri_t uri;
+    coap_packet_t message;
+    coap_packet_t response;
+
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    uri.instanceId = 0U;
+    memset(&message, 0, sizeof(message));
+    memset(&response, 0, sizeof(response));
+    coap_init_message(&message, COAP_TYPE_CON, COAP_PUT, 0x8300);
+    coap_set_header_token(&message, token, sizeof(token));
+    coap_set_header_content_type(&message, LWM2M_CONTENT_TLV);
+    coap_set_payload(&message, (uint8_t *)payload, sizeof(payload));
+    test_reset_close_connection_count();
+    CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &server, &message, &response),
+                    COAP_204_CHANGED);
+    CU_ASSERT_PTR_NULL(server.sessionH);
+    CU_ASSERT_EQUAL(test_get_close_connection_count(), 1U);
+    prv_assert_captured_request(&state,
+                                token,
+                                sizeof(token),
+                                true,
+                                LWM2M_CONTENT_TLV,
+                                0x8300U);
+    prv_assert_request_inactive(contextP);
+
+    coap_free_header(&message);
+    coap_free_header(&response);
+    contextP->serverList = NULL;
+    contextP->objectList = NULL;
+    lwm2m_close(contextP);
 }
 
 static void deferred_execute_deduplicates_and_completes(void)
@@ -501,6 +836,7 @@ static void closing_server_session_aborts_owned_work_before_raw_close(void)
                                         "/27341/0/103",
                                         NULL,
                                         0,
+                                        0x5151,
                                         firstBlock,
                                         sizeof(firstBlock),
                                         16,
@@ -548,6 +884,7 @@ static void closing_server_session_aborts_owned_work_before_raw_close(void)
                                         "/27341/0/103",
                                         NULL,
                                         0,
+                                        0x5152,
                                         secondBlock,
                                         sizeof(secondBlock),
                                         16,
@@ -888,6 +1225,10 @@ static void create_releases_serialized_source_after_queue(void)
 #endif
 
 static struct TestTable table[] = {
+    {"DM mutation request metadata", mutation_callbacks_expose_borrowed_request_metadata},
+    {"DM mutation failure scope restore", mutation_callback_failure_restores_inactive_scope},
+    {"nested DM mutation scope restore", nested_mutation_callback_restores_outer_scope},
+    {"DM callback session close identity", closing_session_inside_callback_keeps_copied_identity_safe},
     {"deferred Execute completion", deferred_execute_deduplicates_and_completes},
     {"deferred Execute immediate failure", non_deferred_result_cancels_pending_request},
     {"SenML JSON resource POST dispatch", senml_json_resource_post_uses_execute},

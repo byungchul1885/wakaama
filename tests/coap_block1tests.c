@@ -34,10 +34,9 @@ static uint8_t handle_block_token(lwm2m_block_data_t **blk1, const uint8_t *toke
     return coap_block1_handler(blk1, URI, token, tokenLength, mid, buffer, bufferLength, blockSize, blockNum,
                                blockMore, rawBlock1, resultBuffer, resultLen);
 #else
-    (void)mid;
     (void)rawBlock1;
-    return coap_block1_handler(blk1, URI, token, tokenLength, buffer, bufferLength, blockSize, blockNum, blockMore,
-                               resultBuffer, resultLen);
+    return coap_block1_handler(blk1, URI, token, tokenLength, mid, buffer, bufferLength, blockSize, blockNum,
+                               blockMore, resultBuffer, resultLen);
 #endif
 }
 
@@ -285,28 +284,137 @@ static void test_block1_unbounded_allocation(void) {
     free_block_data(blk1);
 }
 
-#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+#ifndef LWM2M_VERSION_1_0
 typedef struct
 {
     unsigned int rawCalls;
+    unsigned int rawCreateCalls;
+    unsigned int rawExecuteCalls;
     unsigned int writeCalls;
     unsigned int createCalls;
     unsigned int executeCalls;
+    unsigned int metadataCalls;
     uint8_t rawResult;
     uint8_t writeResult;
     int deferResult;
+    int tokenCopyResult;
+    int contentFormatResult;
+    int identityResult;
     lwm2m_deferred_request_id_t deferredRequestId;
     lwm2m_list_t createdInstance;
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t tokenLength;
+    bool hasContentFormat;
+    lwm2m_media_type_t contentFormat;
+    uint16_t serverShortId;
+    uint64_t sessionGeneration;
+    uint16_t firstMessageId;
+    bool identityStable;
+    lwm2m_server_t *serverP;
+    bool closeSessionOnRawWrite;
     uint8_t payload[64];
     size_t payloadLength;
 } dispatch_state_t;
 
+static void dispatch_capture_request(lwm2m_context_t *contextP, dispatch_state_t *stateP) {
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN] = {0};
+    size_t tokenLength = 0U;
+    bool hasContentFormat = false;
+    lwm2m_media_type_t contentFormat = LWM2M_CONTENT_TEXT;
+    uint16_t serverShortId = 0U;
+    uint64_t sessionGeneration = 0U;
+    uint16_t messageId = 0U;
+
+    stateP->tokenCopyResult = lwm2m_copy_current_request_token(contextP,
+                                                               token,
+                                                               sizeof(token),
+                                                               &tokenLength);
+    stateP->contentFormatResult = lwm2m_get_current_request_content_format(contextP,
+                                                                           &hasContentFormat,
+                                                                           &contentFormat);
+    stateP->identityResult = lwm2m_get_current_request_identity(contextP,
+                                                                &serverShortId,
+                                                                &sessionGeneration,
+                                                                &messageId);
+    CU_ASSERT_EQUAL(stateP->tokenCopyResult, NO_ERROR)
+    CU_ASSERT_EQUAL(stateP->contentFormatResult, NO_ERROR)
+    CU_ASSERT_EQUAL(stateP->identityResult, NO_ERROR)
+    if (stateP->metadataCalls == 0U)
+    {
+        memcpy(stateP->token, token, tokenLength);
+        stateP->tokenLength = tokenLength;
+        stateP->hasContentFormat = hasContentFormat;
+        stateP->contentFormat = contentFormat;
+        stateP->serverShortId = serverShortId;
+        stateP->sessionGeneration = sessionGeneration;
+        stateP->firstMessageId = messageId;
+        stateP->identityStable = true;
+    }
+    else if (stateP->tokenLength != tokenLength
+             || (tokenLength > 0U && memcmp(stateP->token, token, tokenLength) != 0)
+             || stateP->hasContentFormat != hasContentFormat
+             || stateP->contentFormat != contentFormat
+             || stateP->serverShortId != serverShortId
+             || stateP->sessionGeneration != sessionGeneration
+             || stateP->firstMessageId != messageId)
+    {
+        stateP->identityStable = false;
+    }
+    stateP->metadataCalls++;
+}
+
+static void dispatch_assert_request_inactive(lwm2m_context_t *contextP) {
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t tokenLength = 0U;
+    bool hasContentFormat = false;
+    lwm2m_media_type_t contentFormat = LWM2M_CONTENT_TEXT;
+    uint16_t serverShortId = 0U;
+    uint64_t sessionGeneration = 0U;
+    uint16_t messageId = 0U;
+
+    CU_ASSERT_EQUAL(lwm2m_copy_current_request_token(contextP,
+                                                     token,
+                                                     sizeof(token),
+                                                     &tokenLength),
+                    COAP_400_BAD_REQUEST)
+    CU_ASSERT_EQUAL(lwm2m_get_current_request_content_format(contextP,
+                                                             &hasContentFormat,
+                                                             &contentFormat),
+                    COAP_400_BAD_REQUEST)
+    CU_ASSERT_EQUAL(lwm2m_get_current_request_identity(contextP,
+                                                       &serverShortId,
+                                                       &sessionGeneration,
+                                                       &messageId),
+                    COAP_400_BAD_REQUEST)
+}
+
+static void dispatch_assert_metadata(const dispatch_state_t *stateP,
+                                     unsigned int calls,
+                                     const uint8_t *token,
+                                     size_t tokenLength,
+                                     lwm2m_media_type_t contentFormat,
+                                     uint16_t firstMessageId) {
+    CU_ASSERT_EQUAL(stateP->metadataCalls, calls)
+    CU_ASSERT_EQUAL(stateP->tokenCopyResult, NO_ERROR)
+    CU_ASSERT_EQUAL(stateP->tokenLength, tokenLength)
+    if (tokenLength > 0U)
+        CU_ASSERT_NSTRING_EQUAL(stateP->token, token, tokenLength)
+    CU_ASSERT_EQUAL(stateP->contentFormatResult, NO_ERROR)
+    CU_ASSERT_TRUE(stateP->hasContentFormat)
+    CU_ASSERT_EQUAL(stateP->contentFormat, contentFormat)
+    CU_ASSERT_EQUAL(stateP->identityResult, NO_ERROR)
+    CU_ASSERT_EQUAL(stateP->serverShortId, 1U)
+    CU_ASSERT_EQUAL(stateP->sessionGeneration, 77U)
+    CU_ASSERT_EQUAL(stateP->firstMessageId, firstMessageId)
+    CU_ASSERT_TRUE(stateP->identityStable)
+}
+
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
 static uint8_t dispatch_raw_write(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_media_type_t format,
                                   uint8_t *buffer, int length, lwm2m_object_t *objectP, uint32_t blockNum,
                                   uint8_t blockMore) {
     dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
 
-    (void)contextP;
     (void)blockNum;
     (void)blockMore;
     CU_ASSERT_EQUAL(uriP->objectId, 27348)
@@ -320,15 +428,64 @@ static uint8_t dispatch_raw_write(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, 
     }
     state->payloadLength += (size_t)length;
     state->rawCalls++;
+    dispatch_capture_request(contextP, state);
+    if (state->closeSessionOnRawWrite)
+    {
+        lwm2m_close_server_session(contextP, state->serverP);
+        dispatch_capture_request(contextP, state);
+    }
     return state->rawResult == NO_ERROR ? COAP_204_CHANGED : state->rawResult;
 }
+
+static uint8_t dispatch_raw_create(lwm2m_context_t *contextP,
+                                   lwm2m_uri_t *uriP,
+                                   lwm2m_media_type_t format,
+                                   uint8_t *buffer,
+                                   int length,
+                                   lwm2m_object_t *objectP,
+                                   uint32_t blockNum,
+                                   uint8_t blockMore) {
+    dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
+
+    (void)buffer;
+    (void)blockNum;
+    (void)blockMore;
+    CU_ASSERT_FALSE(LWM2M_URI_IS_SET_INSTANCE(uriP))
+    CU_ASSERT_EQUAL(format, LWM2M_CONTENT_TLV)
+    CU_ASSERT_TRUE(length > 0)
+    state->rawCreateCalls++;
+    dispatch_capture_request(contextP, state);
+    return COAP_201_CREATED;
+}
+
+static uint8_t dispatch_raw_execute(lwm2m_context_t *contextP,
+                                    lwm2m_uri_t *uriP,
+                                    uint8_t *buffer,
+                                    int length,
+                                    lwm2m_object_t *objectP,
+                                    uint32_t blockNum,
+                                    uint8_t blockMore) {
+    dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
+    lwm2m_deferred_request_id_t requestId = 0U;
+
+    (void)buffer;
+    (void)blockNum;
+    (void)blockMore;
+    CU_ASSERT_EQUAL(uriP->instanceId, 0U)
+    CU_ASSERT_EQUAL(uriP->resourceId, 14U)
+    CU_ASSERT_TRUE(length > 0)
+    state->rawExecuteCalls++;
+    dispatch_capture_request(contextP, state);
+    state->deferResult = lwm2m_defer_current_request(contextP, &requestId);
+    return COAP_204_CHANGED;
+}
+#endif
 
 static uint8_t dispatch_assembled_write(lwm2m_context_t *contextP, uint16_t instanceId, int numData,
                                         lwm2m_data_t *dataArray, lwm2m_object_t *objectP,
                                         lwm2m_write_type_t writeType) {
     dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
 
-    (void)contextP;
     (void)writeType;
     CU_ASSERT_EQUAL(instanceId, 0)
     CU_ASSERT_EQUAL(numData, 1)
@@ -338,6 +495,7 @@ static uint8_t dispatch_assembled_write(lwm2m_context_t *contextP, uint16_t inst
     memcpy(state->payload, dataArray[0].value.asBuffer.buffer, dataArray[0].value.asBuffer.length);
     state->payloadLength = dataArray[0].value.asBuffer.length;
     state->writeCalls++;
+    dispatch_capture_request(contextP, state);
     return state->writeResult == NO_ERROR ? COAP_204_CHANGED : state->writeResult;
 }
 
@@ -345,13 +503,13 @@ static uint8_t dispatch_create(lwm2m_context_t *contextP, uint16_t instanceId, i
                                lwm2m_data_t *dataArray, lwm2m_object_t *objectP) {
     dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
 
-    (void)contextP;
     (void)numData;
     (void)dataArray;
     memset(&state->createdInstance, 0, sizeof(state->createdInstance));
     state->createdInstance.id = instanceId;
     objectP->instanceList = LWM2M_LIST_ADD(objectP->instanceList, &state->createdInstance);
     state->createCalls++;
+    dispatch_capture_request(contextP, state);
     return COAP_201_CREATED;
 }
 
@@ -364,6 +522,7 @@ static uint8_t dispatch_deferred_execute(lwm2m_context_t *contextP, uint16_t ins
     CU_ASSERT_EQUAL(resourceId, 14)
     CU_ASSERT_TRUE(length >= 0)
     state->executeCalls++;
+    dispatch_capture_request(contextP, state);
     state->deferResult = lwm2m_defer_current_request(contextP, &state->deferredRequestId);
     return COAP_IGNORE;
 }
@@ -375,16 +534,22 @@ static lwm2m_context_t *dispatch_context(lwm2m_server_t *serverP, lwm2m_object_t
     CU_ASSERT_PTR_NOT_NULL_FATAL(contextP)
     memset(serverP, 0, sizeof(*serverP));
     serverP->shortID = 1;
+    serverP->sessionGeneration = 77U;
     serverP->status = STATE_REGISTERED;
     serverP->sessionH = (void *)(uintptr_t)1;
     contextP->serverList = serverP;
+    stateP->serverP = serverP;
 
     memset(instanceP, 0, sizeof(*instanceP));
     memset(objectP, 0, sizeof(*objectP));
     objectP->objID = 27348;
     objectP->instanceList = instanceP;
     objectP->writeFunc = dispatch_assembled_write;
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
     objectP->rawBlock1WriteFunc = rawSupported ? dispatch_raw_write : NULL;
+#else
+    (void)rawSupported;
+#endif
     objectP->userData = stateP;
     contextP->objectList = objectP;
     return contextP;
@@ -409,7 +574,8 @@ static uint8_t dispatch_block_request(lwm2m_context_t *contextP, uint16_t mid, c
 
     memset(&request, 0, sizeof(request));
     coap_init_message(&request, COAP_TYPE_CON, method, mid);
-    coap_set_header_token(&request, token, tokenLength);
+    if (tokenLength > 0U)
+        coap_set_header_token(&request, token, tokenLength);
     coap_set_header_uri_host(&request, "localhost");
     coap_set_header_uri_path(&request, path);
     coap_set_header_content_type(&request, format);
@@ -462,6 +628,7 @@ static void dispatch_context_close(lwm2m_context_t *contextP, lwm2m_server_t *se
     lwm2m_close(contextP);
 }
 
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
 static void test_raw_block1_sequence_and_retransmit(void) {
     lwm2m_block_data_t *blk1 = NULL;
     uint8_t *resultBuffer = NULL;
@@ -539,11 +706,15 @@ static void test_packet_dispatches_raw_callback_when_supported(void) {
     CU_ASSERT_EQUAL(dispatch_block(contextP, 500, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
     CU_ASSERT_EQUAL(state.rawCalls, 1)
     CU_ASSERT_EQUAL(state.writeCalls, 0)
+    dispatch_assert_metadata(&state, 1U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_OPAQUE, 500U);
+    dispatch_assert_request_inactive(contextP);
     CU_ASSERT_EQUAL(dispatch_block(contextP, 502, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
     CU_ASSERT_EQUAL(state.rawCalls, 1)
     CU_ASSERT_EQUAL(dispatch_block(contextP, 501, 1, false, last, sizeof(last) - 1), COAP_204_CHANGED)
     CU_ASSERT_EQUAL(state.rawCalls, 2)
     CU_ASSERT_EQUAL(state.writeCalls, 0)
+    dispatch_assert_metadata(&state, 2U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_OPAQUE, 500U);
+    dispatch_assert_request_inactive(contextP);
     CU_ASSERT_EQUAL(state.payloadLength, 19)
     CU_ASSERT_NSTRING_EQUAL(state.payload, "0123456789ABCDEFXYZ", 19)
     CU_ASSERT_EQUAL(dispatch_block(contextP, 503, 1, false, last, sizeof(last) - 1), COAP_204_CHANGED)
@@ -561,6 +732,92 @@ static void test_packet_dispatches_raw_callback_when_supported(void) {
     dispatch_context_close(contextP, &server);
 }
 
+static void test_packet_dispatches_raw_create_callback(void) {
+    static const uint8_t first[] = "0123456789ABCDEF";
+    static const uint8_t last[] = {0xC1, 0x00, 0x01};
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {0};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+
+    object.objID = 3333;
+    object.instanceList = NULL;
+    object.writeFunc = NULL;
+    object.rawBlock1CreateFunc = dispatch_raw_create;
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 710, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 0, true, 16,
+                                           first, sizeof(first) - 1, NULL, true),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(state.rawCreateCalls, 1U)
+    dispatch_assert_request_inactive(contextP);
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 711, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 1, false, 16,
+                                           last, sizeof(last), NULL, true),
+                    COAP_201_CREATED)
+    CU_ASSERT_EQUAL(state.rawCreateCalls, 2U)
+    dispatch_assert_metadata(&state, 2U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_TLV, 710U);
+    dispatch_assert_request_inactive(contextP);
+
+    dispatch_context_close(contextP, &server);
+}
+
+static void test_packet_dispatches_raw_execute_callback(void) {
+    static const uint8_t first[] = "0123456789ABCDEF";
+    static const uint8_t last[] = "go";
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {.deferResult = -1};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+
+    object.rawBlock1ExecuteFunc = dispatch_raw_execute;
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 720, COAP_POST, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 0, true, 16,
+                                           first, sizeof(first) - 1, NULL, true),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(state.rawExecuteCalls, 1U)
+    CU_ASSERT_EQUAL(state.deferResult, COAP_400_BAD_REQUEST)
+    dispatch_assert_request_inactive(contextP);
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 721, COAP_POST, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 1, false, 16,
+                                           last, sizeof(last) - 1, NULL, true),
+                    COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.rawExecuteCalls, 2U)
+    CU_ASSERT_EQUAL(state.deferResult, COAP_400_BAD_REQUEST)
+    dispatch_assert_metadata(&state, 2U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_OPAQUE, 720U);
+    dispatch_assert_request_inactive(contextP);
+
+    dispatch_context_close(contextP, &server);
+}
+
+static void test_raw_callback_can_close_session_without_uaf(void) {
+    static const uint8_t payload[] = "done";
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {.closeSessionOnRawWrite = true};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, true);
+
+    test_reset_close_connection_count();
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 730, 0, false, payload, sizeof(payload) - 1),
+                    COAP_500_INTERNAL_SERVER_ERROR)
+    CU_ASSERT_EQUAL(state.rawCalls, 1U)
+    CU_ASSERT_PTR_NULL(server.sessionH)
+    CU_ASSERT_PTR_NULL(server.blockData)
+    CU_ASSERT_EQUAL(test_get_close_connection_count(), 1U)
+    dispatch_assert_metadata(&state,
+                             2U,
+                             DEFAULT_TOKEN,
+                             sizeof(DEFAULT_TOKEN),
+                             LWM2M_CONTENT_OPAQUE,
+                             730U);
+    dispatch_assert_request_inactive(contextP);
+
+    dispatch_context_close(contextP, &server);
+}
+#endif
+
 static void test_packet_assembles_when_raw_callback_is_missing(void) {
     static const uint8_t first[] = "0123456789ABCDEF";
     static const uint8_t last[] = "XYZ";
@@ -573,11 +830,15 @@ static void test_packet_assembles_when_raw_callback_is_missing(void) {
     CU_ASSERT_EQUAL(dispatch_block(contextP, 600, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
     CU_ASSERT_EQUAL(state.rawCalls, 0)
     CU_ASSERT_EQUAL(state.writeCalls, 0)
+    CU_ASSERT_EQUAL(state.metadataCalls, 0U)
+    dispatch_assert_request_inactive(contextP);
     CU_ASSERT_EQUAL(dispatch_block(contextP, 601, 1, false, last, sizeof(last) - 1), COAP_204_CHANGED)
     CU_ASSERT_EQUAL(state.rawCalls, 0)
     CU_ASSERT_EQUAL(state.writeCalls, 1)
     CU_ASSERT_EQUAL(state.payloadLength, 19)
     CU_ASSERT_NSTRING_EQUAL(state.payload, "0123456789ABCDEFXYZ", 19)
+    dispatch_assert_metadata(&state, 1U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_OPAQUE, 600U);
+    dispatch_assert_request_inactive(contextP);
     CU_ASSERT_EQUAL(dispatch_block(contextP, 602, 1, false, last, sizeof(last) - 1), COAP_204_CHANGED)
     CU_ASSERT_EQUAL(state.writeCalls, 1)
     CU_ASSERT_EQUAL(dispatch_block(contextP, 603, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
@@ -585,6 +846,30 @@ static void test_packet_assembles_when_raw_callback_is_missing(void) {
     CU_ASSERT_EQUAL(dispatch_block(contextP, 604, 2, false, (const uint8_t *)"late", 4),
                     COAP_408_REQ_ENTITY_INCOMPLETE)
     CU_ASSERT_EQUAL(state.writeCalls, 1)
+
+    dispatch_context_close(contextP, &server);
+}
+
+static void test_packet_tkl0_uses_first_block_mid(void) {
+    static const uint8_t first[] = "0123456789ABCDEF";
+    static const uint8_t last[] = "XYZ";
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {0};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 605, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, true, 16,
+                                           first, sizeof(first) - 1, NULL, true),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 606, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 1, false, 16,
+                                           last, sizeof(last) - 1, NULL, true),
+                    COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.writeCalls, 1U)
+    dispatch_assert_metadata(&state, 1U, NULL, 0U, LWM2M_CONTENT_OPAQUE, 605U);
+    dispatch_assert_request_inactive(contextP);
 
     dispatch_context_close(contextP, &server);
 }
@@ -605,6 +890,8 @@ static void test_packet_replays_failed_application_result(void) {
                                            last, sizeof(last) - 1, NULL, false),
                     COAP_IGNORE)
     CU_ASSERT_EQUAL(state.writeCalls, 1)
+    dispatch_assert_metadata(&state, 1U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_OPAQUE, 610U);
+    dispatch_assert_request_inactive(contextP);
     CU_ASSERT_EQUAL(dispatch_block(contextP, 612, 1, false, last, sizeof(last) - 1),
                     COAP_503_SERVICE_UNAVAILABLE)
     CU_ASSERT_EQUAL(state.writeCalls, 1)
@@ -652,6 +939,8 @@ static void test_packet_replays_deferred_empty_ack(void) {
     CU_ASSERT_EQUAL(state.executeCalls, 1)
     CU_ASSERT_EQUAL(state.deferResult, NO_ERROR)
     CU_ASSERT_NOT_EQUAL(state.deferredRequestId, 0)
+    dispatch_assert_metadata(&state, 1U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_OPAQUE, 630U);
+    dispatch_assert_request_inactive(contextP);
 
     CU_ASSERT_EQUAL(dispatch_block_request(contextP, 631, COAP_POST, "27348/0/14", LWM2M_CONTENT_OPAQUE,
                                            DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 0, false, 16,
@@ -684,6 +973,8 @@ static void test_packet_replays_create_location_path(void) {
                     COAP_IGNORE)
     CU_ASSERT_EQUAL(state.createCalls, 1)
     CU_ASSERT_PTR_NULL(locationPath)
+    dispatch_assert_metadata(&state, 1U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_TLV, 700U);
+    dispatch_assert_request_inactive(contextP);
 
     CU_ASSERT_EQUAL(dispatch_block_request(contextP, 701, COAP_POST, "3333", LWM2M_CONTENT_TLV,
                                            DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 0, false, 16,
@@ -698,6 +989,7 @@ static void test_packet_replays_create_location_path(void) {
     dispatch_context_close(contextP, &server);
 }
 
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
 static void test_packet_streams_two_megabytes_without_assembly(void) {
     enum { IMAGE_BYTES = 2 * 1024 * 1024, BLOCK_BYTES = 1024 };
     uint8_t block[BLOCK_BYTES];
@@ -728,9 +1020,17 @@ static void test_packet_streams_two_megabytes_without_assembly(void) {
     CU_ASSERT_EQUAL(state.rawCalls, blockCount)
     CU_ASSERT_EQUAL(state.writeCalls, 0)
     CU_ASSERT_EQUAL(state.payloadLength, IMAGE_BYTES)
+    dispatch_assert_metadata(&state,
+                             blockCount,
+                             DEFAULT_TOKEN,
+                             sizeof(DEFAULT_TOKEN),
+                             LWM2M_CONTENT_OPAQUE,
+                             1000U);
+    dispatch_assert_request_inactive(contextP);
 
     dispatch_context_close(contextP, &server);
 }
+#endif
 #endif
 
 static struct TestTable table[] = {
@@ -741,16 +1041,24 @@ static struct TestTable table[] = {
     {"Block1 token, size, and gap isolation", test_block1_token_size_and_gap_are_isolated},
     {"Block1 exchange is scoped to peer list", test_block1_exchange_is_scoped_to_peer_list},
     {"test of test_block1_unbounded_allocation()", test_block1_unbounded_allocation},
+#ifndef LWM2M_VERSION_1_0
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
     {"raw Block1 sequence and retransmit", test_raw_block1_sequence_and_retransmit},
     {"raw Block1 rejects gap", test_raw_block1_rejects_gap_without_advancing},
     {"packet dispatches supported raw callback", test_packet_dispatches_raw_callback_when_supported},
+    {"packet dispatches raw Create callback", test_packet_dispatches_raw_create_callback},
+    {"packet dispatches raw Execute callback", test_packet_dispatches_raw_execute_callback},
+    {"raw callback closes session without UAF", test_raw_callback_can_close_session_without_uaf},
+#endif
     {"packet assembles without raw callback", test_packet_assembles_when_raw_callback_is_missing},
+    {"packet TKL0 uses first Block1 MID", test_packet_tkl0_uses_first_block_mid},
     {"packet replays failed application result", test_packet_replays_failed_application_result},
     {"packet does not invent success for ignored result", test_packet_does_not_invent_success_for_ignored_result},
     {"packet replays deferred empty ACK", test_packet_replays_deferred_empty_ack},
     {"packet replays Create Location-Path", test_packet_replays_create_location_path},
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
     {"packet streams two MiB through raw callback", test_packet_streams_two_megabytes_without_assembly},
+#endif
 #endif
     {NULL, NULL},
 };

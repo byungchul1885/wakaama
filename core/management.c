@@ -152,6 +152,7 @@ int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_reques
     lwm2m_deferred_request_t *requestP;
 
     if (contextP == NULL || requestIdP == NULL || !contextP->currentDmRequestActive
+        || !contextP->currentDmRequestCanDefer
         || contextP->currentDmDeferredRequestId != 0U)
         return COAP_400_BAD_REQUEST;
     if (contextP->currentRequestTokenLen == 0U)
@@ -171,7 +172,7 @@ int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_reques
     requestP->requestId = prv_nextDeferredRequestId(contextP);
     requestP->serverShortId = contextP->currentDmServerShortId;
     requestP->sessionGeneration = contextP->currentDmSessionGeneration;
-    requestP->messageId = contextP->currentDmMessageId;
+    requestP->messageId = contextP->currentDmTransportMessageId;
     requestP->tokenLength = contextP->currentRequestTokenLen;
     if (requestP->tokenLength > 0U)
         memcpy(requestP->token, contextP->currentRequestToken, requestP->tokenLength);
@@ -262,6 +263,7 @@ void dm_clearDeferredRequests(lwm2m_context_t *contextP)
     }
     contextP->currentDmDeferredRequestId = 0U;
     contextP->currentDmRequestActive = false;
+    contextP->currentDmRequestCanDefer = false;
 }
 
 size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
@@ -271,7 +273,15 @@ size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
     lwm2m_deferred_request_t **cursorP;
     size_t removed = 0U;
 
-    if (contextP == NULL || generation == 0U)
+    if (contextP == NULL)
+        return 0U;
+    if (contextP->currentDmRequestActive
+        && contextP->currentDmServerShortId == shortServerId
+        && contextP->currentDmSessionGeneration == generation)
+    {
+        contextP->currentDmRequestCanDefer = false;
+    }
+    if (generation == 0U)
         return 0U;
     cursorP = &contextP->deferredRequestList;
     while (*cursorP != NULL)
@@ -293,6 +303,102 @@ size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
         }
     }
     return removed;
+}
+#endif
+
+#ifndef LWM2M_VERSION_1_0
+typedef struct
+{
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t tokenLength;
+    bool requestActive;
+    bool requestCanDefer;
+    bool hasContentFormat;
+    lwm2m_media_type_t contentFormat;
+    uint16_t serverShortId;
+    uint64_t sessionGeneration;
+    uint16_t messageId;
+    uint16_t transportMessageId;
+    lwm2m_deferred_request_id_t deferredRequestId;
+} dm_request_scope_t;
+
+static int prv_beginDmRequestScope(lwm2m_context_t *contextP,
+                                   lwm2m_server_t *serverP,
+                                   coap_packet_t *message,
+                                   lwm2m_media_type_t format,
+                                   uint16_t exchangeMid,
+                                   dm_request_scope_t *scopeP)
+{
+    if (contextP == NULL || serverP == NULL || message == NULL || scopeP == NULL
+        || message->token_len > LWM2M_COAP_TOKEN_MAX_LEN
+        || (message->token_len > 0U && message->token == NULL)
+        || contextP->currentRequestTokenLen > LWM2M_COAP_TOKEN_MAX_LEN)
+    {
+        return COAP_400_BAD_REQUEST;
+    }
+
+    memcpy(scopeP->token, contextP->currentRequestToken, sizeof(scopeP->token));
+    scopeP->tokenLength = contextP->currentRequestTokenLen;
+    scopeP->requestActive = contextP->currentDmRequestActive;
+    scopeP->requestCanDefer = contextP->currentDmRequestCanDefer;
+    scopeP->hasContentFormat = contextP->currentDmRequestHasContentFormat;
+    scopeP->contentFormat = contextP->currentDmRequestContentFormat;
+    scopeP->serverShortId = contextP->currentDmServerShortId;
+    scopeP->sessionGeneration = contextP->currentDmSessionGeneration;
+    scopeP->messageId = contextP->currentDmMessageId;
+    scopeP->transportMessageId = contextP->currentDmTransportMessageId;
+    scopeP->deferredRequestId = contextP->currentDmDeferredRequestId;
+
+    memset(contextP->currentRequestToken, 0, sizeof(contextP->currentRequestToken));
+    if (message->token_len > 0U)
+        memcpy(contextP->currentRequestToken, message->token, message->token_len);
+    contextP->currentRequestTokenLen = message->token_len;
+    contextP->currentDmRequestActive = true;
+    contextP->currentDmRequestCanDefer = false;
+    contextP->currentDmRequestHasContentFormat =
+        IS_OPTION(message, COAP_OPTION_CONTENT_TYPE);
+    contextP->currentDmRequestContentFormat = format;
+    contextP->currentDmServerShortId = serverP->shortID;
+    contextP->currentDmSessionGeneration = serverP->sessionGeneration;
+    contextP->currentDmMessageId = exchangeMid;
+    contextP->currentDmTransportMessageId = message->mid;
+    contextP->currentDmDeferredRequestId = 0U;
+    return NO_ERROR;
+}
+
+static void prv_endDmRequestScope(lwm2m_context_t *contextP,
+                                  const dm_request_scope_t *scopeP)
+{
+    lwm2m_server_t *serverP;
+    lwm2m_deferred_request_id_t deferredRequestId = scopeP->deferredRequestId;
+    bool requestCanDefer = false;
+
+    if (deferredRequestId != 0U && prv_findDeferredById(contextP, deferredRequestId, NULL) == NULL)
+        deferredRequestId = 0U;
+    if (scopeP->requestActive && scopeP->requestCanDefer)
+    {
+        for (serverP = contextP->serverList; serverP != NULL; serverP = serverP->next)
+        {
+            if (serverP->shortID == scopeP->serverShortId
+                && serverP->sessionGeneration == scopeP->sessionGeneration
+                && serverP->sessionH != NULL)
+            {
+                requestCanDefer = true;
+                break;
+            }
+        }
+    }
+    memcpy(contextP->currentRequestToken, scopeP->token, sizeof(scopeP->token));
+    contextP->currentRequestTokenLen = scopeP->tokenLength;
+    contextP->currentDmRequestActive = scopeP->requestActive;
+    contextP->currentDmRequestCanDefer = requestCanDefer;
+    contextP->currentDmRequestHasContentFormat = scopeP->hasContentFormat;
+    contextP->currentDmRequestContentFormat = scopeP->contentFormat;
+    contextP->currentDmServerShortId = scopeP->serverShortId;
+    contextP->currentDmSessionGeneration = scopeP->sessionGeneration;
+    contextP->currentDmMessageId = scopeP->messageId;
+    contextP->currentDmTransportMessageId = scopeP->transportMessageId;
+    contextP->currentDmDeferredRequestId = deferredRequestId;
 }
 #endif
 
@@ -402,14 +508,21 @@ static int prv_readAttributes(multi_option_t * query,
     return 0;
 }
 
-uint8_t dm_handleRequest(lwm2m_context_t * contextP,
-                         lwm2m_uri_t * uriP,
-                         lwm2m_server_t * serverP,
-                         coap_packet_t * message,
-                         coap_packet_t * response)
+uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
+                                        lwm2m_uri_t * uriP,
+                                        lwm2m_server_t * serverP,
+                                        coap_packet_t * message,
+                                        coap_packet_t * response,
+                                        uint16_t exchangeMid)
 {
     uint8_t result;
     lwm2m_media_type_t format;
+#ifndef LWM2M_VERSION_1_0
+    dm_request_scope_t requestScope;
+    bool requestScopeActive = false;
+#else
+    (void)exchangeMid;
+#endif
 
     LOG_ARG_DBG("Code: %02X, server status: %s", message->code, STR_STATUS(serverP->status));
     LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
@@ -437,6 +550,21 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
     }
 
     // TODO: check ACL
+
+#ifndef LWM2M_VERSION_1_0
+    if (message->code == COAP_POST || message->code == COAP_PUT || message->code == COAP_DELETE)
+    {
+        result = (uint8_t)prv_beginDmRequestScope(contextP,
+                                                  serverP,
+                                                  message,
+                                                  format,
+                                                  exchangeMid,
+                                                  &requestScope);
+        if (result != NO_ERROR)
+            return result;
+        requestScopeActive = true;
+    }
+#endif
 
     switch (message->code)
     {
@@ -622,18 +750,6 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                 else
                 {
 #ifndef LWM2M_VERSION_1_0
-                    uint8_t previousToken[LWM2M_COAP_TOKEN_MAX_LEN];
-                    size_t previousTokenLen = contextP->currentRequestTokenLen;
-                    bool previousRequestActive = contextP->currentDmRequestActive;
-                    bool previousHasContentFormat = contextP->currentDmRequestHasContentFormat;
-                    lwm2m_media_type_t previousContentFormat =
-                        contextP->currentDmRequestContentFormat;
-                    uint16_t previousServerShortId = contextP->currentDmServerShortId;
-                    uint64_t previousSessionGeneration =
-                        contextP->currentDmSessionGeneration;
-                    uint16_t previousMessageId = contextP->currentDmMessageId;
-                    lwm2m_deferred_request_id_t previousDeferredRequestId =
-                        contextP->currentDmDeferredRequestId;
                     lwm2m_deferred_request_id_t deferredRequestId;
 
                     if (prv_findDeferredByMessage(contextP,
@@ -647,40 +763,12 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                         result = prv_deferredResponse(message, response);
                         break;
                     }
-
-                    if (previousTokenLen > 0)
-                    {
-                        memcpy(previousToken, contextP->currentRequestToken, previousTokenLen);
-                    }
-                    contextP->currentRequestTokenLen = message->token_len;
-                    if (message->token_len > 0)
-                    {
-                        memcpy(contextP->currentRequestToken, message->token, message->token_len);
-                    }
-                    contextP->currentDmRequestActive = true;
-                    contextP->currentDmRequestHasContentFormat =
-                        IS_OPTION(message, COAP_OPTION_CONTENT_TYPE);
-                    contextP->currentDmRequestContentFormat = format;
-                    contextP->currentDmServerShortId = serverP->shortID;
-                    contextP->currentDmSessionGeneration = serverP->sessionGeneration;
-                    contextP->currentDmMessageId = message->mid;
-                    contextP->currentDmDeferredRequestId = 0U;
+                    contextP->currentDmRequestCanDefer = true;
 #endif
                     result = object_execute(contextP, uriP, message->payload, message->payload_len);
 #ifndef LWM2M_VERSION_1_0
                     deferredRequestId = contextP->currentDmDeferredRequestId;
-                    contextP->currentRequestTokenLen = previousTokenLen;
-                    if (previousTokenLen > 0)
-                    {
-                        memcpy(contextP->currentRequestToken, previousToken, previousTokenLen);
-                    }
-                    contextP->currentDmRequestActive = previousRequestActive;
-                    contextP->currentDmRequestHasContentFormat = previousHasContentFormat;
-                    contextP->currentDmRequestContentFormat = previousContentFormat;
-                    contextP->currentDmServerShortId = previousServerShortId;
-                    contextP->currentDmSessionGeneration = previousSessionGeneration;
-                    contextP->currentDmMessageId = previousMessageId;
-                    contextP->currentDmDeferredRequestId = previousDeferredRequestId;
+                    contextP->currentDmRequestCanDefer = false;
                     if (deferredRequestId != 0U)
                     {
                         if (result == COAP_IGNORE)
@@ -760,7 +848,25 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
         break;
     }
 
+#ifndef LWM2M_VERSION_1_0
+    if (requestScopeActive)
+        prv_endDmRequestScope(contextP, &requestScope);
+#endif
     return result;
+}
+
+uint8_t dm_handleRequest(lwm2m_context_t * contextP,
+                         lwm2m_uri_t * uriP,
+                         lwm2m_server_t * serverP,
+                         coap_packet_t * message,
+                         coap_packet_t * response)
+{
+    return dm_handleRequestWithExchangeMid(contextP,
+                                            uriP,
+                                            serverP,
+                                            message,
+                                            response,
+                                            message->mid);
 }
 
 #endif

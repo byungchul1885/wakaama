@@ -343,9 +343,7 @@ static uint8_t prv_block1_accept(lwm2m_block_data_t **blockDataHeadP,
                                  uint32_t blockNum,
                                  bool blockMore,
                                  bool rawBlock1,
-#ifdef LWM2M_RAW_BLOCK1_REQUESTS
                                  uint16_t mid,
-#endif
                                  uint8_t **outputBuffer,
                                  size_t *outputLength)
 {
@@ -373,6 +371,7 @@ static uint8_t prv_block1_accept(lwm2m_block_data_t **blockDataHeadP,
         created = true;
         blockData->blockSize = blockSize;
         blockData->rawBlock1 = rawBlock1;
+        blockData->identifier.mid = mid;
     }
     else if (!blockData->lastBlockMore || blockData->blockSize != blockSize || blockData->rawBlock1 != rawBlock1
              || blockNum != blockData->blockNum + 1U)
@@ -454,9 +453,7 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockDataHeadP,
                             const char *uri,
                             const uint8_t *token,
                             size_t tokenLength,
-#ifdef LWM2M_RAW_BLOCK1_REQUESTS
                             uint16_t mid,
-#endif
                             const uint8_t *buffer,
                             size_t length,
                             uint16_t blockSize,
@@ -528,9 +525,7 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockDataHeadP,
                              blockNum,
                              blockMore,
                              rawBlock1,
-#ifdef LWM2M_RAW_BLOCK1_REQUESTS
                              mid,
-#endif
                              outputBuffer,
                              outputLength);
 }
@@ -592,6 +587,29 @@ int coap_block1_get_cached_response(lwm2m_block_data_t *blockDataHead,
     if (blockData == NULL || !blockData->responseCached) return 0;
     *responseCodeP = blockData->responseCode;
     *locationPathP = blockData->responseHasLocationPath ? blockData->responseLocationPath : NULL;
+    return 1;
+}
+
+int coap_block1_get_exchange_mid(lwm2m_block_data_t *blockDataHead,
+                                 const char *uri,
+                                 const uint8_t *token,
+                                 size_t tokenLength,
+                                 uint16_t *exchangeMidP)
+{
+    block_data_identifier_t identifier = {0};
+    lwm2m_block_data_t *blockData;
+
+    if (uri == NULL || (tokenLength > 0 && token == NULL)
+        || tokenLength > LWM2M_COAP_TOKEN_MAX_LEN || exchangeMidP == NULL)
+    {
+        return -1;
+    }
+    identifier.uri = (char *)uri;
+    identifier.tokenLength = (uint8_t)tokenLength;
+    if (tokenLength > 0) memcpy(identifier.token, token, tokenLength);
+    blockData = find_block_data(blockDataHead, identifier, BLOCK_1);
+    if (blockData == NULL) return 0;
+    *exchangeMidP = (uint16_t)blockData->identifier.mid;
     return 1;
 }
 

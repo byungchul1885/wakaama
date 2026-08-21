@@ -173,7 +173,8 @@ static bool prv_uses_raw_block1(lwm2m_context_t *contextP, void *fromSessionH, c
 static uint8_t handle_request(lwm2m_context_t * contextP,
                               void * fromSessionH,
                               coap_packet_t * message,
-                              coap_packet_t * response)
+                              coap_packet_t * response,
+                              uint16_t exchangeMid)
 {
     lwm2m_uri_t uri;
     lwm2m_request_type_t requestType;
@@ -200,7 +201,12 @@ static uint8_t handle_request(lwm2m_context_t * contextP,
         serverP = utils_findServer(contextP, fromSessionH);
         if (serverP != NULL)
         {
-            result = dm_handleRequest(contextP, &uri, serverP, message, response);
+            result = dm_handleRequestWithExchangeMid(contextP,
+                                                      &uri,
+                                                      serverP,
+                                                      message,
+                                                      response,
+                                                      exchangeMid);
         }
 #ifdef LWM2M_BOOTSTRAP
         else
@@ -602,6 +608,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             char *block1Uri = NULL;
             bool block1Replay = false;
             bool block1ApplicationDispatched = false;
+            uint16_t requestExchangeMid = message->mid;
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
             bool rawBlock1 = false;
 #endif
@@ -697,9 +704,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                                                              rawBlock1, &complete_buffer, &complete_buffer_size);
 #else
                         coap_error_code = coap_block1_handler(&peerP->blockData, block1Uri, message->token,
-                                                             message->token_len, message->payload, message->payload_len,
-                                                             block1_size, block1_num, block1_more, &complete_buffer,
-                                                             &complete_buffer_size);
+                                                             message->token_len, message->mid, message->payload,
+                                                             message->payload_len, block1_size, block1_num, block1_more,
+                                                             &complete_buffer, &complete_buffer_size);
 #endif
                     }
                     // if payload is complete, replace it in the coap message.
@@ -756,6 +763,24 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     }
                 }
             }
+            if (!block1Replay && IS_OPTION(message, COAP_OPTION_BLOCK1)
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+                && (coap_error_code == NO_ERROR || (rawBlock1 && coap_error_code == COAP_231_CONTINUE))
+#else
+                && coap_error_code == NO_ERROR
+#endif
+            )
+            {
+                int exchangeFound = coap_block1_get_exchange_mid(prv_get_peer_block_data(contextP,
+                                                                                          fromSessionH),
+                                                                  block1Uri,
+                                                                  message->token,
+                                                                  message->token_len,
+                                                                  &requestExchangeMid);
+
+                if (exchangeFound != 1)
+                    coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
+            }
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
             if (!block1Replay
                 && (coap_error_code == NO_ERROR || (rawBlock1 && coap_error_code == COAP_231_CONTINUE)))
@@ -764,7 +789,11 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 #endif
             {
                 block1ApplicationDispatched = IS_OPTION(message, COAP_OPTION_BLOCK1) != 0;
-                coap_error_code = handle_request(contextP, fromSessionH, message, response);
+                coap_error_code = handle_request(contextP,
+                                                 fromSessionH,
+                                                 message,
+                                                 response,
+                                                 requestExchangeMid);
                 if (block1ApplicationDispatched)
                 {
                     uint8_t applicationCode = coap_error_code == NO_ERROR ? response->code : coap_error_code;

@@ -609,7 +609,7 @@ typedef enum
 typedef struct _block_data_identifier_
 {
     char * uri;                               // resource string if block1
-    int32_t mid;                              // mid of the last request if block2 eg the mid for the expected block
+    int32_t mid;                              // Block1은 첫 요청 MID, Block2는 다음 예상 요청 MID
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];  // owned value if block1
     uint8_t tokenLength;
 } block_data_identifier_t;
@@ -923,11 +923,13 @@ struct _lwm2m_context_
     uint8_t              currentRequestToken[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t               currentRequestTokenLen;
     bool                 currentDmRequestActive;
+    bool                 currentDmRequestCanDefer;
     bool                 currentDmRequestHasContentFormat;
     lwm2m_media_type_t    currentDmRequestContentFormat;
     uint16_t             currentDmServerShortId;
     uint64_t             currentDmSessionGeneration;
-    uint16_t             currentDmMessageId;
+    uint16_t             currentDmMessageId;          // 콜백에 공개하는 논리 교환 MID
+    uint16_t             currentDmTransportMessageId; // deferred 응답 판별에 사용하는 현재 패킷 MID
     lwm2m_deferred_request_id_t currentDmDeferredRequestId;
     lwm2m_deferred_request_t *deferredRequestList;
     lwm2m_deferred_request_id_t nextDeferredRequestId;
@@ -988,9 +990,9 @@ void lwm2m_close_server_session(lwm2m_context_t *contextP, lwm2m_server_t *serve
 int lwm2m_add_object(lwm2m_context_t * contextP, lwm2m_object_t * objectP);
 #ifndef LWM2M_VERSION_1_0
 /*
- * Defers the response to the Device Management request currently executing an
- * object callback. The callback must return COAP_IGNORE after this succeeds.
- * Completion must run on the liblwm2m event-loop thread.
+ * 현재 non-raw Execute Object callback의 Device Management 응답을 지연한다.
+ * 성공한 callback은 COAP_IGNORE를 반환해야 하며 완료 처리는 liblwm2m
+ * event-loop thread에서 실행해야 한다. 다른 mutation callback에는 허용하지 않는다.
  */
 int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t *requestIdP);
 int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
@@ -1048,8 +1050,12 @@ int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServe
                                   lwm2m_transaction_callback_t callback, void *userData);
 void lwm2m_set_random_callback(lwm2m_context_t *contextP, lwm2m_random_callback_t callback, void *userData);
 size_t lwm2m_get_current_request_token(lwm2m_context_t *contextP, uint8_t *buffer, size_t bufferLen);
-// These accessors are valid only during an Execute callback. They copy Token
-// bytes or scalar metadata; callers must not retain callback-owned pointers.
+// 이 accessor는 수신 Device Management Object 콜백(Create, Write, Delete,
+// Execute와 각 raw Block1 변형) 안에서만 유효하다. Token과 scalar metadata는
+// 복사하며 peer session pointer를 공개하지 않는다. 길이가 0인 Token도 정상이다.
+// messageId는 일반 요청의 MID이고 Block1에서는 논리 교환의 첫 블록 MID이다.
+// serverShortId와 sessionGeneration은 dispatch 직전 snapshot이며 콜백에서
+// session을 닫아도 콜백이 끝날 때까지 바뀌지 않는다.
 int lwm2m_copy_current_request_token(lwm2m_context_t *contextP,
                                      uint8_t *buffer,
                                      size_t bufferLen,

@@ -187,6 +187,54 @@ static void test_block1_rejects_altered_retransmission(void) {
     CU_ASSERT_PTR_NULL(blk1)
 }
 
+static void test_block1_tkl0_uses_first_mid_for_block_zero(void) {
+    static const uint8_t token[] = {'k', 'e', 'y'};
+    lwm2m_block_data_t *blk1 = NULL;
+    uint8_t *resultBuffer = NULL;
+    size_t resultLen = 0;
+
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, NULL, 0U, (const uint8_t *)"12345", 5,
+                                       BLOCK_SIZE, 130, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(blk1)
+    CU_ASSERT_EQUAL(blk1->identifier.mid, 130)
+
+    /* 같은 first MID와 같은 Block 0만 재전송이다. */
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, NULL, 0U, (const uint8_t *)"12345", 5,
+                                       BLOCK_SIZE, 130, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_RETRANSMISSION)
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, NULL, 0U, (const uint8_t *)"1234X", 5,
+                                       BLOCK_SIZE, 130, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NULL(blk1)
+
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, NULL, 0U, (const uint8_t *)"12345", 5,
+                                       BLOCK_SIZE, 131, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_231_CONTINUE)
+    /* 다른 first MID의 Block 0은 이전 상태를 종료하고 새 교환을 시작한다. */
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, NULL, 0U, (const uint8_t *)"ABCDE", 5,
+                                       BLOCK_SIZE, 132, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(blk1)
+    CU_ASSERT_EQUAL(blk1->identifier.mid, 132)
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, NULL, 0U, (const uint8_t *)"67", 2,
+                                       BLOCK_SIZE, 133, 1, false, false, &resultBuffer, &resultLen),
+                    NO_ERROR)
+    CU_ASSERT_EQUAL(resultLen, 7U)
+    CU_ASSERT_NSTRING_EQUAL(resultBuffer, "ABCDE67", 7)
+    free_block_data(blk1);
+    blk1 = NULL;
+
+    /* Token이 있으면 first MID는 교환 식별자에 포함하지 않는다. */
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, token, sizeof(token), (const uint8_t *)"12345", 5,
+                                       BLOCK_SIZE, 134, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, token, sizeof(token), (const uint8_t *)"12345", 5,
+                                       BLOCK_SIZE, 135, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_RETRANSMISSION)
+    free_block_data(blk1);
+}
+
 static void test_block1_token_size_and_gap_are_isolated(void) {
     static const uint8_t firstToken[] = {'f', 'i', 'r', 's', 't'};
     static const uint8_t nextToken[] = {'n', 'e', 'x', 't'};
@@ -293,6 +341,9 @@ typedef struct
     unsigned int writeCalls;
     unsigned int createCalls;
     unsigned int executeCalls;
+    unsigned int deleteCalls;
+    unsigned int durableCreateReplayCalls;
+    unsigned int durableDeleteReplayCalls;
     unsigned int metadataCalls;
     uint8_t rawResult;
     uint8_t writeResult;
@@ -314,6 +365,13 @@ typedef struct
     bool closeSessionOnRawWrite;
     uint8_t payload[64];
     size_t payloadLength;
+    bool durableCreateStored;
+    int64_t durableCreateValue;
+    uint8_t durableCreateToken[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t durableCreateTokenLength;
+    bool durableDeleteStored;
+    uint8_t durableDeleteToken[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t durableDeleteTokenLength;
 } dispatch_state_t;
 
 static void dispatch_capture_request(lwm2m_context_t *contextP, dispatch_state_t *stateP) {
@@ -513,6 +571,78 @@ static uint8_t dispatch_create(lwm2m_context_t *contextP, uint16_t instanceId, i
     return COAP_201_CREATED;
 }
 
+static uint8_t dispatch_replay_aware_create(lwm2m_context_t *contextP, uint16_t instanceId, int numData,
+                                            lwm2m_data_t *dataArray, lwm2m_object_t *objectP) {
+    dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN] = {0};
+    size_t tokenLength = 0U;
+    int64_t value = 0;
+    bool instanceExists = lwm2m_list_find(objectP->instanceList, instanceId) != NULL;
+
+    state->createCalls++;
+    dispatch_capture_request(contextP, state);
+    if (lwm2m_copy_current_request_token(contextP, token, sizeof(token), &tokenLength) != NO_ERROR)
+    {
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+    if (numData != 1 || dataArray == NULL || dataArray[0].id != 0U
+        || lwm2m_data_decode_int(&dataArray[0], &value) != 1)
+    {
+        return COAP_400_BAD_REQUEST;
+    }
+    if (instanceExists)
+    {
+        if (state->durableCreateStored && state->createdInstance.id == instanceId
+            && state->durableCreateValue == value && state->durableCreateTokenLength == tokenLength
+            && (tokenLength == 0U || memcmp(state->durableCreateToken, token, tokenLength) == 0))
+        {
+            state->durableCreateReplayCalls++;
+            return COAP_201_CREATED;
+        }
+        return COAP_406_NOT_ACCEPTABLE;
+    }
+
+    memset(&state->createdInstance, 0, sizeof(state->createdInstance));
+    state->createdInstance.id = instanceId;
+    objectP->instanceList = LWM2M_LIST_ADD(objectP->instanceList, &state->createdInstance);
+    state->durableCreateStored = true;
+    state->durableCreateValue = value;
+    memcpy(state->durableCreateToken, token, tokenLength);
+    state->durableCreateTokenLength = tokenLength;
+    return COAP_201_CREATED;
+}
+
+static uint8_t dispatch_replay_aware_delete(lwm2m_context_t *contextP, uint16_t instanceId,
+                                            lwm2m_object_t *objectP) {
+    dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN] = {0};
+    size_t tokenLength = 0U;
+    lwm2m_list_t *removed = NULL;
+
+    state->deleteCalls++;
+    dispatch_capture_request(contextP, state);
+    if (lwm2m_copy_current_request_token(contextP, token, sizeof(token), &tokenLength) != NO_ERROR)
+    {
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+    if (lwm2m_list_find(objectP->instanceList, instanceId) != NULL)
+    {
+        objectP->instanceList = lwm2m_list_remove(objectP->instanceList, instanceId, &removed);
+        CU_ASSERT_PTR_NOT_NULL(removed)
+        memcpy(state->durableDeleteToken, token, tokenLength);
+        state->durableDeleteTokenLength = tokenLength;
+        state->durableDeleteStored = true;
+        return COAP_202_DELETED;
+    }
+    if (state->durableDeleteStored && state->durableDeleteTokenLength == tokenLength
+        && (tokenLength == 0U || memcmp(state->durableDeleteToken, token, tokenLength) == 0))
+    {
+        state->durableDeleteReplayCalls++;
+        return COAP_202_DELETED;
+    }
+    return COAP_404_NOT_FOUND;
+}
+
 static uint8_t dispatch_deferred_execute(lwm2m_context_t *contextP, uint16_t instanceId, uint16_t resourceId,
                                          uint8_t *buffer, int length, lwm2m_object_t *objectP) {
     dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
@@ -555,11 +685,12 @@ static lwm2m_context_t *dispatch_context(lwm2m_server_t *serverP, lwm2m_object_t
     return contextP;
 }
 
-static uint8_t dispatch_block_request(lwm2m_context_t *contextP, uint16_t mid, coap_method_t method,
-                                      const char *path, lwm2m_media_type_t format, const uint8_t *token,
-                                      size_t tokenLength, uint32_t blockNum, bool blockMore, uint16_t blockSize,
-                                      const uint8_t *payload, size_t payloadLength, char **locationPathP,
-                                      bool expectResponse) {
+static uint8_t dispatch_packet_request(lwm2m_context_t *contextP, uint16_t mid, coap_method_t method,
+                                       const char *path, lwm2m_media_type_t format, bool includeContentFormat,
+                                       const uint8_t *token, size_t tokenLength, bool includeBlock1,
+                                       uint32_t blockNum, bool blockMore, uint16_t blockSize,
+                                       const uint8_t *payload, size_t payloadLength, char **locationPathP,
+                                       bool expectResponse) {
     coap_packet_t request;
     coap_packet_t response;
     uint8_t serialized[2048];
@@ -578,9 +709,12 @@ static uint8_t dispatch_block_request(lwm2m_context_t *contextP, uint16_t mid, c
         coap_set_header_token(&request, token, tokenLength);
     coap_set_header_uri_host(&request, "localhost");
     coap_set_header_uri_path(&request, path);
-    coap_set_header_content_type(&request, format);
-    coap_set_header_block1(&request, blockNum, blockMore, blockSize);
-    coap_set_payload(&request, (uint8_t *)payload, payloadLength);
+    if (includeContentFormat)
+        coap_set_header_content_type(&request, format);
+    if (includeBlock1)
+        coap_set_header_block1(&request, blockNum, blockMore, blockSize);
+    if (payloadLength > 0U)
+        coap_set_payload(&request, (uint8_t *)payload, payloadLength);
     serializedLength = coap_serialize_message(&request, serialized);
     coap_free_header(&request);
     CU_ASSERT_TRUE_FATAL(serializedLength > 0)
@@ -604,6 +738,32 @@ static uint8_t dispatch_block_request(lwm2m_context_t *contextP, uint16_t mid, c
     return code;
 }
 
+static uint8_t dispatch_block_request(lwm2m_context_t *contextP, uint16_t mid, coap_method_t method,
+                                      const char *path, lwm2m_media_type_t format, const uint8_t *token,
+                                      size_t tokenLength, uint32_t blockNum, bool blockMore, uint16_t blockSize,
+                                      const uint8_t *payload, size_t payloadLength, char **locationPathP,
+                                      bool expectResponse) {
+    return dispatch_packet_request(contextP, mid, method, path, format, true, token, tokenLength, true,
+                                   blockNum, blockMore, blockSize, payload, payloadLength, locationPathP,
+                                   expectResponse);
+}
+
+static uint8_t dispatch_delete_request(lwm2m_context_t *contextP, uint16_t mid, const char *path,
+                                       const uint8_t *token, size_t tokenLength, bool expectResponse) {
+    return dispatch_packet_request(contextP, mid, COAP_DELETE, path, LWM2M_CONTENT_TEXT, false,
+                                   token, tokenLength, false, 0U, false, 0U, NULL, 0U, NULL,
+                                   expectResponse);
+}
+
+static void dispatch_clear_block1_state(lwm2m_server_t *serverP) {
+    while (serverP->blockData != NULL)
+    {
+        lwm2m_block_data_t *blockData = serverP->blockData;
+        serverP->blockData = blockData->next;
+        free_block_data(blockData);
+    }
+}
+
 static uint8_t dispatch_block_sized(lwm2m_context_t *contextP, uint16_t mid, uint32_t blockNum, bool blockMore,
                                     uint16_t blockSize, const uint8_t *payload, size_t payloadLength) {
     return dispatch_block_request(contextP, mid, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
@@ -617,12 +777,7 @@ static uint8_t dispatch_block(lwm2m_context_t *contextP, uint16_t mid, uint32_t 
 }
 
 static void dispatch_context_close(lwm2m_context_t *contextP, lwm2m_server_t *serverP) {
-    while (serverP->blockData != NULL)
-    {
-        lwm2m_block_data_t *blockData = serverP->blockData;
-        serverP->blockData = blockData->next;
-        free_block_data(blockData);
-    }
+    dispatch_clear_block1_state(serverP);
     contextP->serverList = NULL;
     contextP->objectList = NULL;
     lwm2m_close(contextP);
@@ -874,6 +1029,83 @@ static void test_packet_tkl0_uses_first_block_mid(void) {
     dispatch_context_close(contextP, &server);
 }
 
+static void test_packet_tkl0_block_zero_identity(void) {
+    static const uint8_t first[] = "0123456789ABCDEF";
+    static const uint8_t altered[] = "0123456789ABCDEQ";
+    static const uint8_t replacement[] = "ABCDEFGHIJKLMNOP";
+    static const uint8_t last[] = "XYZ";
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {0};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 650, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, true, 16,
+                                           first, sizeof(first) - 1, NULL, true),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(server.blockData)
+    CU_ASSERT_EQUAL(server.blockData->identifier.mid, 650)
+
+    /* 같은 first MID의 정확한 Block 0만 재전송으로 처리한다. */
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 650, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, true, 16,
+                                           first, sizeof(first) - 1, NULL, true),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(state.writeCalls, 0U)
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 650, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, true, 16,
+                                           altered, sizeof(altered) - 1, NULL, true),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NULL(server.blockData)
+
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 651, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, true, 16,
+                                           first, sizeof(first) - 1, NULL, true),
+                    COAP_231_CONTINUE)
+    /* 다른 first MID는 이전 Block 0을 폐기하고 새 교환을 시작한다. */
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 652, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, true, 16,
+                                           replacement, sizeof(replacement) - 1, NULL, true),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(server.blockData)
+    CU_ASSERT_EQUAL(server.blockData->identifier.mid, 652)
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 653, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 1, false, 16,
+                                           last, sizeof(last) - 1, NULL, true),
+                    COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.writeCalls, 1U)
+    CU_ASSERT_EQUAL(state.payloadLength, 19U)
+    CU_ASSERT_NSTRING_EQUAL(state.payload, "ABCDEFGHIJKLMNOPXYZ", 19)
+    dispatch_assert_metadata(&state, 1U, NULL, 0U, LWM2M_CONTENT_OPAQUE, 652U);
+    dispatch_assert_request_inactive(contextP);
+
+    /* 완료 응답이 cache된 뒤에도 다른 first MID는 새 application 요청이다. */
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 654, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, false, 16,
+                                           (const uint8_t *)"again", 5U, NULL, true),
+                    COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.writeCalls, 2U)
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 654, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, false, 16,
+                                           (const uint8_t *)"again", 5U, NULL, true),
+                    COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.writeCalls, 2U)
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 655, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, false, 16,
+                                           (const uint8_t *)"again", 5U, NULL, true),
+                    COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.writeCalls, 3U)
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 655, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           NULL, 0U, 0, false, 16,
+                                           (const uint8_t *)"alter", 5U, NULL, true),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_EQUAL(state.writeCalls, 3U)
+    CU_ASSERT_PTR_NULL(server.blockData)
+
+    dispatch_context_close(contextP, &server);
+}
+
 static void test_packet_replays_failed_application_result(void) {
     static const uint8_t first[] = "0123456789ABCDEF";
     static const uint8_t last[] = "XYZ";
@@ -989,6 +1221,108 @@ static void test_packet_replays_create_location_path(void) {
     dispatch_context_close(contextP, &server);
 }
 
+static void test_packet_replay_aware_create_reaches_durable_callback(void) {
+    static const uint8_t firstIntent[] = {0x03, 0x00, 0xC1, 0x00, 0x01};
+    static const uint8_t alteredIntent[] = {0x03, 0x00, 0xC1, 0x00, 0x02};
+    static const uint8_t firstToken[] = {'c', 'r', 'e', '1'};
+    static const uint8_t nextToken[] = {'c', 'r', 'e', '2'};
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {0};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+    char *locationPath = NULL;
+
+    object.objID = 3333;
+    object.instanceList = NULL;
+    object.writeFunc = NULL;
+    object.createFunc = dispatch_replay_aware_create;
+    object.flags |= LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION;
+
+    test_drop_next_response();
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 700, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           firstToken, sizeof(firstToken), 0, false, 16,
+                                           firstIntent, sizeof(firstIntent), &locationPath, false),
+                    COAP_IGNORE)
+    CU_ASSERT_EQUAL(state.createCalls, 1U)
+    CU_ASSERT_PTR_NOT_NULL(object.instanceList)
+    CU_ASSERT_PTR_NULL(locationPath)
+
+    /* Wakaama 휘발성 Block1 캐시가 사라진 재시작 경계를 모사한다. */
+    dispatch_clear_block1_state(&server);
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 701, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           firstToken, sizeof(firstToken), 0, false, 16,
+                                           firstIntent, sizeof(firstIntent), &locationPath, true),
+                    COAP_201_CREATED)
+    CU_ASSERT_EQUAL(state.createCalls, 2U)
+    CU_ASSERT_EQUAL(state.durableCreateReplayCalls, 1U)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(locationPath)
+    CU_ASSERT_STRING_EQUAL(locationPath, "/3333/0")
+    lwm2m_free(locationPath);
+    locationPath = NULL;
+
+    dispatch_clear_block1_state(&server);
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 702, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           firstToken, sizeof(firstToken), 0, false, 16,
+                                           alteredIntent, sizeof(alteredIntent), NULL, true),
+                    COAP_406_NOT_ACCEPTABLE)
+    CU_ASSERT_EQUAL(state.createCalls, 3U)
+    CU_ASSERT_EQUAL(state.durableCreateReplayCalls, 1U)
+
+    dispatch_clear_block1_state(&server);
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 703, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           nextToken, sizeof(nextToken), 0, false, 16,
+                                           firstIntent, sizeof(firstIntent), NULL, true),
+                    COAP_406_NOT_ACCEPTABLE)
+    CU_ASSERT_EQUAL(state.createCalls, 4U)
+    CU_ASSERT_EQUAL(state.durableCreateReplayCalls, 1U)
+
+    /* opt-in하지 않은 Object의 existing IID Create는 기존 core 4.06을 유지한다. */
+    object.flags = 0U;
+    dispatch_clear_block1_state(&server);
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 704, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           firstToken, sizeof(firstToken), 0, false, 16,
+                                           firstIntent, sizeof(firstIntent), NULL, true),
+                    COAP_406_NOT_ACCEPTABLE)
+    CU_ASSERT_EQUAL(state.createCalls, 4U)
+
+    object.instanceList = NULL;
+    dispatch_context_close(contextP, &server);
+}
+
+static void test_packet_replay_aware_delete_reaches_durable_callback(void) {
+    static const uint8_t firstToken[] = {'d', 'e', 'l', '1'};
+    static const uint8_t nextToken[] = {'d', 'e', 'l', '2'};
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {0};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+
+    object.objID = 3334;
+    object.writeFunc = NULL;
+    object.deleteFunc = dispatch_replay_aware_delete;
+    object.flags |= LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION;
+
+    test_drop_next_response();
+    CU_ASSERT_EQUAL(dispatch_delete_request(contextP, 710, "3334/0", firstToken, sizeof(firstToken), false),
+                    COAP_IGNORE)
+    CU_ASSERT_EQUAL(state.deleteCalls, 1U)
+    CU_ASSERT_PTR_NULL(object.instanceList)
+
+    CU_ASSERT_EQUAL(dispatch_delete_request(contextP, 711, "3334/0", firstToken, sizeof(firstToken), true),
+                    COAP_202_DELETED)
+    CU_ASSERT_EQUAL(state.deleteCalls, 2U)
+    CU_ASSERT_EQUAL(state.durableDeleteReplayCalls, 1U)
+
+    CU_ASSERT_EQUAL(dispatch_delete_request(contextP, 712, "3334/0", nextToken, sizeof(nextToken), true),
+                    COAP_404_NOT_FOUND)
+    CU_ASSERT_EQUAL(state.deleteCalls, 3U)
+    CU_ASSERT_EQUAL(state.durableDeleteReplayCalls, 1U)
+
+    dispatch_context_close(contextP, &server);
+}
+
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
 static void test_packet_streams_two_megabytes_without_assembly(void) {
     enum { IMAGE_BYTES = 2 * 1024 * 1024, BLOCK_BYTES = 1024 };
@@ -1038,6 +1372,7 @@ static struct TestTable table[] = {
     {"test of test_block1_retransmit()", test_block1_retransmit},
     {"test of test_block1_same_message_after_success()", test_block1_same_message_after_success},
     {"altered Block1 retransmission is rejected", test_block1_rejects_altered_retransmission},
+    {"TKL0 Block1 uses first MID for block zero", test_block1_tkl0_uses_first_mid_for_block_zero},
     {"Block1 token, size, and gap isolation", test_block1_token_size_and_gap_are_isolated},
     {"Block1 exchange is scoped to peer list", test_block1_exchange_is_scoped_to_peer_list},
     {"test of test_block1_unbounded_allocation()", test_block1_unbounded_allocation},
@@ -1052,10 +1387,13 @@ static struct TestTable table[] = {
 #endif
     {"packet assembles without raw callback", test_packet_assembles_when_raw_callback_is_missing},
     {"packet TKL0 uses first Block1 MID", test_packet_tkl0_uses_first_block_mid},
+    {"packet TKL0 block zero identity", test_packet_tkl0_block_zero_identity},
     {"packet replays failed application result", test_packet_replays_failed_application_result},
     {"packet does not invent success for ignored result", test_packet_does_not_invent_success_for_ignored_result},
     {"packet replays deferred empty ACK", test_packet_replays_deferred_empty_ack},
     {"packet replays Create Location-Path", test_packet_replays_create_location_path},
+    {"packet replay-aware Create durable callback", test_packet_replay_aware_create_reaches_durable_callback},
+    {"packet replay-aware Delete durable callback", test_packet_replay_aware_delete_reaches_durable_callback},
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
     {"packet streams two MiB through raw callback", test_packet_streams_two_megabytes_without_assembly},
 #endif

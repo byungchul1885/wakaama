@@ -483,6 +483,17 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockDataHeadP,
     if (tokenLength > 0) memcpy(identifier.token, token, tokenLength);
     blockData = find_block_data(*blockDataHeadP, identifier, BLOCK_1);
 
+    /*
+     * Token이 없는 non-raw Block1은 첫 Block의 MID까지 logical exchange identity다.
+     * 같은 MID의 정확한 Block 0만 재전송이고, 다른 MID는 이전 상태를 끝낸 새 교환이다.
+     */
+    if (!rawBlock1 && blockData != NULL && !blockData->rawBlock1 && tokenLength == 0U
+        && blockNum == 0U && blockData->identifier.mid != mid)
+    {
+        prv_block_data_remove(blockDataHeadP, blockData);
+        blockData = NULL;
+    }
+
     if (blockData != NULL && blockNum <= blockData->blockNum)
     {
         if (blockData->rawBlock1 != rawBlock1

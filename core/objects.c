@@ -548,7 +548,8 @@ uint8_t object_create(lwm2m_context_t * contextP,
             result = COAP_400_BAD_REQUEST;
             goto exit;
         }
-        if (NULL != lwm2m_list_find(targetP->instanceList, dataP[0].id))
+        if (NULL != lwm2m_list_find(targetP->instanceList, dataP[0].id)
+            && (targetP->flags & LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION) == 0U)
         {
             // Instance already exists
             result = COAP_406_NOT_ACCEPTABLE;

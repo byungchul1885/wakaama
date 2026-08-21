@@ -521,6 +521,12 @@ typedef uint8_t (*lwm2m_raw_block2_read_callback_t) (lwm2m_context_t * contextP,
 #endif
 typedef uint8_t (*lwm2m_delete_callback_t) (lwm2m_context_t * contextP, uint16_t instanceId, lwm2m_object_t * objectP);
 
+/*
+ * 명시된 Instance ID가 이미 존재하는 Create도 application callback이 최종 판정하게 한다.
+ * Durable replay를 자체 판정할 수 있는 Object만 이 플래그를 opt-in해야 한다.
+ */
+#define LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION (1UL << 0)
+
 struct _lwm2m_object_t
 {
     struct _lwm2m_object_t * next;           // for internal use only.
@@ -543,6 +549,7 @@ struct _lwm2m_object_t
     lwm2m_delete_callback_t   deleteFunc;
     lwm2m_discover_callback_t discoverFunc;
     void * userData;
+    uint32_t flags;
 };
 
 /*

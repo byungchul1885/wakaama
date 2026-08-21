@@ -260,6 +260,52 @@ static int prv_getRegistrationQuery(lwm2m_context_t * contextP,
 #define SMGW_DMS_SHORT_SERVER_ID 2
 #define SMGW_METERING_SHORT_SERVER_ID 1
 
+static uint64_t prv_registrationTimestampMax(void)
+{
+    uint64_t maxTimestamp = INT64_MAX;
+
+    /* Wakaama가 지원하는 signed time_t 폭에 맞춰 안전한 상한만 사용한다. */
+    if (sizeof(time_t) < sizeof(uint64_t))
+    {
+        maxTimestamp >>= (sizeof(uint64_t) - sizeof(time_t)) * CHAR_BIT;
+    }
+    return maxTimestamp;
+}
+
+static time_t prv_getRegistrationRetryDeadline(time_t currentTime,
+                                                uint64_t attemptDelay,
+                                                uint16_t attempt)
+{
+    const uint64_t maxTimestamp = prv_registrationTimestampMax();
+    uint64_t currentTimestamp = currentTime > 0 ? (uint64_t)currentTime : 0;
+    uint64_t remaining;
+    size_t exponent = 0;
+
+    if (currentTime >= (time_t)maxTimestamp)
+    {
+        return (time_t)maxTimestamp;
+    }
+#ifndef SMGW_LWM2M_REGISTRATION_RETRY_FIXED_INTERVAL
+    if (attempt > 1)
+    {
+        exponent = (size_t)attempt - 1U;
+    }
+#else
+    (void)attempt;
+#endif
+    if (attemptDelay == 0)
+    {
+        return (time_t)currentTimestamp;
+    }
+
+    remaining = maxTimestamp - currentTimestamp;
+    if (exponent >= sizeof(uint64_t) * CHAR_BIT || attemptDelay > (remaining >> exponent))
+    {
+        return (time_t)maxTimestamp;
+    }
+    return (time_t)(currentTimestamp + (attemptDelay << exponent));
+}
+
 static uint8_t prv_readUint(lwm2m_context_t *contextP,
                             lwm2m_object_t *objP,
                             uint16_t instanceId,
@@ -510,11 +556,8 @@ static void prv_handleRegistrationAttemptFailure(lwm2m_context_t *contextP, lwm2
             }
             else
             {
-#ifdef SMGW_LWM2M_REGISTRATION_RETRY_FIXED_INTERVAL
-                targetP->registration = lwm2m_gettime() + attemptDelay;
-#else
-                targetP->registration = lwm2m_gettime() + attemptDelay * (1 << (targetP->attempt - 1));
-#endif
+                targetP->registration =
+                    prv_getRegistrationRetryDeadline(lwm2m_gettime(), attemptDelay, targetP->attempt);
                 targetP->status = STATE_REG_HOLD_OFF;
                 LOG_ARG_DBG("%d Registration attempt failed", targetP->shortID);
             }
@@ -545,6 +588,11 @@ uint8_t registration_test_get_attempt_policy(lwm2m_context_t *contextP,
 void registration_test_handle_attempt_failure(lwm2m_context_t *contextP, lwm2m_server_t *targetP)
 {
     prv_handleRegistrationAttemptFailure(contextP, targetP);
+}
+
+time_t registration_test_get_retry_deadline(time_t currentTime, uint64_t attemptDelay, uint16_t attempt)
+{
+    return prv_getRegistrationRetryDeadline(currentTime, attemptDelay, attempt);
 }
 #endif
 #endif
@@ -2178,4 +2226,3 @@ void registration_step(lwm2m_context_t * contextP,
 #endif
 
 }
-

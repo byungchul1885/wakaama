@@ -25,6 +25,7 @@ uint8_t registration_test_get_attempt_policy(lwm2m_context_t *contextP,
                                              uint16_t *attemptLimitP,
                                              uint64_t *attemptDelayP);
 void registration_test_handle_attempt_failure(lwm2m_context_t *contextP, lwm2m_server_t *targetP);
+time_t registration_test_get_retry_deadline(time_t currentTime, uint64_t attemptDelay, uint16_t attempt);
 
 static uint8_t prv_server_read(lwm2m_context_t *contextP,
                                uint16_t instanceId,
@@ -149,10 +150,41 @@ static void test_zero_and_maximum_retry_counts(void)
     CU_ASSERT_EQUAL(server.status, STATE_REG_FAILED);
 }
 
+static void test_retry_deadline_saturates_without_overflow(void)
+{
+    const time_t maxDeadline = registration_test_get_retry_deadline(0, UINT64_MAX, 1);
+    lwm2m_context_t context;
+    lwm2m_object_t serverObj;
+    lwm2m_server_t server;
+
+    CU_ASSERT_EQUAL(registration_test_get_retry_deadline(1000, 300, 0), 1300);
+    CU_ASSERT_EQUAL(registration_test_get_retry_deadline(1000, 300, 1), 1300);
+#ifndef SMGW_LWM2M_REGISTRATION_RETRY_FIXED_INTERVAL
+    CU_ASSERT_EQUAL(registration_test_get_retry_deadline(1000, 300, 3), 2200);
+    CU_ASSERT_EQUAL(registration_test_get_retry_deadline(1000, 1, UINT16_MAX), maxDeadline);
+#else
+    CU_ASSERT_EQUAL(registration_test_get_retry_deadline(1000, 300, 3), 1300);
+#endif
+    CU_ASSERT_EQUAL(registration_test_get_retry_deadline(1000, 0, UINT16_MAX), 1000);
+    CU_ASSERT_EQUAL(registration_test_get_retry_deadline(1000, UINT64_MAX, 1), maxDeadline);
+    CU_ASSERT(maxDeadline > 1000);
+
+    prv_setup(&context, &serverObj, &server);
+    g_attempt_limit = 256;
+    g_attempt_delay = 1;
+    server.attempt = 255;
+    registration_test_handle_attempt_failure(&context, &server);
+    CU_ASSERT_EQUAL(server.status, STATE_REG_HOLD_OFF);
+#ifndef SMGW_LWM2M_REGISTRATION_RETRY_FIXED_INTERVAL
+    CU_ASSERT_EQUAL(server.registration, maxDeadline);
+#endif
+}
+
 static struct TestTable table[] = {
     {"test_policy_reads_standard_server_resources", test_policy_reads_standard_server_resources},
     {"test_retry_count_excludes_initial_attempt", test_retry_count_excludes_initial_attempt},
     {"test_zero_and_maximum_retry_counts", test_zero_and_maximum_retry_counts},
+    {"test_retry_deadline_saturates_without_overflow", test_retry_deadline_saturates_without_overflow},
     {NULL, NULL},
 };
 

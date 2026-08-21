@@ -597,16 +597,21 @@ typedef uint8_t lwm2m_binding_t;
  *
  * Temporary data needed to handle block1 request and block2 responses.
  */
+#define LWM2M_COAP_TOKEN_MAX_LEN 8
+#define LWM2M_BLOCK1_LOCATION_PATH_MAX_LEN 255
+
 typedef enum
 {
     BLOCK_1,
     BLOCK_2,
 } block_type_t;
 
-typedef union _block_data_identifier_
+typedef struct _block_data_identifier_
 {
-    char * uri;                               // resource string if block1 
-    int32_t mid;                                    // mid of the last request if block2 eg the mid for the expected block
+    char * uri;                               // resource string if block1
+    int32_t mid;                              // mid of the last request if block2 eg the mid for the expected block
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];  // owned value if block1
+    uint8_t tokenLength;
 } block_data_identifier_t;
 
 
@@ -620,6 +625,14 @@ struct _lwm2m_block_data_
     uint8_t *                       blockBuffer;        // data buffer
     size_t                          blockBufferSize;    // buffer size
     uint32_t                        blockNum;           // block num of the last message received
+    uint16_t                        blockSize;          // immutable block size for this block1 exchange
+    size_t                          lastBlockLength;
+    bool                            lastBlockMore;
+    bool                            rawBlock1;
+    bool                            responseCached;
+    uint8_t                         responseCode;
+    bool                            responseHasLocationPath;
+    char                            responseLocationPath[LWM2M_BLOCK1_LOCATION_PATH_MAX_LEN + 1];
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
     uint16_t                        mid;                // mid of the last message received
 #endif
@@ -757,7 +770,6 @@ typedef struct _lwm2m_transaction_ lwm2m_transaction_t;
 typedef void (*lwm2m_transaction_callback_t) (lwm2m_context_t * contextP, lwm2m_transaction_t * transacP, void * message);
 typedef int (*lwm2m_random_callback_t)(void *userData, uint8_t *buffer, size_t length);
 
-#define LWM2M_COAP_TOKEN_MAX_LEN 8
 #define LWM2M_DEVICE_TOKEN_PREFIX 0xFF
 
 struct _lwm2m_transaction_

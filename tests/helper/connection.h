@@ -19,3 +19,5 @@
 #include <stdint.h>
 
 uint8_t *test_get_response_buffer(size_t *len);
+void test_reset_response_buffer(void);
+void test_drop_next_response(void);

@@ -445,7 +445,7 @@ static void closing_server_session_aborts_owned_work_before_raw_close(void)
     lwm2m_transaction_t *firstP;
     lwm2m_transaction_t *secondP;
     lwm2m_transaction_t *otherP;
-    static const uint8_t firstBlock[] = {'o', 'l', 'd'};
+    static const uint8_t firstBlock[16] = {'o', 'l', 'd'};
     static const uint8_t secondBlock[] = {'n', 'e', 'w'};
     uint8_t *blockOutput = NULL;
     size_t blockOutputLength = 0U;
@@ -484,6 +484,8 @@ static void closing_server_session_aborts_owned_work_before_raw_close(void)
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
     CU_ASSERT_EQUAL(coap_block1_handler(&server.blockData,
                                         "/27341/0/103",
+                                        NULL,
+                                        0,
                                         0x5151,
                                         firstBlock,
                                         sizeof(firstBlock),
@@ -497,6 +499,8 @@ static void closing_server_session_aborts_owned_work_before_raw_close(void)
 #else
     CU_ASSERT_EQUAL(coap_block1_handler(&server.blockData,
                                         "/27341/0/103",
+                                        NULL,
+                                        0,
                                         firstBlock,
                                         sizeof(firstBlock),
                                         16,
@@ -527,6 +531,8 @@ static void closing_server_session_aborts_owned_work_before_raw_close(void)
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
     CU_ASSERT_EQUAL(coap_block1_handler(&server.blockData,
                                         "/27341/0/103",
+                                        NULL,
+                                        0,
                                         0x5152,
                                         secondBlock,
                                         sizeof(secondBlock),
@@ -540,6 +546,8 @@ static void closing_server_session_aborts_owned_work_before_raw_close(void)
 #else
     CU_ASSERT_EQUAL(coap_block1_handler(&server.blockData,
                                         "/27341/0/103",
+                                        NULL,
+                                        0,
                                         secondBlock,
                                         sizeof(secondBlock),
                                         16,

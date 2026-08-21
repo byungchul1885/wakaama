@@ -58,57 +58,65 @@ static bool prv_block_transfer_exceeds_limit(size_t current_size, size_t append_
     return current_size > limit || append_size > limit - current_size;
 }
 
-bool prv_matchBlock1 (block_data_identifier_t identifier, lwm2m_block_data_t * blockData)
-    {
-    if (blockData->identifier.uri == NULL || identifier.uri == NULL)
+static bool prv_matchBlock1(block_data_identifier_t identifier, lwm2m_block_data_t *blockData)
+{
+    if (blockData->identifier.uri == NULL || identifier.uri == NULL
+        || blockData->identifier.tokenLength != identifier.tokenLength)
     {
         return false;
     }
-    return strcmp(identifier.uri, blockData->identifier.uri) == 0;
+    return strcmp(identifier.uri, blockData->identifier.uri) == 0
+        && (identifier.tokenLength == 0
+            || memcmp(identifier.token, blockData->identifier.token, identifier.tokenLength) == 0);
 }
-    
-bool prv_matchBlock2 (block_data_identifier_t identifier, lwm2m_block_data_t * blockData)
+
+static bool prv_matchBlock2(block_data_identifier_t identifier, lwm2m_block_data_t *blockData)
 {
     return identifier.mid == blockData->identifier.mid;
 }
 
-bool (* prv_get_matcher(block_type_t blockType)) (block_data_identifier_t, lwm2m_block_data_t *) {
-    if (blockType == BLOCK_1)
+static bool (*prv_get_matcher(block_type_t blockType))(block_data_identifier_t, lwm2m_block_data_t *)
 {
-        return &prv_matchBlock1;
-    }
-    else
-    {
-        return &prv_matchBlock2;
-    }
+    return blockType == BLOCK_1 ? &prv_matchBlock1 : &prv_matchBlock2;
 }
 
-lwm2m_block_data_t * find_block_data(lwm2m_block_data_t * blockDataHead,
-                                     block_data_identifier_t identifier,
-                                     block_type_t blockType)
+static lwm2m_block_data_t *find_block_data(lwm2m_block_data_t *blockDataHead,
+                                           block_data_identifier_t identifier,
+                                           block_type_t blockType)
 {
-    bool (* match) (block_data_identifier_t, lwm2m_block_data_t *) = prv_get_matcher(blockType);
-    lwm2m_block_data_t * blockData = blockDataHead;
-    
-    while(blockData != NULL && !match(identifier, blockData))
+    bool (*match)(block_data_identifier_t, lwm2m_block_data_t *) = prv_get_matcher(blockType);
+    lwm2m_block_data_t *blockData = blockDataHead;
+
+    while (blockData != NULL && (blockData->blockType != blockType || !match(identifier, blockData)))
     {
         blockData = blockData->next;
-}
-
+    }
     return blockData;
 }
 
-/*
- * creates and inserts blockData entry
- * returns the newly created entry or NULL if creation fails
- */
-static
-lwm2m_block_data_t * prv_block_insert(lwm2m_block_data_t ** pBlockDataHead, block_data_identifier_t identifier, block_type_t blockType)
+static lwm2m_block_data_t *prv_find_block1_uri(lwm2m_block_data_t *blockDataHead, const char *uri)
 {
-    lwm2m_block_data_t * blockData = (lwm2m_block_data_t *) lwm2m_malloc(sizeof(lwm2m_block_data_t));
-    if (NULL == blockData) return NULL;
+    while (blockDataHead != NULL)
+    {
+        if (blockDataHead->blockType == BLOCK_1 && blockDataHead->identifier.uri != NULL && uri != NULL
+            && strcmp(blockDataHead->identifier.uri, uri) == 0)
+        {
+            return blockDataHead;
+        }
+        blockDataHead = blockDataHead->next;
+    }
+    return NULL;
+}
+
+static lwm2m_block_data_t *prv_block_insert(lwm2m_block_data_t **blockDataHeadP,
+                                             block_data_identifier_t identifier,
+                                             block_type_t blockType)
+{
+    lwm2m_block_data_t *blockData = (lwm2m_block_data_t *)lwm2m_malloc(sizeof(lwm2m_block_data_t));
+
+    if (blockData == NULL) return NULL;
     memset(blockData, 0, sizeof(*blockData));
-    blockData->next = *pBlockDataHead;
+    blockData->next = *blockDataHeadP;
     blockData->blockType = blockType;
     blockData->identifier = identifier;
     if (blockType == BLOCK_1)
@@ -120,101 +128,55 @@ lwm2m_block_data_t * prv_block_insert(lwm2m_block_data_t ** pBlockDataHead, bloc
             return NULL;
         }
     }
-    *pBlockDataHead = blockData;
+    *blockDataHeadP = blockData;
     return blockData;
 }
 
-static
-void prv_block_data_delete(lwm2m_block_data_t ** pBlockDataHead,
-                                           block_data_identifier_t identifier,
-                                           block_type_t blockType
-                                           )
+static void prv_block_data_remove(lwm2m_block_data_t **blockDataHeadP, lwm2m_block_data_t *removed)
 {
-    lwm2m_block_data_t * removed = find_block_data(*pBlockDataHead, identifier, blockType);
-    
-    if (removed == NULL) {
-        return;
+    lwm2m_block_data_t *target;
+
+    if (blockDataHeadP == NULL || removed == NULL) return;
+    if (removed == *blockDataHeadP)
+    {
+        *blockDataHeadP = removed->next;
     }
-
-    if (removed == *pBlockDataHead) {
-        *pBlockDataHead = (*pBlockDataHead)->next;
-    } else {
-        lwm2m_block_data_t * target = *pBlockDataHead;
-
-        while(NULL != target->next && target->next != removed){
-           target = target->next;
-        }
-
-        if (NULL != target->next && target->next == removed)
+    else
+    {
+        target = *blockDataHeadP;
+        while (target != NULL && target->next != removed)
         {
-           target->next = target->next->next;
+            target = target->next;
         }
+        if (target == NULL) return;
+        target->next = removed->next;
     }
+    removed->next = NULL;
     free_block_data(removed);
 }
 
-#ifdef LWM2M_RAW_BLOCK1_REQUESTS
-static uint8_t prv_coap_raw_block_handler(lwm2m_block_data_t **pBlockDataHead, block_data_identifier_t identifier,
-                                          uint16_t mid, block_type_t blockType, const uint8_t *buffer, size_t length,
-                                          uint16_t blockSize, uint32_t blockNum, bool blockMore) {
-    lwm2m_block_data_t * blockData = find_block_data(*pBlockDataHead, identifier, blockType);
-    
-    // manage new block transfer
-    if (blockNum == 0)
-    {
-        if (blockData == NULL)
-        {
-            blockData = prv_block_insert(pBlockDataHead, identifier, blockType);
-            if (blockData == NULL)
-            {
-                return COAP_500_INTERNAL_SERVER_ERROR;
-            }
-        }
-        else if (blockData->mid == mid)
-        {
-            return COAP_IGNORE;
-        }
-    }
-    // manage already started block1 transfer
-    else
-    {
-        if (blockData == NULL)
-        {
-            // we never receive the first block or block is out of order
-            return COAP_408_REQ_ENTITY_INCOMPLETE;
-        }
+static void prv_block_data_delete(lwm2m_block_data_t **blockDataHeadP,
+                                  block_data_identifier_t identifier,
+                                  block_type_t blockType)
+{
+    prv_block_data_remove(blockDataHeadP, find_block_data(*blockDataHeadP, identifier, blockType));
+}
 
-        if (blockNum <= blockData->blockNum){
-            // this is a retransmissiion, ignore
-            return COAP_IGNORE;
-        }
-        if (blockNum != blockData->blockNum + 1)
-        {
-            return COAP_408_REQ_ENTITY_INCOMPLETE;
-        }
-    }
+static void prv_block1_delete_uri(lwm2m_block_data_t **blockDataHeadP, const char *uri)
+{
+    lwm2m_block_data_t *blockData;
 
-    blockData->blockNum = blockNum;
-    blockData->mid = mid;
-
-    if (blockMore)
+    while ((blockData = prv_find_block1_uri(*blockDataHeadP, uri)) != NULL)
     {
-        return COAP_231_CONTINUE;
-    }
-    else
-    {
-        prv_block_data_delete(pBlockDataHead, identifier, blockType);
-
-        return NO_ERROR;
+        prv_block_data_remove(blockDataHeadP, blockData);
     }
 }
-#endif
 
 static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block_data_identifier_t identifier,
                                       block_type_t blockType, const uint8_t *buffer, size_t length, uint16_t blockSize,
                                       uint32_t blockNum, bool blockMore, uint8_t **outputBuffer, size_t *outputLength) {
     lwm2m_block_data_t * blockData = find_block_data(*pBlockDataHead, identifier, blockType);
-    
+
     // manage new block transfer
     if (blockNum == 0)
     {
@@ -308,91 +270,378 @@ static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block
     }
 }
 
-lwm2m_block_data_t * block1_create(lwm2m_block_data_t ** pBlockDataHead, char *uri)
+static bool prv_block_shape_valid(size_t length, uint16_t blockSize, bool blockMore)
 {
-    block_data_identifier_t identifier;
-    identifier.uri = uri;
-    return prv_block_insert(pBlockDataHead, identifier, BLOCK_1);
+    return blockSize != 0 && length <= blockSize && (!blockMore || length == blockSize);
 }
 
-void block1_delete(lwm2m_block_data_t ** pBlockDataHead,
-                   char * uri)
+static bool prv_block1_exact(const lwm2m_block_data_t *blockData,
+                             const uint8_t *buffer,
+                             size_t length,
+                             uint16_t blockSize,
+                             uint32_t blockNum,
+                             bool blockMore)
 {
-    block_data_identifier_t identifier;
-    identifier.uri = uri;
+    size_t offset;
+    size_t expectedLength;
+    bool expectedMore;
 
-    prv_block_data_delete(pBlockDataHead, identifier, BLOCK_1);
+    if (blockData == NULL || blockData->blockSize != blockSize || blockNum > blockData->blockNum
+        || (length > 0 && buffer == NULL))
+    {
+        return false;
+    }
+    if (blockData->rawBlock1)
+    {
+        return blockNum == blockData->blockNum && length == blockData->lastBlockLength
+            && blockMore == blockData->lastBlockMore
+            && (length == 0 || memcmp(buffer, blockData->blockBuffer, length) == 0);
+    }
+    if (blockNum > SIZE_MAX / blockSize) return false;
+    offset = (size_t)blockNum * blockSize;
+    expectedLength = blockNum == blockData->blockNum ? blockData->lastBlockLength : blockSize;
+    expectedMore = blockNum == blockData->blockNum ? blockData->lastBlockMore : true;
+    return length == expectedLength && blockMore == expectedMore && offset <= blockData->blockBufferSize
+        && length <= blockData->blockBufferSize - offset
+        && (length == 0 || memcmp(buffer, blockData->blockBuffer + offset, length) == 0);
 }
 
-uint8_t coap_block1_handler(lwm2m_block_data_t **pBlockDataHead,
+static uint8_t prv_block1_reject(lwm2m_block_data_t **blockDataHeadP,
+                                 lwm2m_block_data_t *blockData,
+                                 uint8_t result)
+{
+    /* Raw writer의 durable partial state는 application만 reset할 수 있다. */
+    if (blockData != NULL && !blockData->rawBlock1)
+    {
+        prv_block_data_remove(blockDataHeadP, blockData);
+    }
+    return result;
+}
 
+static int prv_replace_buffer(lwm2m_block_data_t *blockData, const uint8_t *buffer, size_t length)
+{
+    uint8_t *replacement = NULL;
+
+    if (length > 0)
+    {
+        replacement = (uint8_t *)lwm2m_malloc(length);
+        if (replacement == NULL) return -1;
+        memcpy(replacement, buffer, length);
+    }
+    lwm2m_free(blockData->blockBuffer);
+    blockData->blockBuffer = replacement;
+    blockData->blockBufferSize = length;
+    return 0;
+}
+
+static uint8_t prv_block1_accept(lwm2m_block_data_t **blockDataHeadP,
+                                 lwm2m_block_data_t *blockData,
+                                 block_data_identifier_t identifier,
+                                 const uint8_t *buffer,
+                                 size_t length,
+                                 uint16_t blockSize,
+                                 uint32_t blockNum,
+                                 bool blockMore,
+                                 bool rawBlock1,
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+                                 uint16_t mid,
+#endif
+                                 uint8_t **outputBuffer,
+                                 size_t *outputLength)
+{
+    size_t offset;
+    bool created = false;
+
+    if (!prv_block_shape_valid(length, blockSize, blockMore) || (length > 0 && buffer == NULL))
+    {
+        return prv_block1_reject(blockDataHeadP, blockData, COAP_408_REQ_ENTITY_INCOMPLETE);
+    }
+    if (blockNum > SIZE_MAX / blockSize)
+    {
+        return prv_block1_reject(blockDataHeadP, blockData, COAP_413_ENTITY_TOO_LARGE);
+    }
+    offset = (size_t)blockNum * blockSize;
+    if (!rawBlock1 && (offset > (size_t)LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE
+                       || prv_block_transfer_exceeds_limit(offset, length)))
+    {
+        return prv_block1_reject(blockDataHeadP, blockData, COAP_413_ENTITY_TOO_LARGE);
+    }
+    if (blockData == NULL)
+    {
+        blockData = prv_block_insert(blockDataHeadP, identifier, BLOCK_1);
+        if (blockData == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
+        created = true;
+        blockData->blockSize = blockSize;
+        blockData->rawBlock1 = rawBlock1;
+    }
+    else if (!blockData->lastBlockMore || blockData->blockSize != blockSize || blockData->rawBlock1 != rawBlock1
+             || blockNum != blockData->blockNum + 1U)
+    {
+        return prv_block1_reject(blockDataHeadP, blockData, COAP_408_REQ_ENTITY_INCOMPLETE);
+    }
+
+    if (rawBlock1)
+    {
+        if (prv_replace_buffer(blockData, buffer, length) != 0)
+        {
+            if (created) prv_block_data_remove(blockDataHeadP, blockData);
+            return COAP_500_INTERNAL_SERVER_ERROR;
+        }
+    }
+    else if (blockNum == 0)
+    {
+        if (prv_replace_buffer(blockData, buffer, length) != 0)
+        {
+            prv_block_data_remove(blockDataHeadP, blockData);
+            return COAP_500_INTERNAL_SERVER_ERROR;
+        }
+    }
+    else
+    {
+        uint8_t *replacement;
+        size_t newSize;
+
+        if (blockData->blockBufferSize != offset)
+        {
+            return prv_block1_reject(blockDataHeadP, blockData, COAP_408_REQ_ENTITY_INCOMPLETE);
+        }
+        newSize = offset + length;
+        replacement = (uint8_t *)lwm2m_malloc(newSize);
+        if (replacement == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
+        memcpy(replacement, blockData->blockBuffer, blockData->blockBufferSize);
+        if (length > 0) memcpy(replacement + offset, buffer, length);
+        lwm2m_free(blockData->blockBuffer);
+        blockData->blockBuffer = replacement;
+        blockData->blockBufferSize = newSize;
+    }
+
+    blockData->blockNum = blockNum;
+    blockData->lastBlockLength = length;
+    blockData->lastBlockMore = blockMore;
+    blockData->responseCached = false;
+    blockData->responseHasLocationPath = false;
+    blockData->responseLocationPath[0] = '\0';
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+    if (rawBlock1) blockData->mid = mid;
+#endif
+    if (blockMore)
+    {
+        if (!rawBlock1) *outputLength = (size_t)-1;
+        return COAP_231_CONTINUE;
+    }
+    if (!rawBlock1)
+    {
+        *outputBuffer = blockData->blockBuffer;
+        *outputLength = blockData->blockBufferSize;
+    }
+    return NO_ERROR;
+}
+
+lwm2m_block_data_t *block1_create(lwm2m_block_data_t **blockDataHeadP, char *uri)
+{
+    block_data_identifier_t identifier = {0};
+
+    identifier.uri = uri;
+    return prv_block_insert(blockDataHeadP, identifier, BLOCK_1);
+}
+
+void block1_delete(lwm2m_block_data_t **blockDataHeadP, char *uri)
+{
+    prv_block1_delete_uri(blockDataHeadP, uri);
+}
+
+uint8_t coap_block1_handler(lwm2m_block_data_t **blockDataHeadP,
                             const char *uri,
+                            const uint8_t *token,
+                            size_t tokenLength,
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
                             uint16_t mid,
 #endif
-                            const uint8_t *buffer, size_t length, uint16_t blockSize, uint32_t blockNum, bool blockMore,
+                            const uint8_t *buffer,
+                            size_t length,
+                            uint16_t blockSize,
+                            uint32_t blockNum,
+                            bool blockMore,
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
                             bool rawBlock1,
 #endif
-                            uint8_t **outputBuffer, size_t *outputLength) {
-    block_data_identifier_t identifier;
-    identifier.uri = (char *) uri;
-#ifdef LWM2M_RAW_BLOCK1_REQUESTS
-    if (rawBlock1)
-    {
-        return prv_coap_raw_block_handler(pBlockDataHead, identifier, mid, BLOCK_1, buffer, length, blockSize,
-                                          blockNum, blockMore);
-    }
+                            uint8_t **outputBuffer,
+                            size_t *outputLength)
+{
+    block_data_identifier_t identifier = {0};
+    lwm2m_block_data_t *blockData;
+#ifndef LWM2M_RAW_BLOCK1_REQUESTS
+    const bool rawBlock1 = false;
 #endif
-    return prv_coap_block_handler(pBlockDataHead, identifier, BLOCK_1, buffer, length, blockSize, blockNum, blockMore,
-                                  outputBuffer, outputLength);
-}
 
-lwm2m_block_data_t * block2_create(lwm2m_block_data_t ** pBlockDataHead, uint16_t mid)
-{
-    block_data_identifier_t identifier;
-    identifier.mid = mid;
-    return prv_block_insert(pBlockDataHead, identifier, BLOCK_2);
-}
-
-void block2_delete(lwm2m_block_data_t ** pBlockDataHead, uint16_t mid)
-{
-    block_data_identifier_t identifier;
-    identifier.mid = mid;
-
-    prv_block_data_delete(pBlockDataHead, identifier, BLOCK_2);
-}
-
-void coap_block2_set_expected_mid(lwm2m_block_data_t * blockDataHead, uint16_t currentMid, uint16_t expectedMid)
-{
-    block_data_identifier_t identifier;
-    identifier.mid = currentMid;
-    
-    lwm2m_block_data_t * blockData = find_block_data(blockDataHead, identifier, BLOCK_2);
-    if(blockData == NULL)
+    if (outputBuffer != NULL) *outputBuffer = NULL;
+    if (outputLength != NULL) *outputLength = 0;
+    if (blockDataHeadP == NULL || uri == NULL || (tokenLength > 0 && token == NULL)
+        || tokenLength > LWM2M_COAP_TOKEN_MAX_LEN || outputBuffer == NULL || outputLength == NULL)
     {
-        return;
+        return COAP_400_BAD_REQUEST;
     }
-    blockData->identifier.mid = expectedMid;
-}
+    identifier.uri = (char *)uri;
+    identifier.tokenLength = (uint8_t)tokenLength;
+    if (tokenLength > 0) memcpy(identifier.token, token, tokenLength);
+    blockData = find_block_data(*blockDataHeadP, identifier, BLOCK_1);
 
-uint8_t coap_block2_handler(lwm2m_block_data_t **pBlockDataHead, uint16_t mid, const uint8_t *buffer, size_t length,
-                            uint16_t blockSize, uint32_t blockNum, bool blockMore, uint8_t **outputBuffer,
-                            size_t *outputLength) {
-    block_data_identifier_t identifier;
-    identifier.mid = mid;
-
-    return prv_coap_block_handler(pBlockDataHead, identifier, BLOCK_2, buffer, length, blockSize, blockNum, blockMore, outputBuffer, outputLength);
-}
-
-void free_block_data(lwm2m_block_data_t * blockData)
-{
-    if (blockData != NULL) {
-        lwm2m_free(blockData->blockBuffer);
-        if (blockData->blockType == BLOCK_1)
+    if (blockData != NULL && blockNum <= blockData->blockNum)
+    {
+        if (blockData->rawBlock1 != rawBlock1
+            || !prv_block1_exact(blockData, buffer, length, blockSize, blockNum, blockMore))
         {
-            lwm2m_free(blockData->identifier.uri);
+            return prv_block1_reject(blockDataHeadP, blockData, COAP_408_REQ_ENTITY_INCOMPLETE);
         }
-        lwm2m_free(blockData);
+        if (!rawBlock1 && !blockMore)
+        {
+            *outputBuffer = blockData->blockBuffer;
+            *outputLength = blockData->blockBufferSize;
+        }
+        return COAP_RETRANSMISSION;
     }
+
+    if (blockNum == 0)
+    {
+        if (blockData != NULL)
+        {
+            return prv_block1_reject(blockDataHeadP, blockData, COAP_408_REQ_ENTITY_INCOMPLETE);
+        }
+        /* peer가 소유하는 목록에서 URI당 하나의 logical exchange만 유지한다. */
+        prv_block1_delete_uri(blockDataHeadP, uri);
+    }
+    else if (blockData == NULL)
+    {
+        return COAP_408_REQ_ENTITY_INCOMPLETE;
+    }
+    else if (!blockData->lastBlockMore || blockNum != blockData->blockNum + 1U)
+    {
+        return prv_block1_reject(blockDataHeadP, blockData, COAP_408_REQ_ENTITY_INCOMPLETE);
+    }
+
+    return prv_block1_accept(blockDataHeadP,
+                             blockData,
+                             identifier,
+                             buffer,
+                             length,
+                             blockSize,
+                             blockNum,
+                             blockMore,
+                             rawBlock1,
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+                             mid,
+#endif
+                             outputBuffer,
+                             outputLength);
+}
+
+int coap_block1_cache_response(lwm2m_block_data_t *blockDataHead,
+                               const char *uri,
+                               const uint8_t *token,
+                               size_t tokenLength,
+                               uint8_t responseCode,
+                               const char *locationPath)
+{
+    block_data_identifier_t identifier = {0};
+    lwm2m_block_data_t *blockData;
+    size_t locationLength = locationPath == NULL ? 0 : strlen(locationPath);
+
+    if (uri == NULL || (tokenLength > 0 && token == NULL) || tokenLength > LWM2M_COAP_TOKEN_MAX_LEN
+        || locationLength > LWM2M_BLOCK1_LOCATION_PATH_MAX_LEN)
+    {
+        return -1;
+    }
+    identifier.uri = (char *)uri;
+    identifier.tokenLength = (uint8_t)tokenLength;
+    if (tokenLength > 0) memcpy(identifier.token, token, tokenLength);
+    blockData = find_block_data(blockDataHead, identifier, BLOCK_1);
+    if (blockData == NULL) return -1;
+    blockData->responseCode = responseCode;
+    blockData->responseCached = true;
+    blockData->responseHasLocationPath = locationPath != NULL;
+    if (locationPath != NULL)
+    {
+        memcpy(blockData->responseLocationPath, locationPath, locationLength + 1U);
+    }
+    else
+    {
+        blockData->responseLocationPath[0] = '\0';
+    }
+    return 0;
+}
+
+int coap_block1_get_cached_response(lwm2m_block_data_t *blockDataHead,
+                                    const char *uri,
+                                    const uint8_t *token,
+                                    size_t tokenLength,
+                                    uint8_t *responseCodeP,
+                                    const char **locationPathP)
+{
+    block_data_identifier_t identifier = {0};
+    lwm2m_block_data_t *blockData;
+
+    if (uri == NULL || (tokenLength > 0 && token == NULL) || tokenLength > LWM2M_COAP_TOKEN_MAX_LEN
+        || responseCodeP == NULL || locationPathP == NULL)
+    {
+        return -1;
+    }
+    identifier.uri = (char *)uri;
+    identifier.tokenLength = (uint8_t)tokenLength;
+    if (tokenLength > 0) memcpy(identifier.token, token, tokenLength);
+    blockData = find_block_data(blockDataHead, identifier, BLOCK_1);
+    if (blockData == NULL || !blockData->responseCached) return 0;
+    *responseCodeP = blockData->responseCode;
+    *locationPathP = blockData->responseHasLocationPath ? blockData->responseLocationPath : NULL;
+    return 1;
+}
+
+lwm2m_block_data_t *block2_create(lwm2m_block_data_t **blockDataHeadP, uint16_t mid)
+{
+    block_data_identifier_t identifier = {0};
+
+    identifier.mid = mid;
+    return prv_block_insert(blockDataHeadP, identifier, BLOCK_2);
+}
+
+void block2_delete(lwm2m_block_data_t **blockDataHeadP, uint16_t mid)
+{
+    block_data_identifier_t identifier = {0};
+
+    identifier.mid = mid;
+    prv_block_data_delete(blockDataHeadP, identifier, BLOCK_2);
+}
+
+void coap_block2_set_expected_mid(lwm2m_block_data_t *blockDataHead, uint16_t currentMid, uint16_t expectedMid)
+{
+    block_data_identifier_t identifier = {0};
+    lwm2m_block_data_t *blockData;
+
+    identifier.mid = currentMid;
+    blockData = find_block_data(blockDataHead, identifier, BLOCK_2);
+    if (blockData != NULL) blockData->identifier.mid = expectedMid;
+}
+
+uint8_t coap_block2_handler(lwm2m_block_data_t **blockDataHeadP,
+                            uint16_t mid,
+                            const uint8_t *buffer,
+                            size_t length,
+                            uint16_t blockSize,
+                            uint32_t blockNum,
+                            bool blockMore,
+                            uint8_t **outputBuffer,
+                            size_t *outputLength)
+{
+    block_data_identifier_t identifier = {0};
+
+    identifier.mid = mid;
+    return prv_coap_block_handler(blockDataHeadP, identifier, BLOCK_2, buffer, length, blockSize, blockNum,
+                                  blockMore, outputBuffer, outputLength);
+}
+
+void free_block_data(lwm2m_block_data_t *blockData)
+{
+    if (blockData == NULL) return;
+    lwm2m_free(blockData->blockBuffer);
+    if (blockData->blockType == BLOCK_1) lwm2m_free(blockData->identifier.uri);
+    lwm2m_free(blockData);
 }

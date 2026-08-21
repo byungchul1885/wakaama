@@ -26,6 +26,7 @@
 #define RESPONSE_BUFFER_MAX_LEN 2048
 static uint8_t response_buffer[RESPONSE_BUFFER_MAX_LEN];
 static size_t response_len = 0;
+static bool drop_next_response = false;
 
 bool lwm2m_session_is_equal(void *session1, void *session2, void *userData) { return session1 == session2; }
 
@@ -34,8 +35,12 @@ uint8_t lwm2m_buffer_send(void *sessionH, uint8_t *buffer, size_t length, void *
     (void)sessionH;
     (void)userdata;
 
-    memset(response_buffer, 0, RESPONSE_BUFFER_MAX_LEN);
-    response_len = 0;
+    test_reset_response_buffer();
+
+    if (drop_next_response) {
+        drop_next_response = false;
+        return COAP_NO_ERROR;
+    }
 
     assert(length <= RESPONSE_BUFFER_MAX_LEN);
     if (length <= RESPONSE_BUFFER_MAX_LEN) {
@@ -50,6 +55,13 @@ uint8_t *test_get_response_buffer(size_t *len) {
     *len = response_len;
     return response_buffer;
 }
+
+void test_reset_response_buffer(void) {
+    memset(response_buffer, 0, RESPONSE_BUFFER_MAX_LEN);
+    response_len = 0;
+}
+
+void test_drop_next_response(void) { drop_next_response = true; }
 
 void lwm2m_session_remove(void *sessionH) {
     (void)sessionH;

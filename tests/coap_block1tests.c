@@ -24,19 +24,28 @@
 
 static const char *URI = "/1/2/3";
 static const uint16_t BLOCK_SIZE = 5;
+static const uint8_t DEFAULT_TOKEN[] = {'b', 'l', 'k', '1'};
+
+static uint8_t handle_block_token(lwm2m_block_data_t **blk1, const uint8_t *token, size_t tokenLength,
+                                  const uint8_t *buffer, size_t bufferLength, uint16_t blockSize, uint16_t mid,
+                                  uint32_t blockNum, bool blockMore, bool rawBlock1, uint8_t **resultBuffer,
+                                  size_t *resultLen) {
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+    return coap_block1_handler(blk1, URI, token, tokenLength, mid, buffer, bufferLength, blockSize, blockNum,
+                               blockMore, rawBlock1, resultBuffer, resultLen);
+#else
+    (void)mid;
+    (void)rawBlock1;
+    return coap_block1_handler(blk1, URI, token, tokenLength, buffer, bufferLength, blockSize, blockNum, blockMore,
+                               resultBuffer, resultLen);
+#endif
+}
 
 static uint8_t handle_block(lwm2m_block_data_t **blk1, const uint8_t *buffer, size_t bufferLength,
                             uint16_t blockSize, uint16_t mid, uint32_t blockNum, bool blockMore, bool rawBlock1,
                             uint8_t **resultBuffer, size_t *resultLen) {
-#ifdef LWM2M_RAW_BLOCK1_REQUESTS
-    return coap_block1_handler(blk1, URI, mid, buffer, bufferLength, blockSize, blockNum, blockMore, rawBlock1,
-                               resultBuffer, resultLen);
-#else
-    (void)mid;
-    (void)rawBlock1;
-    return coap_block1_handler(blk1, URI, buffer, bufferLength, blockSize, blockNum, blockMore, resultBuffer,
-                               resultLen);
-#endif
+    return handle_block_token(blk1, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), buffer, bufferLength, blockSize, mid,
+                              blockNum, blockMore, rawBlock1, resultBuffer, resultLen);
 }
 
 static uint8_t handle_12345(lwm2m_block_data_t **blk1, uint8_t **resultBuffer, size_t *resultLen) {
@@ -95,7 +104,7 @@ static void test_block1_retransmit(void) {
     resultBuffer = NULL;
     resultLen = 0;
     status = handle_12345(&blk1, &resultBuffer, &resultLen);
-    CU_ASSERT_EQUAL(status, COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(status, COAP_RETRANSMISSION)
     CU_ASSERT_PTR_NULL(resultBuffer)
 
     resultBuffer = NULL;
@@ -126,6 +135,7 @@ static void test_block1_retransmit(void) {
     free_block_data(blk1);
 }
 static void test_block1_same_message_after_success(void) {
+    static const uint8_t nextToken[] = {'n', 'e', 'x', 't'};
     lwm2m_block_data_t *blk1 = NULL;
 
     uint8_t *resultBuffer = NULL;
@@ -141,18 +151,103 @@ static void test_block1_same_message_after_success(void) {
     CU_ASSERT_EQUAL(resultLen, 7)
     CU_ASSERT_NSTRING_EQUAL(resultBuffer, "1234567", 7)
 
-    /* Same message again */
-    status = handle_12345(&blk1, &resultBuffer, &resultLen);
+    /* A new token starts a new logical exchange for the same URI. */
+    status = handle_block_token(&blk1, nextToken, sizeof(nextToken), (const uint8_t *)"12345", 5,
+                                BLOCK_SIZE, 102, 0, true, false, &resultBuffer, &resultLen);
     CU_ASSERT_EQUAL(status, COAP_231_CONTINUE)
-    CU_ASSERT_PTR_NOT_NULL(resultBuffer)
+    CU_ASSERT_PTR_NULL(resultBuffer)
 
-    status = handle_67(&blk1, &resultBuffer, &resultLen);
+    status = handle_block_token(&blk1, nextToken, sizeof(nextToken), (const uint8_t *)"67", 2,
+                                BLOCK_SIZE, 103, 1, false, false, &resultBuffer, &resultLen);
     CU_ASSERT_EQUAL(status, NO_ERROR)
     CU_ASSERT_PTR_NOT_NULL(resultBuffer)
     CU_ASSERT_EQUAL(resultLen, 7)
     CU_ASSERT_NSTRING_EQUAL(resultBuffer, "1234567", 7)
 
     free_block_data(blk1);
+}
+
+static void test_block1_rejects_altered_retransmission(void) {
+    lwm2m_block_data_t *blk1 = NULL;
+    uint8_t *resultBuffer = NULL;
+    size_t resultLen = 0;
+
+    CU_ASSERT_EQUAL(handle_12345(&blk1, &resultBuffer, &resultLen), COAP_231_CONTINUE)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(blk1)
+    CU_ASSERT_EQUAL(handle_block(&blk1, (const uint8_t *)"1234X", 5, BLOCK_SIZE, 104, 0, true, false,
+                                 &resultBuffer, &resultLen),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NULL(blk1)
+
+    CU_ASSERT_EQUAL(handle_12345(&blk1, &resultBuffer, &resultLen), COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(handle_67(&blk1, &resultBuffer, &resultLen), NO_ERROR)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(blk1)
+    CU_ASSERT_EQUAL(handle_block(&blk1, (const uint8_t *)"68", 2, BLOCK_SIZE, 105, 1, false, false,
+                                 &resultBuffer, &resultLen),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NULL(blk1)
+}
+
+static void test_block1_token_size_and_gap_are_isolated(void) {
+    static const uint8_t firstToken[] = {'f', 'i', 'r', 's', 't'};
+    static const uint8_t nextToken[] = {'n', 'e', 'x', 't'};
+    static const uint8_t oversizedToken[LWM2M_COAP_TOKEN_MAX_LEN + 1] = {0};
+    lwm2m_block_data_t *blk1 = NULL;
+    uint8_t *resultBuffer = NULL;
+    size_t resultLen = 0;
+
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, oversizedToken, sizeof(oversizedToken),
+                                       (const uint8_t *)"12345", 5, BLOCK_SIZE, 109, 0, true, false,
+                                       &resultBuffer, &resultLen),
+                    COAP_400_BAD_REQUEST)
+    CU_ASSERT_PTR_NULL(blk1)
+
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, firstToken, sizeof(firstToken), (const uint8_t *)"12345", 5,
+                                       BLOCK_SIZE, 110, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, nextToken, sizeof(nextToken), (const uint8_t *)"67", 2,
+                                       BLOCK_SIZE, 111, 1, false, false, &resultBuffer, &resultLen),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(blk1)
+
+    /* A new block zero supersedes the prior token for this peer and URI. */
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, nextToken, sizeof(nextToken), (const uint8_t *)"12345", 5,
+                                       BLOCK_SIZE, 112, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, firstToken, sizeof(firstToken), (const uint8_t *)"67", 2,
+                                       BLOCK_SIZE, 113, 1, false, false, &resultBuffer, &resultLen),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(blk1)
+
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, nextToken, sizeof(nextToken), (const uint8_t *)"gap", 3,
+                                       BLOCK_SIZE, 114, 2, false, false, &resultBuffer, &resultLen),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NULL(blk1)
+
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, nextToken, sizeof(nextToken), (const uint8_t *)"12345", 5,
+                                       BLOCK_SIZE, 115, 0, true, false, &resultBuffer, &resultLen),
+                    COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(handle_block_token(&blk1, nextToken, sizeof(nextToken), (const uint8_t *)"6789", 4,
+                                       4, 116, 1, false, false, &resultBuffer, &resultLen),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NULL(blk1)
+}
+
+static void test_block1_exchange_is_scoped_to_peer_list(void) {
+    lwm2m_block_data_t *firstPeer = NULL;
+    lwm2m_block_data_t *otherPeer = NULL;
+    uint8_t *resultBuffer = NULL;
+    size_t resultLen = 0;
+
+    CU_ASSERT_EQUAL(handle_12345(&firstPeer, &resultBuffer, &resultLen), COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(handle_block(&otherPeer, (const uint8_t *)"67", 2, BLOCK_SIZE, 120, 1, false, false,
+                                 &resultBuffer, &resultLen),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NULL(otherPeer)
+    CU_ASSERT_EQUAL(handle_67(&firstPeer, &resultBuffer, &resultLen), NO_ERROR)
+    CU_ASSERT_NSTRING_EQUAL(resultBuffer, "1234567", 7)
+
+    free_block_data(firstPeer);
 }
 
 static void test_block1_unbounded_allocation(void) {
@@ -175,15 +270,15 @@ static void test_block1_unbounded_allocation(void) {
                                             200 + (uint16_t)block_num, block_num, block_more, false,
                                             &resultBuffer, &resultLen);
         CU_ASSERT_PTR_NULL(resultBuffer)
-        CU_ASSERT_PTR_NOT_NULL(blk1)
-        CU_ASSERT(blk1->blockBufferSize <= max_block_transfer_size)
-
         if (total_blocks_num > block_num) {
+            CU_ASSERT_PTR_NOT_NULL_FATAL(blk1)
+            CU_ASSERT(blk1->blockBufferSize <= max_block_transfer_size)
             CU_ASSERT_EQUAL(blk1->blockNum, block_num)
             CU_ASSERT_EQUAL(status, COAP_231_CONTINUE)
         } else {
             // The last block leads to bigger total message than the max. buffer size.
             CU_ASSERT_EQUAL(status, COAP_413_ENTITY_TOO_LARGE);
+            CU_ASSERT_PTR_NULL(blk1)
         }
     }
 
@@ -195,6 +290,13 @@ typedef struct
 {
     unsigned int rawCalls;
     unsigned int writeCalls;
+    unsigned int createCalls;
+    unsigned int executeCalls;
+    uint8_t rawResult;
+    uint8_t writeResult;
+    int deferResult;
+    lwm2m_deferred_request_id_t deferredRequestId;
+    lwm2m_list_t createdInstance;
     uint8_t payload[64];
     size_t payloadLength;
 } dispatch_state_t;
@@ -218,7 +320,7 @@ static uint8_t dispatch_raw_write(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, 
     }
     state->payloadLength += (size_t)length;
     state->rawCalls++;
-    return COAP_204_CHANGED;
+    return state->rawResult == NO_ERROR ? COAP_204_CHANGED : state->rawResult;
 }
 
 static uint8_t dispatch_assembled_write(lwm2m_context_t *contextP, uint16_t instanceId, int numData,
@@ -236,7 +338,34 @@ static uint8_t dispatch_assembled_write(lwm2m_context_t *contextP, uint16_t inst
     memcpy(state->payload, dataArray[0].value.asBuffer.buffer, dataArray[0].value.asBuffer.length);
     state->payloadLength = dataArray[0].value.asBuffer.length;
     state->writeCalls++;
-    return COAP_204_CHANGED;
+    return state->writeResult == NO_ERROR ? COAP_204_CHANGED : state->writeResult;
+}
+
+static uint8_t dispatch_create(lwm2m_context_t *contextP, uint16_t instanceId, int numData,
+                               lwm2m_data_t *dataArray, lwm2m_object_t *objectP) {
+    dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
+
+    (void)contextP;
+    (void)numData;
+    (void)dataArray;
+    memset(&state->createdInstance, 0, sizeof(state->createdInstance));
+    state->createdInstance.id = instanceId;
+    objectP->instanceList = LWM2M_LIST_ADD(objectP->instanceList, &state->createdInstance);
+    state->createCalls++;
+    return COAP_201_CREATED;
+}
+
+static uint8_t dispatch_deferred_execute(lwm2m_context_t *contextP, uint16_t instanceId, uint16_t resourceId,
+                                         uint8_t *buffer, int length, lwm2m_object_t *objectP) {
+    dispatch_state_t *state = (dispatch_state_t *)objectP->userData;
+
+    (void)buffer;
+    CU_ASSERT_EQUAL(instanceId, 0)
+    CU_ASSERT_EQUAL(resourceId, 14)
+    CU_ASSERT_TRUE(length >= 0)
+    state->executeCalls++;
+    state->deferResult = lwm2m_defer_current_request(contextP, &state->deferredRequestId);
+    return COAP_IGNORE;
 }
 
 static lwm2m_context_t *dispatch_context(lwm2m_server_t *serverP, lwm2m_object_t *objectP,
@@ -261,9 +390,11 @@ static lwm2m_context_t *dispatch_context(lwm2m_server_t *serverP, lwm2m_object_t
     return contextP;
 }
 
-static uint8_t dispatch_block_sized(lwm2m_context_t *contextP, uint16_t mid, uint32_t blockNum, bool blockMore,
-                                    uint16_t blockSize, const uint8_t *payload, size_t payloadLength) {
-    static uint8_t token[] = {'b', 'l', 'k', '1'};
+static uint8_t dispatch_block_request(lwm2m_context_t *contextP, uint16_t mid, coap_method_t method,
+                                      const char *path, lwm2m_media_type_t format, const uint8_t *token,
+                                      size_t tokenLength, uint32_t blockNum, bool blockMore, uint16_t blockSize,
+                                      const uint8_t *payload, size_t payloadLength, char **locationPathP,
+                                      bool expectResponse) {
     coap_packet_t request;
     coap_packet_t response;
     uint8_t serialized[2048];
@@ -271,25 +402,47 @@ static uint8_t dispatch_block_sized(lwm2m_context_t *contextP, uint16_t mid, uin
     size_t responseLength;
     uint8_t *responseBuffer;
 
+    if (locationPathP != NULL)
+    {
+        *locationPathP = NULL;
+    }
+
     memset(&request, 0, sizeof(request));
-    coap_init_message(&request, COAP_TYPE_CON, COAP_PUT, mid);
-    coap_set_header_token(&request, token, sizeof(token));
+    coap_init_message(&request, COAP_TYPE_CON, method, mid);
+    coap_set_header_token(&request, token, tokenLength);
     coap_set_header_uri_host(&request, "localhost");
-    coap_set_header_uri_path(&request, "27348/0/14");
-    coap_set_header_content_type(&request, LWM2M_CONTENT_OPAQUE);
+    coap_set_header_uri_path(&request, path);
+    coap_set_header_content_type(&request, format);
     coap_set_header_block1(&request, blockNum, blockMore, blockSize);
     coap_set_payload(&request, (uint8_t *)payload, payloadLength);
     serializedLength = coap_serialize_message(&request, serialized);
     coap_free_header(&request);
     CU_ASSERT_TRUE_FATAL(serializedLength > 0)
 
+    test_reset_response_buffer();
     lwm2m_handle_packet(contextP, serialized, serializedLength, (void *)(uintptr_t)1);
     responseBuffer = test_get_response_buffer(&responseLength);
+    if (!expectResponse)
+    {
+        CU_ASSERT_EQUAL(responseLength, 0)
+        return COAP_IGNORE;
+    }
     memset(&response, 0, sizeof(response));
     CU_ASSERT_EQUAL_FATAL(coap_parse_message(&response, responseBuffer, (uint16_t)responseLength), NO_ERROR)
     uint8_t code = response.code;
+    if (locationPathP != NULL && IS_OPTION(&response, COAP_OPTION_LOCATION_PATH))
+    {
+        *locationPathP = coap_get_multi_option_as_path_string(response.location_path);
+    }
     coap_free_header(&response);
     return code;
+}
+
+static uint8_t dispatch_block_sized(lwm2m_context_t *contextP, uint16_t mid, uint32_t blockNum, bool blockMore,
+                                    uint16_t blockSize, const uint8_t *payload, size_t payloadLength) {
+    return dispatch_block_request(contextP, mid, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                  DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), blockNum, blockMore, blockSize,
+                                  payload, payloadLength, NULL, true);
 }
 
 static uint8_t dispatch_block(lwm2m_context_t *contextP, uint16_t mid, uint32_t blockNum, bool blockMore,
@@ -323,14 +476,17 @@ static void test_raw_block1_sequence_and_retransmit(void) {
 
     status = handle_block(&blk1, (const uint8_t *)"12345", 5, BLOCK_SIZE, 300, 0, true, true,
                           &resultBuffer, &resultLen);
-    CU_ASSERT_EQUAL(status, COAP_IGNORE)
+    CU_ASSERT_EQUAL(status, COAP_RETRANSMISSION)
     CU_ASSERT_EQUAL(blk1->blockNum, 0)
 
     status = handle_block(&blk1, (const uint8_t *)"67", 2, BLOCK_SIZE, 301, 1, false, true,
                           &resultBuffer, &resultLen);
     CU_ASSERT_EQUAL(status, NO_ERROR)
-    CU_ASSERT_PTR_NULL(blk1)
+    CU_ASSERT_PTR_NOT_NULL(blk1)
+    CU_ASSERT_EQUAL(blk1->blockNum, 1)
     CU_ASSERT_PTR_NULL(resultBuffer)
+
+    free_block_data(blk1);
 }
 
 static void test_raw_block1_rejects_gap_without_advancing(void) {
@@ -343,6 +499,17 @@ static void test_raw_block1_rejects_gap_without_advancing(void) {
     CU_ASSERT_EQUAL(status, COAP_231_CONTINUE)
     CU_ASSERT_PTR_NOT_NULL(blk1)
 
+    status = handle_block(&blk1, (const uint8_t *)"1234X", 5, BLOCK_SIZE, 403, 0, true, true,
+                          &resultBuffer, &resultLen);
+    CU_ASSERT_EQUAL(status, COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(blk1)
+    CU_ASSERT_EQUAL(blk1->blockNum, 0)
+    CU_ASSERT_NSTRING_EQUAL(blk1->blockBuffer, "12345", 5)
+
+    status = handle_block(&blk1, (const uint8_t *)"12345", 5, BLOCK_SIZE, 404, 0, true, true,
+                          &resultBuffer, &resultLen);
+    CU_ASSERT_EQUAL(status, COAP_RETRANSMISSION)
+
     status = handle_block(&blk1, (const uint8_t *)"gap", 3, BLOCK_SIZE, 402, 2, true, true,
                           &resultBuffer, &resultLen);
     CU_ASSERT_EQUAL(status, COAP_408_REQ_ENTITY_INCOMPLETE)
@@ -351,7 +518,13 @@ static void test_raw_block1_rejects_gap_without_advancing(void) {
     status = handle_block(&blk1, (const uint8_t *)"67", 2, BLOCK_SIZE, 401, 1, false, true,
                           &resultBuffer, &resultLen);
     CU_ASSERT_EQUAL(status, NO_ERROR)
-    CU_ASSERT_PTR_NULL(blk1)
+    CU_ASSERT_PTR_NOT_NULL(blk1)
+
+    status = handle_block(&blk1, (const uint8_t *)"67", 2, BLOCK_SIZE, 405, 1, false, true,
+                          &resultBuffer, &resultLen);
+    CU_ASSERT_EQUAL(status, COAP_RETRANSMISSION)
+
+    free_block_data(blk1);
 }
 
 static void test_packet_dispatches_raw_callback_when_supported(void) {
@@ -366,11 +539,24 @@ static void test_packet_dispatches_raw_callback_when_supported(void) {
     CU_ASSERT_EQUAL(dispatch_block(contextP, 500, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
     CU_ASSERT_EQUAL(state.rawCalls, 1)
     CU_ASSERT_EQUAL(state.writeCalls, 0)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 502, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(state.rawCalls, 1)
     CU_ASSERT_EQUAL(dispatch_block(contextP, 501, 1, false, last, sizeof(last) - 1), COAP_204_CHANGED)
     CU_ASSERT_EQUAL(state.rawCalls, 2)
     CU_ASSERT_EQUAL(state.writeCalls, 0)
     CU_ASSERT_EQUAL(state.payloadLength, 19)
     CU_ASSERT_NSTRING_EQUAL(state.payload, "0123456789ABCDEFXYZ", 19)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 503, 1, false, last, sizeof(last) - 1), COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.rawCalls, 2)
+    CU_ASSERT_EQUAL(state.payloadLength, 19)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 504, 1, false, (const uint8_t *)"XYQ", 3),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_EQUAL(state.rawCalls, 2)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 506, 2, false, (const uint8_t *)"late", 4),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_EQUAL(state.rawCalls, 2)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 505, 1, false, last, sizeof(last) - 1), COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.rawCalls, 2)
 
     dispatch_context_close(contextP, &server);
 }
@@ -392,7 +578,123 @@ static void test_packet_assembles_when_raw_callback_is_missing(void) {
     CU_ASSERT_EQUAL(state.writeCalls, 1)
     CU_ASSERT_EQUAL(state.payloadLength, 19)
     CU_ASSERT_NSTRING_EQUAL(state.payload, "0123456789ABCDEFXYZ", 19)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 602, 1, false, last, sizeof(last) - 1), COAP_204_CHANGED)
+    CU_ASSERT_EQUAL(state.writeCalls, 1)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 603, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(state.writeCalls, 1)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 604, 2, false, (const uint8_t *)"late", 4),
+                    COAP_408_REQ_ENTITY_INCOMPLETE)
+    CU_ASSERT_EQUAL(state.writeCalls, 1)
 
+    dispatch_context_close(contextP, &server);
+}
+
+static void test_packet_replays_failed_application_result(void) {
+    static const uint8_t first[] = "0123456789ABCDEF";
+    static const uint8_t last[] = "XYZ";
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {.writeResult = COAP_503_SERVICE_UNAVAILABLE};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 610, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
+    test_drop_next_response();
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 611, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 1, false, 16,
+                                           last, sizeof(last) - 1, NULL, false),
+                    COAP_IGNORE)
+    CU_ASSERT_EQUAL(state.writeCalls, 1)
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 612, 1, false, last, sizeof(last) - 1),
+                    COAP_503_SERVICE_UNAVAILABLE)
+    CU_ASSERT_EQUAL(state.writeCalls, 1)
+
+    dispatch_context_close(contextP, &server);
+}
+
+static void test_packet_does_not_invent_success_for_ignored_result(void) {
+    static const uint8_t first[] = "0123456789ABCDEF";
+    static const uint8_t last[] = "XYZ";
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {.writeResult = COAP_IGNORE};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+
+    CU_ASSERT_EQUAL(dispatch_block(contextP, 620, 0, true, first, sizeof(first) - 1), COAP_231_CONTINUE)
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 621, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 1, false, 16,
+                                           last, sizeof(last) - 1, NULL, false),
+                    COAP_IGNORE)
+    CU_ASSERT_EQUAL(state.writeCalls, 1)
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 622, COAP_PUT, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 1, false, 16,
+                                           last, sizeof(last) - 1, NULL, false),
+                    COAP_IGNORE)
+    CU_ASSERT_EQUAL(state.writeCalls, 1)
+
+    dispatch_context_close(contextP, &server);
+}
+
+static void test_packet_replays_deferred_empty_ack(void) {
+    static const uint8_t payload[] = "go";
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {.deferResult = -1};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+
+    object.executeFunc = dispatch_deferred_execute;
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 630, COAP_POST, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 0, false, 16,
+                                           payload, sizeof(payload) - 1, NULL, true),
+                    COAP_NO_ERROR)
+    CU_ASSERT_EQUAL(state.executeCalls, 1)
+    CU_ASSERT_EQUAL(state.deferResult, NO_ERROR)
+    CU_ASSERT_NOT_EQUAL(state.deferredRequestId, 0)
+
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 631, COAP_POST, "27348/0/14", LWM2M_CONTENT_OPAQUE,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 0, false, 16,
+                                           payload, sizeof(payload) - 1, NULL, true),
+                    COAP_NO_ERROR)
+    CU_ASSERT_EQUAL(state.executeCalls, 1)
+    CU_ASSERT_EQUAL(lwm2m_complete_deferred_request(contextP, state.deferredRequestId, COAP_204_CHANGED), NO_ERROR)
+
+    dispatch_context_close(contextP, &server);
+}
+
+static void test_packet_replays_create_location_path(void) {
+    static const uint8_t tlv[] = {0xC1, 0x00, 0x01};
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    dispatch_state_t state = {0};
+    lwm2m_context_t *contextP = dispatch_context(&server, &object, &instance, &state, false);
+    char *locationPath = NULL;
+
+    object.objID = 3333;
+    object.instanceList = NULL;
+    object.writeFunc = NULL;
+    object.createFunc = dispatch_create;
+
+    test_drop_next_response();
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 700, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 0, false, 16,
+                                           tlv, sizeof(tlv), &locationPath, false),
+                    COAP_IGNORE)
+    CU_ASSERT_EQUAL(state.createCalls, 1)
+    CU_ASSERT_PTR_NULL(locationPath)
+
+    CU_ASSERT_EQUAL(dispatch_block_request(contextP, 701, COAP_POST, "3333", LWM2M_CONTENT_TLV,
+                                           DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), 0, false, 16,
+                                           tlv, sizeof(tlv), &locationPath, true),
+                    COAP_201_CREATED)
+    CU_ASSERT_EQUAL(state.createCalls, 1)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(locationPath)
+    CU_ASSERT_STRING_EQUAL(locationPath, "/3333/0")
+    lwm2m_free(locationPath);
+
+    object.instanceList = NULL;
     dispatch_context_close(contextP, &server);
 }
 
@@ -420,6 +722,8 @@ static void test_packet_streams_two_megabytes_without_assembly(void) {
                                                    block,
                                                    sizeof(block)),
                               expected)
+        CU_ASSERT_PTR_NOT_NULL_FATAL(server.blockData)
+        CU_ASSERT(server.blockData->blockBufferSize <= BLOCK_BYTES)
     }
     CU_ASSERT_EQUAL(state.rawCalls, blockCount)
     CU_ASSERT_EQUAL(state.writeCalls, 0)
@@ -433,12 +737,19 @@ static struct TestTable table[] = {
     {"test of test_block1_nominal()", test_block1_nominal},
     {"test of test_block1_retransmit()", test_block1_retransmit},
     {"test of test_block1_same_message_after_success()", test_block1_same_message_after_success},
+    {"altered Block1 retransmission is rejected", test_block1_rejects_altered_retransmission},
+    {"Block1 token, size, and gap isolation", test_block1_token_size_and_gap_are_isolated},
+    {"Block1 exchange is scoped to peer list", test_block1_exchange_is_scoped_to_peer_list},
     {"test of test_block1_unbounded_allocation()", test_block1_unbounded_allocation},
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
     {"raw Block1 sequence and retransmit", test_raw_block1_sequence_and_retransmit},
     {"raw Block1 rejects gap", test_raw_block1_rejects_gap_without_advancing},
     {"packet dispatches supported raw callback", test_packet_dispatches_raw_callback_when_supported},
     {"packet assembles without raw callback", test_packet_assembles_when_raw_callback_is_missing},
+    {"packet replays failed application result", test_packet_replays_failed_application_result},
+    {"packet does not invent success for ignored result", test_packet_does_not_invent_success_for_ignored_result},
+    {"packet replays deferred empty ACK", test_packet_replays_deferred_empty_ack},
+    {"packet replays Create Location-Path", test_packet_replays_create_location_path},
     {"packet streams two MiB through raw callback", test_packet_streams_two_megabytes_without_assembly},
 #endif
     {NULL, NULL},

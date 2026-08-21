@@ -335,14 +335,21 @@ int json_findAndCheckData(const lwm2m_uri_t * uriP, uri_depth_t baseLevel, size_
 
 // defined in block.c
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
-uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, uint16_t mid, const uint8_t *buffer,
-                            size_t length, uint16_t blockSize, uint32_t blockNum, bool blockMore, bool rawBlock1,
+uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, const uint8_t *token,
+                            size_t tokenLength, uint16_t mid, const uint8_t *buffer, size_t length,
+                            uint16_t blockSize, uint32_t blockNum, bool blockMore, bool rawBlock1,
                             uint8_t **outputBuffer, size_t *outputLength);
 #else
-uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, const uint8_t *buffer, size_t length,
-                            uint16_t blockSize, uint32_t blockNum, bool blockMore, uint8_t **outputBuffer,
-                            size_t *outputLength);
+uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, const uint8_t *token,
+                            size_t tokenLength, const uint8_t *buffer, size_t length, uint16_t blockSize,
+                            uint32_t blockNum, bool blockMore, uint8_t **outputBuffer, size_t *outputLength);
 #endif
+/* locationPath는 호출 중 복사되므로 caller가 계속 소유한다. */
+int coap_block1_cache_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
+                               size_t tokenLength, uint8_t responseCode, const char *locationPath);
+/* locationPathP는 blockData 소유 borrowed pointer이며 다음 Block1 상태 변경 전까지만 유효하다. */
+int coap_block1_get_cached_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
+                                    size_t tokenLength, uint8_t *responseCodeP, const char **locationPathP);
 void block1_delete(lwm2m_block_data_t ** pBlockDataHead, char * uri);
 uint8_t coap_block2_handler(lwm2m_block_data_t **blockData, uint16_t mid, const uint8_t *buffer, size_t length,
                             uint16_t blockSize, uint32_t blockNum, bool blockMore, uint8_t **outputBuffer,

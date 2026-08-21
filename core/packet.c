@@ -547,6 +547,33 @@ static bool is_message_too_large(const coap_packet_t *message, const size_t pack
     return packet_size > LWM2M_COAP_MAX_MESSAGE_SIZE;
 }
 
+static lwm2m_block_data_t *prv_get_peer_block_data(lwm2m_context_t *contextP, void *sessionH)
+{
+#ifdef LWM2M_CLIENT_MODE
+    lwm2m_server_t *peerP = utils_findServer(contextP, sessionH);
+
+#ifdef LWM2M_BOOTSTRAP
+    if (peerP == NULL)
+    {
+        peerP = utils_findBootstrapServer(contextP, sessionH);
+    }
+#endif
+    return peerP == NULL ? NULL : peerP->blockData;
+#else
+    lwm2m_client_t *peerP = utils_findClient(contextP, sessionH);
+
+    return peerP == NULL ? NULL : peerP->blockData;
+#endif
+}
+
+static void prv_clear_location_path(coap_packet_t *response)
+{
+    free_multi_option(response->location_path);
+    response->location_path = NULL;
+    response->options[COAP_OPTION_LOCATION_PATH / OPTION_MAP_SIZE]
+        &= (uint8_t)~(1U << (COAP_OPTION_LOCATION_PATH % OPTION_MAP_SIZE));
+}
+
 /* This function is an adaptation of function coap_receive() from Erbium's er-coap-13-engine.c.
  * Erbium is Copyright (c) 2013, Institute for Pervasive Computing, ETH Zurich
  * All rights reserved.
@@ -572,6 +599,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             uint32_t block_num = 0;
             uint16_t block_size = lwm2m_get_coap_block_size();
             uint32_t block_offset = 0;
+            char *block1Uri = NULL;
+            bool block1Replay = false;
+            bool block1ApplicationDispatched = false;
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
             bool rawBlock1 = false;
 #endif
@@ -652,8 +682,8 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     LOG_ARG_DBG("Blockwise: block1 request NUM %u (SZX %u/ SZX Max%u) MORE %u", block1_num, block1_size,
                                 lwm2m_get_coap_block_size(), block1_more);
 
-                    char * uri = coap_get_packet_uri_as_string(message);
-                    if (uri == NULL){
+                    block1Uri = coap_get_packet_uri_as_string(message);
+                    if (block1Uri == NULL){
                         coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
                     } else {
                     // handle block 1
@@ -661,14 +691,16 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 #ifdef LWM2M_CLIENT_MODE
                         rawBlock1 = prv_uses_raw_block1(contextP, fromSessionH, message);
 #endif
-                        coap_error_code = coap_block1_handler(&peerP->blockData, uri, message->mid, message->payload,
-                                                             message->payload_len, block1_size, block1_num,
-                                                             block1_more, rawBlock1, &complete_buffer,
-                                                             &complete_buffer_size);
+                        coap_error_code = coap_block1_handler(&peerP->blockData, block1Uri, message->token,
+                                                             message->token_len, message->mid, message->payload,
+                                                             message->payload_len, block1_size, block1_num, block1_more,
+                                                             rawBlock1, &complete_buffer, &complete_buffer_size);
 #else
-                        coap_error_code = coap_block1_handler(&peerP->blockData, uri, message->payload, message->payload_len, block1_size, block1_num, block1_more, &complete_buffer, &complete_buffer_size);
+                        coap_error_code = coap_block1_handler(&peerP->blockData, block1Uri, message->token,
+                                                             message->token_len, message->payload, message->payload_len,
+                                                             block1_size, block1_num, block1_more, &complete_buffer,
+                                                             &complete_buffer_size);
 #endif
-                        lwm2m_free(uri);
                     }
                     // if payload is complete, replace it in the coap message.
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
@@ -682,15 +714,86 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     }
                     block1_size = MIN(block1_size, lwm2m_get_coap_block_size());
                     coap_set_header_block1(response, block1_num, block1_more, block1_size);
+                    if (coap_error_code == COAP_RETRANSMISSION)
+                    {
+                        uint8_t cachedCode = COAP_500_INTERNAL_SERVER_ERROR;
+                        const char *cachedLocationPath = NULL;
+                        bool useCachedResponse = !block1_more;
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+                        useCachedResponse = rawBlock1 || !block1_more;
+#endif
+                        int cached = useCachedResponse
+                            ? coap_block1_get_cached_response(prv_get_peer_block_data(contextP, fromSessionH),
+                                                              block1Uri, message->token, message->token_len,
+                                                              &cachedCode, &cachedLocationPath)
+                            : 0;
+
+                        block1Replay = true;
+                        if (cached < 0)
+                        {
+                            coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
+                        }
+                        else if (cached > 0)
+                        {
+                            if (cachedCode == COAP_EMPTY_MESSAGE_CODE)
+                            {
+                                coap_init_message(response, COAP_TYPE_ACK, COAP_EMPTY_MESSAGE_CODE, message->mid);
+                            }
+                            else
+                            {
+                                response->code = cachedCode;
+                            }
+                            coap_error_code = cachedCode;
+                            if (cachedLocationPath != NULL)
+                            {
+                                coap_set_header_location_path(response, cachedLocationPath);
+                            }
+                        }
+                        else
+                        {
+                            coap_error_code = block1_more ? COAP_231_CONTINUE : COAP_408_REQ_ENTITY_INCOMPLETE;
+                        }
+                    }
                 }
             }
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
-            if (coap_error_code == NO_ERROR || (rawBlock1 && coap_error_code == COAP_231_CONTINUE))
+            if (!block1Replay
+                && (coap_error_code == NO_ERROR || (rawBlock1 && coap_error_code == COAP_231_CONTINUE)))
 #else
-            if (coap_error_code == NO_ERROR)
+            if (!block1Replay && coap_error_code == NO_ERROR)
 #endif
             {
+                block1ApplicationDispatched = IS_OPTION(message, COAP_OPTION_BLOCK1) != 0;
                 coap_error_code = handle_request(contextP, fromSessionH, message, response);
+                if (block1ApplicationDispatched)
+                {
+                    uint8_t applicationCode = coap_error_code == NO_ERROR ? response->code : coap_error_code;
+                    char *locationPath = NULL;
+                    int cacheResult;
+
+                    if (IS_OPTION(response, COAP_OPTION_LOCATION_PATH))
+                    {
+                        locationPath = coap_get_multi_option_as_path_string(response->location_path);
+                        if (locationPath == NULL)
+                        {
+                            coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
+                            applicationCode = coap_error_code;
+                            prv_clear_location_path(response);
+                        }
+                    }
+                    cacheResult = coap_block1_cache_response(prv_get_peer_block_data(contextP, fromSessionH),
+                                                             block1Uri, message->token, message->token_len,
+                                                             applicationCode, locationPath);
+                    lwm2m_free(locationPath);
+                    if (cacheResult != 0)
+                    {
+                        coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
+                        prv_clear_location_path(response);
+                        (void)coap_block1_cache_response(prv_get_peer_block_data(contextP, fromSessionH),
+                                                         block1Uri, message->token, message->token_len,
+                                                         coap_error_code, NULL);
+                    }
+                }
             }
             if (coap_error_code == NO_ERROR)
             {
@@ -732,25 +835,16 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             }
             else if (coap_error_code != COAP_IGNORE)
             {
-                if (coap_error_code == COAP_RETRANSMISSION) {
-                    if (IS_OPTION(response, COAP_OPTION_BLOCK1)) {
-                        uint32_t block1_num;
-                        uint8_t block1_more;
-                        uint16_t block1_size;
-                        // parse block1 header
-                        coap_get_header_block1(response, &block1_num, &block1_more, &block1_size, NULL);
-                        if (block1_more) {
-                            coap_error_code = COAP_231_CONTINUE;
-                        } else {
-                            coap_error_code = COAP_204_CHANGED;
-                        }
-                    }
+                if (coap_error_code == COAP_RETRANSMISSION)
+                {
+                    coap_error_code = COAP_408_REQ_ENTITY_INCOMPLETE;
                 }
                 if (1 == coap_set_status_code(response, coap_error_code))
                 {
                     coap_error_code = message_send(contextP, response, fromSessionH);
                 }
             }
+            lwm2m_free(block1Uri);
         }
         else
         {
@@ -1000,4 +1094,3 @@ uint8_t message_send(lwm2m_context_t * contextP,
 
     return result;
 }
-

@@ -202,6 +202,7 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
         return;
     }
     memset(&submission, 0, sizeof(submission));
+    LWM2M_URI_RESET(&submission.createdUri);
     serverP = utils_findServer(contextP, fromSessionH);
     if (serverP == NULL ||
         uri_decode(contextP->altPath,
@@ -212,6 +213,20 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
         return;
     }
     submission.operation = prv_dm_operation(requestP, &submission.uri);
+    if (submission.operation == LWM2M_DM_OPERATION_CREATE &&
+        responseP->code == COAP_201_CREATED &&
+        IS_OPTION(responseP, COAP_OPTION_LOCATION_PATH) &&
+        uri_decode(NULL,
+                   responseP->location_path,
+                   COAP_POST,
+                   &submission.createdUri) == LWM2M_REQUEST_TYPE_DM &&
+        LWM2M_URI_IS_SET_OBJECT(&submission.createdUri) &&
+        LWM2M_URI_IS_SET_INSTANCE(&submission.createdUri) &&
+        !LWM2M_URI_IS_SET_RESOURCE(&submission.createdUri) &&
+        submission.createdUri.objectId == submission.uri.objectId)
+    {
+        submission.hasCreatedUri = true;
+    }
     submission.requestCode = requestP->code;
     submission.responseCode = responseP->code;
     submission.sendResult = sendResult;

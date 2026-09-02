@@ -883,6 +883,9 @@ typedef enum
 typedef struct
 {
     lwm2m_uri_t uri;
+    /* Create 성공 응답의 Location-Path이며 hasCreatedUri가 true일 때만 유효하다. */
+    lwm2m_uri_t createdUri;
+    bool hasCreatedUri;
     lwm2m_dm_operation_t operation;
     uint8_t requestCode;
     uint8_t responseCode;

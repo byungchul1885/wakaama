@@ -345,6 +345,7 @@ typedef struct
     unsigned int durableCreateReplayCalls;
     unsigned int durableDeleteReplayCalls;
     unsigned int metadataCalls;
+    unsigned int dmResponseCalls;
     uint8_t rawResult;
     uint8_t writeResult;
     int deferResult;
@@ -372,7 +373,20 @@ typedef struct
     bool durableDeleteStored;
     uint8_t durableDeleteToken[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t durableDeleteTokenLength;
+    lwm2m_dm_response_submission_t dmResponse;
 } dispatch_state_t;
+
+static void dispatch_capture_dm_response(lwm2m_context_t *contextP,
+                                         const lwm2m_dm_response_submission_t *submissionP,
+                                         void *userData) {
+    dispatch_state_t *stateP = (dispatch_state_t *)userData;
+
+    (void)contextP;
+    CU_ASSERT_PTR_NOT_NULL_FATAL(submissionP)
+    CU_ASSERT_PTR_NOT_NULL_FATAL(stateP)
+    stateP->dmResponse = *submissionP;
+    stateP->dmResponseCalls++;
+}
 
 static void dispatch_capture_request(lwm2m_context_t *contextP, dispatch_state_t *stateP) {
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN] = {0};
@@ -1197,6 +1211,9 @@ static void test_packet_replays_create_location_path(void) {
     object.instanceList = NULL;
     object.writeFunc = NULL;
     object.createFunc = dispatch_create;
+    lwm2m_set_dm_response_submitted_callback(contextP,
+                                             dispatch_capture_dm_response,
+                                             &state);
 
     test_drop_next_response();
     CU_ASSERT_EQUAL(dispatch_block_request(contextP, 700, COAP_POST, "3333", LWM2M_CONTENT_TLV,
@@ -1205,6 +1222,11 @@ static void test_packet_replays_create_location_path(void) {
                     COAP_IGNORE)
     CU_ASSERT_EQUAL(state.createCalls, 1)
     CU_ASSERT_PTR_NULL(locationPath)
+    CU_ASSERT_EQUAL(state.dmResponseCalls, 1U)
+    CU_ASSERT_EQUAL(state.dmResponse.operation, LWM2M_DM_OPERATION_CREATE)
+    CU_ASSERT_TRUE(state.dmResponse.hasCreatedUri)
+    CU_ASSERT_EQUAL(state.dmResponse.createdUri.objectId, 3333U)
+    CU_ASSERT_EQUAL(state.dmResponse.createdUri.instanceId, 0U)
     dispatch_assert_metadata(&state, 1U, DEFAULT_TOKEN, sizeof(DEFAULT_TOKEN), LWM2M_CONTENT_TLV, 700U);
     dispatch_assert_request_inactive(contextP);
 
@@ -1213,6 +1235,7 @@ static void test_packet_replays_create_location_path(void) {
                                            tlv, sizeof(tlv), &locationPath, true),
                     COAP_201_CREATED)
     CU_ASSERT_EQUAL(state.createCalls, 1)
+    CU_ASSERT_EQUAL(state.dmResponseCalls, 1U)
     CU_ASSERT_PTR_NOT_NULL_FATAL(locationPath)
     CU_ASSERT_STRING_EQUAL(locationPath, "/3333/0")
     lwm2m_free(locationPath);

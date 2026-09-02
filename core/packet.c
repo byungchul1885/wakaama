@@ -141,10 +141,54 @@ void lwm2m_set_dm_response_submitted_callback(
     contextP->dmResponseSubmittedUserData = userData;
 }
 
+static lwm2m_dm_operation_t prv_dm_operation(const coap_packet_t *requestP,
+                                             const lwm2m_uri_t *uriP)
+{
+    if (requestP == NULL || uriP == NULL)
+    {
+        return LWM2M_DM_OPERATION_UNKNOWN;
+    }
+
+    switch (requestP->code)
+    {
+    case COAP_GET:
+        if (IS_OPTION(requestP, COAP_OPTION_OBSERVE))
+        {
+            return requestP->observe == 1U
+                       ? LWM2M_DM_OPERATION_OBSERVE_CANCEL
+                       : LWM2M_DM_OPERATION_OBSERVE;
+        }
+        if (IS_OPTION(requestP, COAP_OPTION_ACCEPT) &&
+            requestP->accept_num == 1U &&
+            requestP->accept[0] == APPLICATION_LINK_FORMAT)
+        {
+            return LWM2M_DM_OPERATION_DISCOVER;
+        }
+        return LWM2M_DM_OPERATION_READ;
+    case COAP_POST:
+        if (!LWM2M_URI_IS_SET_INSTANCE(uriP))
+        {
+            return LWM2M_DM_OPERATION_CREATE;
+        }
+        return LWM2M_URI_IS_SET_RESOURCE(uriP)
+                   ? LWM2M_DM_OPERATION_EXECUTE
+                   : LWM2M_DM_OPERATION_WRITE;
+    case COAP_PUT:
+        return IS_OPTION(requestP, COAP_OPTION_URI_QUERY)
+                   ? LWM2M_DM_OPERATION_WRITE_ATTRIBUTES
+                   : LWM2M_DM_OPERATION_WRITE;
+    case COAP_DELETE:
+        return LWM2M_DM_OPERATION_DELETE;
+    default:
+        return LWM2M_DM_OPERATION_UNKNOWN;
+    }
+}
+
 static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
                                              void *fromSessionH,
                                              const coap_packet_t *requestP,
                                              const coap_packet_t *responseP,
+                                             uint16_t requestMessageId,
                                              uint8_t sendResult)
 {
     lwm2m_dm_response_submission_t submission;
@@ -167,12 +211,13 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
     {
         return;
     }
+    submission.operation = prv_dm_operation(requestP, &submission.uri);
     submission.requestCode = requestP->code;
     submission.responseCode = responseP->code;
     submission.sendResult = sendResult;
     submission.serverShortId = serverP->shortID;
     submission.sessionGeneration = serverP->sessionGeneration;
-    submission.requestMessageId = requestP->mid;
+    submission.requestMessageId = requestMessageId;
     submission.tokenLength = requestP->token_len;
     memset(submission.token, 0, sizeof(submission.token));
     if (submission.tokenLength > 0U)
@@ -917,11 +962,17 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 
                 coap_error_code = message_send(contextP, response, fromSessionH);
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
-                prv_notify_dm_response_submitted(contextP,
-                                                 fromSessionH,
-                                                 message,
-                                                 response,
-                                                 coap_error_code);
+                if (!block1Replay &&
+                    (!IS_OPTION(message, COAP_OPTION_BLOCK1) ||
+                     response->code != COAP_231_CONTINUE))
+                {
+                    prv_notify_dm_response_submitted(contextP,
+                                                     fromSessionH,
+                                                     message,
+                                                     response,
+                                                     requestExchangeMid,
+                                                     coap_error_code);
+                }
 #endif
 
                 lwm2m_free(payload);
@@ -938,11 +989,17 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 {
                     coap_error_code = message_send(contextP, response, fromSessionH);
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
-                    prv_notify_dm_response_submitted(contextP,
-                                                     fromSessionH,
-                                                     message,
-                                                     response,
-                                                     coap_error_code);
+                    if (!block1Replay &&
+                        (!IS_OPTION(message, COAP_OPTION_BLOCK1) ||
+                         response->code != COAP_231_CONTINUE))
+                    {
+                        prv_notify_dm_response_submitted(contextP,
+                                                         fromSessionH,
+                                                         message,
+                                                         response,
+                                                         requestExchangeMid,
+                                                         coap_error_code);
+                    }
 #endif
                 }
             }

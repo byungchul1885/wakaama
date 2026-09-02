@@ -866,9 +866,24 @@ typedef bool (*lwm2m_registration_object_filter_t)(lwm2m_context_t *contextP,
                                                    void *userData);
 
 #ifndef LWM2M_VERSION_1_0
+typedef enum
+{
+    LWM2M_DM_OPERATION_UNKNOWN = 0,
+    LWM2M_DM_OPERATION_READ,
+    LWM2M_DM_OPERATION_DISCOVER,
+    LWM2M_DM_OPERATION_OBSERVE,
+    LWM2M_DM_OPERATION_OBSERVE_CANCEL,
+    LWM2M_DM_OPERATION_WRITE,
+    LWM2M_DM_OPERATION_WRITE_ATTRIBUTES,
+    LWM2M_DM_OPERATION_EXECUTE,
+    LWM2M_DM_OPERATION_CREATE,
+    LWM2M_DM_OPERATION_DELETE
+} lwm2m_dm_operation_t;
+
 typedef struct
 {
     lwm2m_uri_t uri;
+    lwm2m_dm_operation_t operation;
     uint8_t requestCode;
     uint8_t responseCode;
     uint8_t sendResult;

@@ -132,7 +132,7 @@ static uint8_t prv_receive_block2_sequence(lwm2m_block_data_t **blk,
 }
 
 static void test_block2_receive_larger_than_message_size_when_configured(void) {
-#if LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE > LWM2M_COAP_MAX_MESSAGE_SIZE
+#if LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE > LWM2M_COAP_MAX_MESSAGE_SIZE
     lwm2m_block_data_t *blk = NULL;
     uint8_t *resultBuffer = NULL;
     size_t resultLen = 0;
@@ -148,7 +148,7 @@ static void test_block2_receive_larger_than_message_size_when_configured(void) {
 
     free_block_data(blk);
 #else
-    CU_ASSERT_EQUAL((size_t)LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE, (size_t)LWM2M_COAP_MAX_MESSAGE_SIZE)
+    CU_ASSERT_EQUAL((size_t)LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE, (size_t)LWM2M_COAP_MAX_MESSAGE_SIZE)
 #endif
 }
 
@@ -158,7 +158,7 @@ static void test_block2_rejects_block_transfer_size_limit(void) {
     size_t resultLen = 0;
     const uint16_t MID = 1236;
     const uint16_t blockSize = 1024;
-    const size_t totalLength = (size_t)LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE + 1U;
+    const size_t totalLength = (size_t)LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE + 1U;
     uint8_t status;
 
     status = prv_receive_block2_sequence(&blk, MID, totalLength, blockSize, &resultBuffer, &resultLen);

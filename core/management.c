@@ -552,7 +552,7 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
     // TODO: check ACL
 
 #ifndef LWM2M_VERSION_1_0
-    if (message->code == COAP_POST || message->code == COAP_PUT || message->code == COAP_DELETE)
+    if (message->code >= COAP_GET && message->code <= COAP_DELETE)
     {
         result = (uint8_t)prv_beginDmRequestScope(contextP,
                                                   serverP,

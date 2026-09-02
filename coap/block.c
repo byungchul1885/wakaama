@@ -50,11 +50,15 @@
 #ifndef LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE
 #define LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE LWM2M_COAP_MAX_MESSAGE_SIZE
 #endif
+#ifndef LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE
+#define LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE
+#endif
+#ifndef LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE
+#define LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE
+#endif
 
-static bool prv_block_transfer_exceeds_limit(size_t current_size, size_t append_size)
+static bool prv_block_transfer_exceeds_limit(size_t current_size, size_t append_size, size_t limit)
 {
-    const size_t limit = (size_t)LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE;
-
     return current_size > limit || append_size > limit - current_size;
 }
 
@@ -176,6 +180,9 @@ static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block
                                       block_type_t blockType, const uint8_t *buffer, size_t length, uint16_t blockSize,
                                       uint32_t blockNum, bool blockMore, uint8_t **outputBuffer, size_t *outputLength) {
     lwm2m_block_data_t * blockData = find_block_data(*pBlockDataHead, identifier, blockType);
+    const size_t transferLimit = blockType == BLOCK_1
+                                     ? (size_t)LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE
+                                     : (size_t)LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE;
 
     // manage new block transfer
     if (blockNum == 0)
@@ -196,7 +203,7 @@ static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block
             blockData->blockBufferSize = 0;
         }
 
-        if (prv_block_transfer_exceeds_limit(0, length)) {
+        if (prv_block_transfer_exceeds_limit(0, length, transferLimit)) {
             return COAP_413_ENTITY_TOO_LARGE;
         }
 
@@ -236,7 +243,7 @@ static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block
               return COAP_408_REQ_ENTITY_INCOMPLETE;
           }
 
-          if (prv_block_transfer_exceeds_limit(oldSize, length)) {
+          if (prv_block_transfer_exceeds_limit(oldSize, length, transferLimit)) {
               return COAP_413_ENTITY_TOO_LARGE;
           }
           const size_t new_size = oldSize + length;
@@ -359,8 +366,9 @@ static uint8_t prv_block1_accept(lwm2m_block_data_t **blockDataHeadP,
         return prv_block1_reject(blockDataHeadP, blockData, COAP_413_ENTITY_TOO_LARGE);
     }
     offset = (size_t)blockNum * blockSize;
-    if (!rawBlock1 && (offset > (size_t)LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE
-                       || prv_block_transfer_exceeds_limit(offset, length)))
+    if (!rawBlock1 && (offset > (size_t)LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE
+                       || prv_block_transfer_exceeds_limit(
+                           offset, length, (size_t)LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE)))
     {
         return prv_block1_reject(blockDataHeadP, blockData, COAP_413_ENTITY_TOO_LARGE);
     }

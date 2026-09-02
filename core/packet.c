@@ -127,6 +127,65 @@ uint16_t lwm2m_get_coap_block_size(void) { return coap_block_size; }
 
 uint16_t lwm2m_get_coap_message_size(void) { return (uint16_t)LWM2M_COAP_MAX_MESSAGE_SIZE; }
 
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+void lwm2m_set_dm_response_submitted_callback(
+    lwm2m_context_t *contextP,
+    lwm2m_dm_response_submitted_callback_t callback,
+    void *userData)
+{
+    if (contextP == NULL)
+    {
+        return;
+    }
+    contextP->dmResponseSubmittedCallback = callback;
+    contextP->dmResponseSubmittedUserData = userData;
+}
+
+static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
+                                             void *fromSessionH,
+                                             const coap_packet_t *requestP,
+                                             const coap_packet_t *responseP,
+                                             uint8_t sendResult)
+{
+    lwm2m_dm_response_submission_t submission;
+    lwm2m_server_t *serverP;
+
+    if (contextP == NULL || requestP == NULL || responseP == NULL ||
+        contextP->dmResponseSubmittedCallback == NULL ||
+        requestP->token_len > LWM2M_COAP_TOKEN_MAX_LEN ||
+        (requestP->token_len > 0U && requestP->token == NULL))
+    {
+        return;
+    }
+    memset(&submission, 0, sizeof(submission));
+    serverP = utils_findServer(contextP, fromSessionH);
+    if (serverP == NULL ||
+        uri_decode(contextP->altPath,
+                   requestP->uri_path,
+                   requestP->code,
+                   &submission.uri) != LWM2M_REQUEST_TYPE_DM)
+    {
+        return;
+    }
+    submission.requestCode = requestP->code;
+    submission.responseCode = responseP->code;
+    submission.sendResult = sendResult;
+    submission.serverShortId = serverP->shortID;
+    submission.sessionGeneration = serverP->sessionGeneration;
+    submission.requestMessageId = requestP->mid;
+    submission.tokenLength = requestP->token_len;
+    memset(submission.token, 0, sizeof(submission.token));
+    if (submission.tokenLength > 0U)
+    {
+        memcpy(submission.token, requestP->token, submission.tokenLength);
+    }
+    contextP->dmResponseSubmittedCallback(
+        contextP,
+        &submission,
+        contextP->dmResponseSubmittedUserData);
+}
+#endif
+
 static void handle_reset(lwm2m_context_t * contextP,
                          void * fromSessionH,
                          coap_packet_t * message)
@@ -857,6 +916,13 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 }
 
                 coap_error_code = message_send(contextP, response, fromSessionH);
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+                prv_notify_dm_response_submitted(contextP,
+                                                 fromSessionH,
+                                                 message,
+                                                 response,
+                                                 coap_error_code);
+#endif
 
                 lwm2m_free(payload);
                 response->payload = NULL;
@@ -871,6 +937,13 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 if (1 == coap_set_status_code(response, coap_error_code))
                 {
                     coap_error_code = message_send(contextP, response, fromSessionH);
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+                    prv_notify_dm_response_submitted(contextP,
+                                                     fromSessionH,
+                                                     message,
+                                                     response,
+                                                     coap_error_code);
+#endif
                 }
             }
             lwm2m_free(block1Uri);

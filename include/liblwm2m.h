@@ -865,6 +865,27 @@ typedef bool (*lwm2m_registration_object_filter_t)(lwm2m_context_t *contextP,
                                                    const lwm2m_list_t *instanceP,
                                                    void *userData);
 
+#ifndef LWM2M_VERSION_1_0
+typedef struct
+{
+    lwm2m_uri_t uri;
+    uint8_t requestCode;
+    uint8_t responseCode;
+    uint8_t sendResult;
+    uint16_t serverShortId;
+    uint64_t sessionGeneration;
+    uint16_t requestMessageId;
+    uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t tokenLength;
+} lwm2m_dm_response_submission_t;
+
+/* Called synchronously after a Device Management response transport submission. */
+typedef void (*lwm2m_dm_response_submitted_callback_t)(
+    lwm2m_context_t *contextP,
+    const lwm2m_dm_response_submission_t *submissionP,
+    void *userData);
+#endif
+
 #endif
 /*
  * LwM2M Context
@@ -927,6 +948,8 @@ struct _lwm2m_context_
     lwm2m_registration_object_filter_t registrationObjectFilter;
     void *               registrationObjectFilterUserData;
 #ifndef LWM2M_VERSION_1_0
+    lwm2m_dm_response_submitted_callback_t dmResponseSubmittedCallback;
+    void *               dmResponseSubmittedUserData;
     uint8_t              currentRequestToken[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t               currentRequestTokenLen;
     bool                 currentDmRequestActive;
@@ -1011,6 +1034,12 @@ int lwm2m_remove_object(lwm2m_context_t * contextP, uint16_t id);
 void lwm2m_set_registration_object_filter(lwm2m_context_t *contextP,
                                           lwm2m_registration_object_filter_t callback,
                                           void *userData);
+#ifndef LWM2M_VERSION_1_0
+void lwm2m_set_dm_response_submitted_callback(
+    lwm2m_context_t *contextP,
+    lwm2m_dm_response_submitted_callback_t callback,
+    void *userData);
+#endif
 
 // send a registration update to the server specified by the server short identifier
 // or all if the ID is 0.
@@ -1057,8 +1086,8 @@ int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServe
                                   lwm2m_transaction_callback_t callback, void *userData);
 void lwm2m_set_random_callback(lwm2m_context_t *contextP, lwm2m_random_callback_t callback, void *userData);
 size_t lwm2m_get_current_request_token(lwm2m_context_t *contextP, uint8_t *buffer, size_t bufferLen);
-// 이 accessor는 수신 Device Management Object 콜백(Create, Write, Delete,
-// Execute와 각 raw Block1 변형) 안에서만 유효하다. Token과 scalar metadata는
+// 이 accessor는 수신 Device Management Object 콜백(Read, Create, Write,
+// Delete, Execute와 각 raw Block1/Block2 변형) 안에서만 유효하다. Token과 scalar metadata는
 // 복사하며 peer session pointer를 공개하지 않는다. 길이가 0인 Token도 정상이다.
 // messageId는 일반 요청의 MID이고 Block1에서는 논리 교환의 첫 블록 MID이다.
 // serverShortId와 sessionGeneration은 dispatch 직전 snapshot이며 콜백에서

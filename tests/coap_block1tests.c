@@ -303,7 +303,7 @@ static void test_block1_unbounded_allocation(void) {
     uint8_t *resultBuffer = NULL;
     size_t resultLen = 0;
 
-    const size_t max_block_transfer_size = LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE;
+    const size_t max_block_transfer_size = LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE;
     const size_t test_block_size = 128;
 
     const size_t total_blocks_num = max_block_transfer_size / test_block_size;

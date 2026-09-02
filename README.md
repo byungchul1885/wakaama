@@ -85,9 +85,16 @@ The following data formats are configurable for Wakaama:
   This option enable each unprocessed block 1 payload to be passed to the application, typically to be stored to a flash memory.
 - WAKAAMA_COAP_MAX_MESSAGE_SIZE Max size of a CoAP packet including headers and options.
 - WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE Max size of an assembled block-wise transfer payload. Defaults to WAKAAMA_COAP_MAX_MESSAGE_SIZE.
+- WAKAAMA_COAP_MAX_BLOCK1_TRANSFER_SIZE Max size of an assembled inbound Block1 payload. Defaults to WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE.
+- WAKAAMA_COAP_MAX_BLOCK2_TRANSFER_SIZE Max size of an assembled Block2 response payload. Defaults to WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE.
 - WAKAAMA_COAP_DEFAULT_BLOCK_SIZE CoAP block size used by CoAP layer when performing block-wise transfers. Possible values: 16, 32, 64, 128, 256, 512 and 1024. Defaults to 1024.
 - WAKAAMA_COAP_DEFAULT_MAX_RETRANSMIT The maximum number of retransmissions used for confirmable messages.
 - WAKAAMA_COAP_SEPARATE_TIMEOUT: The max time to wait between the empty ack and the separate response message.
+
+For LwM2M 1.1 clients, `lwm2m_set_dm_response_submitted_callback()` registers a synchronous hook that runs
+after a Device Management response is submitted to the transport. The callback receives a copied URI,
+request/response code, server and exchange identity, Token, and the transport submission result; it must not
+retain Wakaama-owned pointers.
 
 
 ### Logging

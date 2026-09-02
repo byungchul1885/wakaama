@@ -1045,6 +1045,43 @@ int lwm2m_update_registration(lwm2m_context_t * contextP,
     return result;
 }
 
+void registration_updateObjectInstance(lwm2m_context_t *contextP,
+                                       uint16_t objectId,
+                                       uint16_t instanceId)
+{
+    lwm2m_object_t *objectP;
+    lwm2m_server_t *serverP;
+    lwm2m_list_t instance;
+
+    if (contextP == NULL)
+    {
+        return;
+    }
+
+    objectP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, objectId);
+    if (contextP->registrationObjectFilter == NULL
+     || contextP->serverList == NULL
+     || objectP == NULL)
+    {
+        (void)lwm2m_update_registration(contextP, 0, true);
+        return;
+    }
+
+    memset(&instance, 0, sizeof(instance));
+    instance.id = instanceId;
+    for (serverP = contextP->serverList; serverP != NULL; serverP = serverP->next)
+    {
+        if (contextP->registrationObjectFilter(contextP,
+                                               serverP->shortID,
+                                               objectP,
+                                               &instance,
+                                               contextP->registrationObjectFilterUserData))
+        {
+            (void)lwm2m_update_registration(contextP, serverP->shortID, true);
+        }
+    }
+}
+
 void lwm2m_set_registration_object_filter(lwm2m_context_t *contextP,
                                           lwm2m_registration_object_filter_t callback,
                                           void *userData)

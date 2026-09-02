@@ -238,6 +238,80 @@ static void prv_uri(lwm2m_uri_t *uriP)
     uriP->resourceId = 103;
 }
 
+static bool prv_metering_only_registration_filter(lwm2m_context_t *contextP,
+                                                   uint16_t shortServerId,
+                                                   const lwm2m_object_t *objectP,
+                                                   const lwm2m_list_t *instanceP,
+                                                   void *userData)
+{
+    (void)contextP;
+    (void)userData;
+
+    return shortServerId == 1U
+        && objectP != NULL
+        && objectP->objID == 27345U
+        && instanceP != NULL
+        && instanceP->id == 0U;
+}
+
+static void instance_mutations_update_only_servers_exposing_instance(void)
+{
+    static const uint8_t createPayload[] = {0xC1, 0x00, 0x01};
+    lwm2m_server_t meteringServer;
+    lwm2m_server_t dmsServer;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    execute_state_t state = {0};
+    lwm2m_context_t *contextP = prv_context(&meteringServer, &object, &instance, &state);
+    lwm2m_uri_t uri;
+    coap_packet_t message;
+    coap_packet_t response;
+
+    object.objID = 27345U;
+    memset(&dmsServer, 0, sizeof(dmsServer));
+    dmsServer.shortID = 2U;
+    dmsServer.status = STATE_REGISTERED;
+    meteringServer.next = &dmsServer;
+    lwm2m_set_registration_object_filter(contextP,
+                                         prv_metering_only_registration_filter,
+                                         NULL);
+
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    uri.instanceId = 0U;
+    memset(&message, 0, sizeof(message));
+    memset(&response, 0, sizeof(response));
+    coap_init_message(&message, COAP_TYPE_CON, COAP_DELETE, 0x8000);
+    CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &meteringServer, &message, &response),
+                    COAP_202_DELETED);
+    CU_ASSERT_EQUAL(meteringServer.status, STATE_REG_FULL_UPDATE_NEEDED);
+    CU_ASSERT_EQUAL(dmsServer.status, STATE_REGISTERED);
+    coap_free_header(&message);
+    coap_free_header(&response);
+
+    meteringServer.status = STATE_REGISTERED;
+    object.instanceList = NULL;
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    memset(&message, 0, sizeof(message));
+    memset(&response, 0, sizeof(response));
+    coap_init_message(&message, COAP_TYPE_CON, COAP_POST, 0x8001);
+    coap_set_header_content_type(&message, LWM2M_CONTENT_TLV);
+    coap_set_payload(&message, (uint8_t *)createPayload, sizeof(createPayload));
+    CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &meteringServer, &message, &response),
+                    COAP_201_CREATED);
+    CU_ASSERT_EQUAL(meteringServer.status, STATE_REG_FULL_UPDATE_NEEDED);
+    CU_ASSERT_EQUAL(dmsServer.status, STATE_REGISTERED);
+    coap_free_header(&message);
+    coap_free_header(&response);
+
+    object.instanceList = NULL;
+    meteringServer.next = NULL;
+    contextP->serverList = NULL;
+    contextP->objectList = NULL;
+    lwm2m_close(contextP);
+}
+
 static void prv_assert_request_inactive(lwm2m_context_t *contextP)
 {
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
@@ -1225,6 +1299,8 @@ static void create_releases_serialized_source_after_queue(void)
 #endif
 
 static struct TestTable table[] = {
+    {"filtered registration update after instance mutation",
+     instance_mutations_update_only_servers_exposing_instance},
     {"DM mutation request metadata", mutation_callbacks_expose_borrowed_request_metadata},
     {"DM mutation failure scope restore", mutation_callback_failure_restores_inactive_scope},
     {"nested DM mutation scope restore", nested_mutation_callback_restores_outer_scope},

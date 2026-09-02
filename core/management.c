@@ -734,7 +734,9 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
                     }
                     coap_set_header_location_path(response, location_path);
 
-                    lwm2m_update_registration(contextP, 0, true);
+                    registration_updateObjectInstance(contextP,
+                                                      uriP->objectId,
+                                                      uriP->instanceId);
                 }
             }
             else if (LWM2M_URI_IS_SET_RESOURCE(uriP))
@@ -837,7 +839,9 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
                 result = object_delete(contextP, uriP);
                 if (result == COAP_202_DELETED)
                 {
-                    lwm2m_update_registration(contextP, 0, true);
+                    registration_updateObjectInstance(contextP,
+                                                      uriP->objectId,
+                                                      uriP->instanceId);
                 }
             }
         }

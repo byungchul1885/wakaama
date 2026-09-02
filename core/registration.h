@@ -27,5 +27,11 @@ void registration_freeClient(lwm2m_context_t *contextP, lwm2m_client_t *clientP)
 uint8_t registration_start(lwm2m_context_t *contextP, bool restartFailed);
 void registration_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeoutP);
 lwm2m_status_t registration_getStatus(lwm2m_context_t *contextP);
+#ifdef LWM2M_CLIENT_MODE
+/* 등록 필터에 해당 인스턴스가 노출되는 서버만 전체 객체 목록 갱신 대상으로 표시한다. */
+void registration_updateObjectInstance(lwm2m_context_t *contextP,
+                                       uint16_t objectId,
+                                       uint16_t instanceId);
+#endif
 
 #endif /* WAKAAMA_REGISTRATION_H */

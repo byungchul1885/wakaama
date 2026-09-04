@@ -188,6 +188,7 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
                                              void *fromSessionH,
                                              const coap_packet_t *requestP,
                                              const coap_packet_t *responseP,
+                                             const char *createdLocationPath,
                                              uint16_t requestMessageId,
                                              uint8_t sendResult)
 {
@@ -215,17 +216,20 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
     submission.operation = prv_dm_operation(requestP, &submission.uri);
     if (submission.operation == LWM2M_DM_OPERATION_CREATE &&
         responseP->code == COAP_201_CREATED &&
-        IS_OPTION(responseP, COAP_OPTION_LOCATION_PATH) &&
-        uri_decode(NULL,
-                   responseP->location_path,
-                   COAP_POST,
-                   &submission.createdUri) == LWM2M_REQUEST_TYPE_DM &&
-        LWM2M_URI_IS_SET_OBJECT(&submission.createdUri) &&
-        LWM2M_URI_IS_SET_INSTANCE(&submission.createdUri) &&
-        !LWM2M_URI_IS_SET_RESOURCE(&submission.createdUri) &&
-        submission.createdUri.objectId == submission.uri.objectId)
+        createdLocationPath != NULL)
     {
-        submission.hasCreatedUri = true;
+        int parsed = lwm2m_stringToUri(createdLocationPath,
+                                       strlen(createdLocationPath),
+                                       &submission.createdUri);
+
+        if (parsed > 0 &&
+            LWM2M_URI_IS_SET_OBJECT(&submission.createdUri) &&
+            LWM2M_URI_IS_SET_INSTANCE(&submission.createdUri) &&
+            !LWM2M_URI_IS_SET_RESOURCE(&submission.createdUri) &&
+            submission.createdUri.objectId == submission.uri.objectId)
+        {
+            submission.hasCreatedUri = true;
+        }
     }
     submission.requestCode = requestP->code;
     submission.responseCode = responseP->code;
@@ -975,6 +979,15 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     coap_set_payload(response, response->payload, lwm2m_get_coap_block_size());
                 }
 
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+                char *createdLocationPath = NULL;
+
+                if (response->code == COAP_201_CREATED &&
+                    IS_OPTION(response, COAP_OPTION_LOCATION_PATH))
+                {
+                    createdLocationPath = coap_get_multi_option_as_path_string(response->location_path);
+                }
+#endif
                 coap_error_code = message_send(contextP, response, fromSessionH);
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
                 if (!block1Replay &&
@@ -985,9 +998,11 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                                                      fromSessionH,
                                                      message,
                                                      response,
+                                                     createdLocationPath,
                                                      requestExchangeMid,
                                                      coap_error_code);
                 }
+                lwm2m_free(createdLocationPath);
 #endif
 
                 lwm2m_free(payload);
@@ -1012,6 +1027,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                                                          fromSessionH,
                                                          message,
                                                          response,
+                                                         NULL,
                                                          requestExchangeMid,
                                                          coap_error_code);
                     }

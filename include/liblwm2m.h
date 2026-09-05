@@ -509,6 +509,13 @@ typedef enum
 typedef uint8_t (*lwm2m_read_callback_t) (lwm2m_context_t * contextP, uint16_t instanceId, int * numDataP, lwm2m_data_t ** dataArrayP, lwm2m_object_t * objectP);
 typedef uint8_t (*lwm2m_discover_callback_t) (lwm2m_context_t * contextP, uint16_t instanceId, int * numDataP, lwm2m_data_t ** dataArrayP, lwm2m_object_t * objectP);
 typedef uint8_t (*lwm2m_write_callback_t) (lwm2m_context_t * contextP, uint16_t instanceId, int numData, lwm2m_data_t * dataArray, lwm2m_object_t * objectP, lwm2m_write_type_t writeType);
+#ifndef LWM2M_VERSION_1_0
+/* 단일 객체의 모든 IID를 원자적으로 갱신한다. 오류 시 어떤 입력도 변경하면 안 된다.
+ * instanceArray와 자식은 호출 중에만 빌려 쓰며 core가 해제한다. 권한은 callback이 검사한다. */
+typedef uint8_t (*lwm2m_write_composite_callback_t)(lwm2m_context_t *contextP, size_t count,
+                                                   const lwm2m_data_t *instanceArray,
+                                                   lwm2m_object_t *objectP);
+#endif
 typedef uint8_t (*lwm2m_execute_callback_t) (lwm2m_context_t * contextP, uint16_t instanceId, uint16_t resourceId, uint8_t * buffer, int length, lwm2m_object_t * objectP);
 typedef uint8_t (*lwm2m_create_callback_t) (lwm2m_context_t * contextP, uint16_t instanceId, int numData, lwm2m_data_t * dataArray, lwm2m_object_t * objectP);
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
@@ -550,6 +557,9 @@ struct _lwm2m_object_t
     lwm2m_discover_callback_t discoverFunc;
     void * userData;
     uint32_t flags;
+#ifndef LWM2M_VERSION_1_0
+    lwm2m_write_composite_callback_t writeCompositeFunc;
+#endif
 };
 
 /*

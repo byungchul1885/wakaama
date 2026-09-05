@@ -1298,7 +1298,65 @@ static void create_releases_serialized_source_after_queue(void)
 }
 #endif
 
+static uint8_t prv_write_composite(lwm2m_context_t *contextP, size_t count,
+                                    const lwm2m_data_t *instances, lwm2m_object_t *objectP)
+{
+    execute_state_t *state = objectP->userData;
+    CU_ASSERT_EQUAL(count, 2U);
+    CU_ASSERT_EQUAL(instances[0].type, LWM2M_TYPE_OBJECT_INSTANCE);
+    CU_ASSERT_EQUAL(instances[0].id, 0U);
+    CU_ASSERT_EQUAL(instances[1].id, 1U);
+    state->writeCalls++;
+    prv_capture_request(contextP, state);
+    return state->writeResult;
+}
+
+static void write_composite_dispatches_one_atomic_owner(void)
+{
+    static const char payload[] = "[{\"n\":\"/27341/0/0\",\"v\":1},{\"n\":\"/27341/1/0\",\"v\":2}]";
+    static const char mixed[] = "[{\"n\":\"/27341/0/0\",\"v\":1},{\"n\":\"/3/0/0\",\"v\":2}]";
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    execute_state_t state = {0};
+    lwm2m_context_t *ctx = prv_context(&server, &object, &instance, &state);
+    lwm2m_uri_t uri;
+    coap_packet_t message = {0}, response = {0};
+    LWM2M_URI_RESET(&uri);
+    object.writeCompositeFunc = prv_write_composite;
+    state.writeResult = COAP_204_CHANGED;
+    coap_init_message(&message, COAP_TYPE_CON, COAP_IPATCH, 900U);
+    coap_set_header_content_type(&message, LWM2M_CONTENT_SENML_JSON);
+    coap_set_payload(&message, (uint8_t *)payload, strlen(payload));
+    CU_ASSERT_EQUAL(dm_handleRequest(ctx, &uri, &server, &message, &response), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(state.writeCalls, 1U);
+    CU_ASSERT_EQUAL(state.identityResult, NO_ERROR);
+    CU_ASSERT_EQUAL(state.messageId, 900U);
+    CU_ASSERT_TRUE(state.hasContentFormat);
+    CU_ASSERT_FALSE(ctx->currentDmRequestActive);
+
+    coap_set_payload(&message, (uint8_t *)mixed, strlen(mixed));
+    CU_ASSERT_EQUAL(dm_handleRequest(ctx, &uri, &server, &message, &response), COAP_405_METHOD_NOT_ALLOWED);
+    CU_ASSERT_EQUAL(state.writeCalls, 1U);
+    coap_set_payload(&message, (uint8_t *)payload, strlen(payload));
+    object.writeCompositeFunc = NULL;
+    CU_ASSERT_EQUAL(dm_handleRequest(ctx, &uri, &server, &message, &response), COAP_405_METHOD_NOT_ALLOWED);
+    object.writeCompositeFunc = prv_write_composite;
+    uri.objectId = object.objID;
+    CU_ASSERT_EQUAL(dm_handleRequest(ctx, &uri, &server, &message, &response), COAP_400_BAD_REQUEST);
+    LWM2M_URI_RESET(&uri);
+    coap_set_header_content_type(&message, LWM2M_CONTENT_TLV);
+    CU_ASSERT_EQUAL(dm_handleRequest(ctx, &uri, &server, &message, &response), COAP_415_UNSUPPORTED_CONTENT_FORMAT);
+    CU_ASSERT_EQUAL(state.writeCalls, 1U);
+    coap_free_header(&message);
+    coap_free_header(&response);
+    ctx->serverList = NULL;
+    ctx->objectList = NULL;
+    lwm2m_close(ctx);
+}
+
 static struct TestTable table[] = {
+    {"Write Composite atomic owner dispatch", write_composite_dispatches_one_atomic_owner},
     {"filtered registration update after instance mutation",
      instance_mutations_update_only_servers_exposing_instance},
     {"DM mutation request metadata", mutation_callbacks_expose_borrowed_request_metadata},

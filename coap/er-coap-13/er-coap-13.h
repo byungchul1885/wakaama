@@ -103,7 +103,8 @@ typedef enum {
   COAP_GET = 1,
   COAP_POST,
   COAP_PUT,
-  COAP_DELETE
+  COAP_DELETE,
+  COAP_IPATCH = 7
 } coap_method_t;
 
 #define COAP_EMPTY_MESSAGE_CODE 0x00

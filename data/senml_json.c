@@ -72,12 +72,7 @@
         if (I == L) goto error;         \
     }
 
-typedef struct
-{
-    uint16_t        ids[4];
-    lwm2m_data_t    value; /* Any buffer will be within the parsed data */
-    time_t          time;
-} _record_t;
+typedef senml_record_t _record_t;
 
 static int prv_parseItem(const uint8_t * buffer,
                          size_t bufferLen,
@@ -595,10 +590,24 @@ error:
     return -1;
 }
 
-int senml_json_parse(const lwm2m_uri_t * uriP,
+static int prv_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen,
+                      lwm2m_data_t **dataP, bool composite);
+
+int senml_json_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen,
+                      lwm2m_data_t **dataP)
+{
+    return prv_parse(uriP, buffer, bufferLen, dataP, false);
+}
+
+int senml_json_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP)
+{
+    return prv_parse(NULL, buffer, length, dataP, true);
+}
+
+static int prv_parse(const lwm2m_uri_t * uriP,
                      const uint8_t * buffer,
                      size_t bufferLen,
-                     lwm2m_data_t ** dataP)
+                     lwm2m_data_t ** dataP, bool composite)
 {
     size_t index;
     int count = 0;
@@ -660,6 +669,8 @@ int senml_json_parse(const lwm2m_uri_t * uriP,
     }
 
     if (buffer[index] != JSON_FOOTER) goto error;
+    if (composite && (index + 1 + json_skipSpace(buffer + index + 1, bufferLen - index - 1) != bufferLen ||
+                      !senml_validate_write_records(recordArray, count))) goto error;
 
     lwm2m_data_t * resultP;
     int size;

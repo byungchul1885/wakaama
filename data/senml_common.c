@@ -17,8 +17,39 @@
  *******************************************************************************/
 
 #include "internals.h"
+#include <stdlib.h>
 
 #if defined(LWM2M_SUPPORT_JSON) || defined(LWM2M_SUPPORT_SENML_JSON) || defined(LWM2M_SUPPORT_SENML_CBOR)
+
+static int prv_compareWriteRecord(const void *left, const void *right)
+{
+    const senml_record_t *a = left;
+    const senml_record_t *b = right;
+    int i;
+    for (i = 0; i < 4; ++i)
+        if (a->ids[i] != b->ids[i]) return a->ids[i] < b->ids[i] ? -1 : 1;
+    return 0;
+}
+
+bool senml_validate_write_records(senml_record_t *records, int count)
+{
+    int i;
+    if (records == NULL || count <= 0) return false;
+    qsort(records, count, sizeof(*records), prv_compareWriteRecord);
+    for (i = 0; i < count; ++i)
+    {
+        const senml_record_t *r = records + i;
+        if (r->ids[0] == LWM2M_MAX_ID || r->ids[1] == LWM2M_MAX_ID ||
+            r->ids[2] == LWM2M_MAX_ID || r->value.type == LWM2M_TYPE_UNDEFINED)
+            return false;
+        if (i > 0 && r->ids[0] == r[-1].ids[0] && r->ids[1] == r[-1].ids[1] &&
+            r->ids[2] == r[-1].ids[2] &&
+            (r->ids[3] == r[-1].ids[3] || r->ids[3] == LWM2M_MAX_ID ||
+             r[-1].ids[3] == LWM2M_MAX_ID))
+            return false;
+    }
+    return true;
+}
 
 static int prv_convertRecord(const senml_record_t *recordArray, int count, lwm2m_data_t **dataP,
                              senml_convertValue convertValue) {

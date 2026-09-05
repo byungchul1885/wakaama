@@ -177,6 +177,8 @@ static lwm2m_dm_operation_t prv_dm_operation(const coap_packet_t *requestP,
         return IS_OPTION(requestP, COAP_OPTION_URI_QUERY)
                    ? LWM2M_DM_OPERATION_WRITE_ATTRIBUTES
                    : LWM2M_DM_OPERATION_WRITE;
+    case COAP_IPATCH:
+        return LWM2M_DM_OPERATION_WRITE;
     case COAP_DELETE:
         return LWM2M_DM_OPERATION_DELETE;
     default:
@@ -706,6 +708,26 @@ static void prv_clear_location_path(coap_packet_t *response)
  * Erbium is Copyright (c) 2013, Institute for Pervasive Computing, ETH Zurich
  * All rights reserved.
  */
+static char *prv_block1_key(coap_packet_t *message)
+{
+    char *uri = coap_get_packet_uri_as_string(message);
+#ifndef LWM2M_VERSION_1_0
+    if (uri != NULL && message->code == COAP_IPATCH)
+    {
+        /* 기존 Write와 Composite 또는 서로 다른 형식의 block을 합치지 않는다. */
+        size_t capacity = strlen(uri) + 32U;
+        char *key = lwm2m_malloc(capacity);
+        if (key != NULL)
+            snprintf(key, capacity, "iPATCH:%u:%u:%s",
+                     IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) ? 1U : 0U,
+                     (unsigned int)message->content_type, uri);
+        lwm2m_free(uri);
+        return key;
+    }
+#endif
+    return uri;
+}
+
 void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t length, void *fromSessionH) {
     uint8_t coap_error_code = NO_ERROR;
     static coap_packet_t message[1];
@@ -722,7 +744,11 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     message->type, message->token_len, message->code >> 5, message->code & 0x1F, message->mid,
                     message->content_type);
         LOG_ARG_DBG("Payload: %.*s", (int)message->payload_len, STR_NULL2EMPTY(message->payload));
-        if (message->code >= COAP_GET && message->code <= COAP_DELETE)
+        if ((message->code >= COAP_GET && message->code <= COAP_DELETE)
+#ifndef LWM2M_VERSION_1_0
+            || message->code == COAP_IPATCH
+#endif
+           )
         {
             uint32_t block_num = 0;
             uint16_t block_size = lwm2m_get_coap_block_size();
@@ -811,7 +837,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     LOG_ARG_DBG("Blockwise: block1 request NUM %u (SZX %u/ SZX Max%u) MORE %u", block1_num, block1_size,
                                 lwm2m_get_coap_block_size(), block1_more);
 
-                    block1Uri = coap_get_packet_uri_as_string(message);
+                    block1Uri = prv_block1_key(message);
                     if (block1Uri == NULL){
                         coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
                     } else {

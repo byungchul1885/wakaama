@@ -551,7 +551,7 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
     // TODO: check ACL
 
 #ifndef LWM2M_VERSION_1_0
-    if (message->code >= COAP_GET && message->code <= COAP_DELETE)
+    if ((message->code >= COAP_GET && message->code <= COAP_DELETE) || message->code == COAP_IPATCH)
     {
         result = (uint8_t)prv_beginDmRequestScope(contextP,
                                                   serverP,
@@ -826,6 +826,18 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
             }
         }
         break;
+
+#ifndef LWM2M_VERSION_1_0
+    case COAP_IPATCH:
+        if (LWM2M_URI_IS_SET_OBJECT(uriP) || IS_OPTION(message, COAP_OPTION_URI_QUERY) ||
+            IS_OPTION(message, COAP_OPTION_OBSERVE))
+            result = COAP_400_BAD_REQUEST;
+        else if (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE))
+            result = COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+        else
+            result = object_writeComposite(contextP, format, message->payload, message->payload_len);
+        break;
+#endif
 
     case COAP_DELETE:
         {

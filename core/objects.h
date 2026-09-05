@@ -57,6 +57,8 @@ int object_getServers(lwm2m_context_t *contextP, bool checkOnly);
 uint8_t object_createInstance(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_data_t *dataP);
 uint8_t object_writeInstance(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_data_t *dataP);
 #ifndef LWM2M_VERSION_1_0
+uint8_t object_writeComposite(lwm2m_context_t *contextP, lwm2m_media_type_t format,
+                              const uint8_t *buffer, size_t length);
 uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, size_t numUris, int *sizeP,
                                  lwm2m_data_t **dataP);
 #endif

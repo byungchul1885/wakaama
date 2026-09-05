@@ -285,6 +285,7 @@ int json_serialize(lwm2m_uri_t * uriP, int size, lwm2m_data_t * tlvP, uint8_t **
 // defined in senml_json.c
 #ifdef LWM2M_SUPPORT_SENML_JSON
 int senml_json_parse(const lwm2m_uri_t * uriP, const uint8_t * buffer, size_t bufferLen, lwm2m_data_t ** dataP);
+int senml_json_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP);
 int senml_json_serialize(const lwm2m_uri_t * uriP, int size, const lwm2m_data_t * tlvP, uint8_t ** bufferP);
 #endif
 
@@ -301,6 +302,7 @@ int cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *dataP,
 
 // defined in senml_cbor.c
 int senml_cbor_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen, lwm2m_data_t **dataP);
+int senml_cbor_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP);
 int senml_cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP);
 #endif
 
@@ -308,6 +310,8 @@ int senml_cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *
 #if defined(LWM2M_SUPPORT_JSON) || defined(LWM2M_SUPPORT_SENML_JSON) || defined(LWM2M_SUPPORT_SENML_CBOR)
 int senml_convert_records(const lwm2m_uri_t *uriP, senml_record_t *recordArray, int numRecords,
                           senml_convertValue convertValue, lwm2m_data_t **dataP);
+/* 해석된 경로를 정렬하며 중복/상하위 충돌/값 없는 Write를 거절한다. */
+bool senml_validate_write_records(senml_record_t *records, int count);
 lwm2m_data_t *senml_extendData(lwm2m_data_t *parentP, lwm2m_data_type_t type, uint16_t id);
 int senml_dataStrip(int size, lwm2m_data_t *dataP, lwm2m_data_t **resultP);
 lwm2m_data_t *senml_findDataItem(lwm2m_data_t *listP, size_t count, uint16_t id);

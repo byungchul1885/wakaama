@@ -419,6 +419,48 @@ static void prv_updateServerInfo(lwm2m_context_t * contextP, lwm2m_object_t *ser
     }
 }
 
+#ifndef LWM2M_VERSION_1_0
+uint8_t object_writeComposite(lwm2m_context_t *contextP, lwm2m_media_type_t format,
+                              const uint8_t *buffer, size_t length)
+{
+    lwm2m_data_t *dataP = NULL;
+    lwm2m_object_t *targetP;
+    int count;
+    uint8_t result;
+
+    if (buffer == NULL || length == 0) return COAP_400_BAD_REQUEST;
+    switch (format)
+    {
+#ifdef LWM2M_SUPPORT_SENML_JSON
+    case LWM2M_CONTENT_SENML_JSON:
+        count = senml_json_parse_composite(buffer, length, &dataP);
+        break;
+#endif
+#ifdef LWM2M_SUPPORT_SENML_CBOR
+    case LWM2M_CONTENT_SENML_CBOR:
+        count = senml_cbor_parse_composite(buffer, length, &dataP);
+        break;
+#endif
+    default:
+        return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+    }
+    if (count <= 0) return COAP_400_BAD_REQUEST;
+    /* 서로 다른 owner를 순차 호출하면 원자성을 보장할 수 없다. 변경 전에 거절한다. */
+    result = COAP_405_METHOD_NOT_ALLOWED;
+    if (count == 1 && dataP->type == LWM2M_TYPE_OBJECT)
+    {
+        targetP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, dataP->id);
+        if (dataP->id == LWM2M_SECURITY_OBJECT_ID)
+            result = COAP_401_UNAUTHORIZED;
+        else if (targetP != NULL && targetP->writeCompositeFunc != NULL)
+            result = targetP->writeCompositeFunc(contextP, dataP->value.asChildren.count,
+                                                  dataP->value.asChildren.array, targetP);
+    }
+    lwm2m_data_free(count, dataP);
+    return result;
+}
+#endif
+
 uint8_t object_write(lwm2m_context_t * contextP,
                      lwm2m_uri_t * uriP,
                      lwm2m_media_type_t format,

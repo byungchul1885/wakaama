@@ -394,7 +394,19 @@ static bool prv_convertValue(const senml_record_t *recordP, lwm2m_data_t *target
     return true;
 }
 
+static int prv_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen,
+                      lwm2m_data_t **dataP, bool composite);
+
 int senml_cbor_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen, lwm2m_data_t **dataP) {
+    return prv_parse(uriP, buffer, bufferLen, dataP, false);
+}
+
+int senml_cbor_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP) {
+    return prv_parse(NULL, buffer, length, dataP, true);
+}
+
+static int prv_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen,
+                      lwm2m_data_t **dataP, bool composite) {
     int count;
     senml_record_t *recordArray;
     int recordIndex;
@@ -436,6 +448,9 @@ int senml_cbor_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t buff
         offset += res;
     }
     if (offset != bufferLen)
+        goto error;
+
+    if (composite && !senml_validate_write_records(recordArray, count))
         goto error;
 
     count = senml_convert_records(uriP, recordArray, count, prv_convertValue, dataP);

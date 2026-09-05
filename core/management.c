@@ -331,7 +331,6 @@ static int prv_beginDmRequestScope(lwm2m_context_t *contextP,
 {
     if (contextP == NULL || serverP == NULL || message == NULL || scopeP == NULL
         || message->token_len > LWM2M_COAP_TOKEN_MAX_LEN
-        || (message->token_len > 0U && message->token == NULL)
         || contextP->currentRequestTokenLen > LWM2M_COAP_TOKEN_MAX_LEN)
     {
         return COAP_400_BAD_REQUEST;

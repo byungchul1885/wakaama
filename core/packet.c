@@ -197,8 +197,7 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
 
     if (contextP == NULL || requestP == NULL || responseP == NULL ||
         contextP->dmResponseSubmittedCallback == NULL ||
-        requestP->token_len > LWM2M_COAP_TOKEN_MAX_LEN ||
-        (requestP->token_len > 0U && requestP->token == NULL))
+        requestP->token_len > LWM2M_COAP_TOKEN_MAX_LEN)
     {
         return;
     }

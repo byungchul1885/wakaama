@@ -539,6 +539,10 @@ typedef uint8_t (*lwm2m_delete_callback_t) (lwm2m_context_t * contextP, uint16_t
 /* 모든 Block1 mutation의 첫 MID를 영속 replay 원장에 연결하는 객체만 사용한다.
  * 완료 뒤 같은 Token/새 MID의 Block 0을 새 교환으로 application에 전달한다. */
 #define LWM2M_OBJECT_FLAG_DURABLE_BLOCK1_EXCHANGE (1UL << 1)
+/* 순수 readFunc를 제공하는 객체의 일반 GET도 bounded 불변 응답과 전체 제출 증거를
+ * 사용한다. rawBlock2ReadFunc보다 우선하며 Observe/Discover/Send에는 적용하지 않는다.
+ * 응답 bytes는 core가 소유하고 application은 snapshot ID만 보관한다. */
+#define LWM2M_OBJECT_FLAG_SNAPSHOT_READ (1UL << 2)
 
 struct _lwm2m_object_t
 {
@@ -982,7 +986,8 @@ typedef enum {
     LWM2M_COMPOSITE_READ_SUBMITTED,
     LWM2M_COMPOSITE_READ_RELEASED
 } lwm2m_composite_read_event_t;
-/* snapshotId는 context 수명 안에서 재사용하지 않는다. SUBMITTED는 모든 응답 bytes의
+/* FETCH와 SNAPSHOT_READ 객체의 일반 GET이 같은 snapshot 수명/완료 계약을 사용한다.
+ * snapshotId는 context 수명 안에서 재사용하지 않는다. SUBMITTED는 모든 응답 bytes의
  * transport 제출 성공이며 ACK/서버 처리 완료를 뜻하지 않는다. 중복 통지는 하지 않는다.
  * RELEASED는 protocol snapshot 해제다. SUBMITTED 뒤의 제품 IPC retry는 제품 owner가
  * 독립적으로 보관한다. callback은 context/session/snapshot을 변경하거나 닫지 않는다. */
@@ -990,7 +995,8 @@ typedef void (*lwm2m_composite_read_event_callback_t)(lwm2m_context_t *contextP,
     uint64_t snapshotId, lwm2m_composite_read_event_t event, void *userData);
 void lwm2m_set_composite_read_event_callback(lwm2m_context_t *contextP,
     lwm2m_composite_read_event_callback_t callback, void *userData);
-/* 실제 FETCH의 read callback 동안만 nonzero. Send/Notify/일반 Read는 0이다. */
+/* 실제 FETCH 또는 SNAPSHOT_READ GET의 read callback 동안만 nonzero.
+ * Send/Notify/Observe와 opt-in하지 않은 일반 Read는 0이다. */
 uint64_t lwm2m_get_current_composite_read_id(const lwm2m_context_t *contextP);
 #endif
 

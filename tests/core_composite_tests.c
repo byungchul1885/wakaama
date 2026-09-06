@@ -133,6 +133,7 @@ typedef struct {
     int bias;
     int deniedInstance;
     int closeDuringRead;
+    uint64_t readId;
 } read_state_t;
 
 static bool composite_access(lwm2m_context_t *context, uint16_t serverId,
@@ -153,6 +154,7 @@ static uint8_t composite_read(lwm2m_context_t *contextP, uint16_t instanceId,
     int i;
     (void)contextP;
     ++state->calls;
+    state->readId = lwm2m_get_current_composite_read_id(contextP);
     if ((int)instanceId == state->failedInstance) return state->failure;
     if (*countP == 0) {
         *countP = 2;
@@ -700,6 +702,257 @@ static void read_submission_evidence_requires_every_byte(void)
     CU_ASSERT_EQUAL(events.released, 1);
 }
 
+static uint8_t snapshot_get(lwm2m_context_t *context, const char *path, uint8_t token,
+                            uint16_t mid, uint32_t block, uint16_t accept, coap_packet_t *response)
+{
+    coap_packet_t request = {0};
+    lwm2m_uri_t uri;
+    uint8_t result;
+    coap_init_message(&request, COAP_TYPE_CON, COAP_GET, mid);
+    coap_set_header_uri_path(&request, path);
+    coap_set_header_token(&request, &token, 1);
+    if (block != UINT32_MAX) coap_set_header_block2(&request, block, 0, 16);
+    if (accept != 0) coap_set_header_accept(&request, accept);
+    memset(response, 0, sizeof(*response));
+    CU_ASSERT(lwm2m_stringToUri(path, strlen(path), &uri) > 0);
+    result = dm_handleRequest(context, &uri, context->serverList, &request, response);
+    coap_set_status_code(response, result);
+    coap_free_header(&request);
+    return result;
+}
+
+static void snapshot_get_formats_and_scopes(void)
+{
+    const char *paths[] = {"/27343", "/27343/0", "/27343/0/1", "/27343/0/7/9"};
+    const uint16_t formats[] = {0, LWM2M_CONTENT_SENML_JSON, LWM2M_CONTENT_SENML_CBOR};
+    const uint8_t opaque[] = {0, 0xff, 1, 2};
+    size_t i, j;
+    for (i = 0; i < 4; ++i) for (j = 0; j < 3; ++j)
+    {
+        lwm2m_context_t context;
+        lwm2m_server_t server;
+        lwm2m_object_t object;
+        lwm2m_list_t instances[2];
+        read_state_t state;
+        read_events_t events = {0};
+        coap_packet_t response;
+        lwm2m_uri_t uri;
+        lwm2m_data_t *data = NULL, *values;
+        int count;
+        int64_t number = 0;
+        read_fixture(&context, &server, &object, instances, &state);
+        object.flags = LWM2M_OBJECT_FLAG_SNAPSHOT_READ;
+        lwm2m_set_composite_read_event_callback(&context, composite_read_event, &events);
+        CU_ASSERT_EQUAL_FATAL(snapshot_get(&context, paths[i], 1, 1, UINT32_MAX, formats[j], &response), COAP_205_CONTENT);
+        CU_ASSERT_EQUAL(response.content_type, formats[j] != 0 ? formats[j] : LWM2M_CONTENT_SENML_CBOR);
+        CU_ASSERT_EQUAL(state.calls, i == 0 ? 2 : 1);
+        CU_ASSERT(state.readId > 0);
+        CU_ASSERT_EQUAL(events.submitted, 0);
+        CU_ASSERT_EQUAL(events.released, 0);
+        CU_ASSERT_EQUAL(lwm2m_get_current_composite_read_id(&context), 0);
+        CU_ASSERT(lwm2m_stringToUri(paths[i], strlen(paths[i]), &uri) > 0);
+        count = lwm2m_data_parse(&uri, response.payload, response.payload_len,
+                                 (lwm2m_media_type_t)response.content_type, &data);
+        CU_ASSERT_EQUAL_FATAL(count, i < 2 ? 2 : 1);
+        if (i == 0) {
+            CU_ASSERT_EQUAL(data[0].type, LWM2M_TYPE_OBJECT_INSTANCE);
+            CU_ASSERT_EQUAL(data[0].id, 0);
+            CU_ASSERT_EQUAL(data[1].id, 1);
+            CU_ASSERT_EQUAL_FATAL(data[1].value.asChildren.count, 2);
+            CU_ASSERT_TRUE(lwm2m_data_decode_int(data[1].value.asChildren.array, &number));
+            CU_ASSERT_EQUAL(number, 101);
+        }
+        values = i == 0 ? data[0].value.asChildren.array : data;
+        if (i < 2) {
+            CU_ASSERT_EQUAL(values[0].id, 0);
+            CU_ASSERT_TRUE(lwm2m_data_decode_int(values, &number));
+            CU_ASSERT_EQUAL(number, 100);
+            ++values;
+        }
+        if (i < 3) {
+            CU_ASSERT_EQUAL(values->id, 1);
+            CU_ASSERT_EQUAL(values->type, LWM2M_TYPE_OPAQUE);
+            CU_ASSERT_EQUAL_FATAL(values->value.asBuffer.length, sizeof(opaque));
+            CU_ASSERT_EQUAL(memcmp(values->value.asBuffer.buffer, opaque, sizeof(opaque)), 0);
+        } else {
+            // RIID URI로 parse하면 해당 leaf가 직접 반환된다.
+            CU_ASSERT_EQUAL(values->id, 9);
+            CU_ASSERT(values->type == LWM2M_TYPE_INTEGER || values->type == LWM2M_TYPE_UNSIGNED_INTEGER);
+            CU_ASSERT_TRUE(lwm2m_data_decode_int(values, &number));
+            CU_ASSERT_EQUAL(number, 209);
+        }
+        lwm2m_data_free(count, data);
+        lwm2m_free(response.payload);
+        coap_free_header(&response);
+        dm_clearCompositeSnapshots(&context, 0, 0);
+        CU_ASSERT_EQUAL(events.released, 1);
+    }
+}
+
+static void snapshot_get_frozen_bytes_and_submission(void)
+{
+    lwm2m_context_t context;
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instances[2];
+    read_state_t state;
+    read_events_t events = {0};
+    coap_packet_t full, part, request = {0};
+    size_t blocks, block;
+    uint8_t token = 0x79;
+    read_fixture(&context, &server, &object, instances, &state);
+    object.flags = LWM2M_OBJECT_FLAG_SNAPSHOT_READ;
+    CU_ASSERT_EQUAL_FATAL(snapshot_get(&context, "/27343", 2, 2, UINT32_MAX, 0, &full), COAP_205_CONTENT);
+    blocks = (full.payload_len + 15U) / 16U;
+    dm_clearCompositeSnapshots(&context, 0, 0);
+    lwm2m_set_composite_read_event_callback(&context, composite_read_event, &events);
+    CU_ASSERT_EQUAL_FATAL(snapshot_get(&context, "/27343", token, 10, 0, 0, &part), COAP_205_CONTENT);
+    coap_init_message(&request, COAP_TYPE_CON, COAP_GET, 10);
+    coap_set_header_uri_path(&request, "/27343");
+    coap_set_header_token(&request, &token, 1);
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_500_INTERNAL_SERVER_ERROR);
+    CU_ASSERT_EQUAL(events.submitted, 0);
+    lwm2m_free(part.payload);
+    coap_free_header(&part);
+    state.bias = 900;
+    object.instanceList = NULL;
+    for (block = blocks - 1; block > 0; --block) {
+        CU_ASSERT_EQUAL_FATAL(snapshot_get(&context, "/27343", token, (uint16_t)(10 + block),
+                                             (uint32_t)block, 0, &part), COAP_205_CONTENT);
+        CU_ASSERT_EQUAL_FATAL(part.payload_len, MIN(16U, full.payload_len - block * 16U));
+        CU_ASSERT_EQUAL(memcmp(part.payload, full.payload + block * 16U, part.payload_len), 0);
+        CU_ASSERT_EQUAL(memcmp(part.etag, full.etag, sizeof(full.etag)), 0);
+        dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+        CU_ASSERT_EQUAL(events.submitted, 0);
+        lwm2m_free(part.payload);
+        coap_free_header(&part);
+    }
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343/0", token, 20, 1, 0, &part), COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343", token, 20, 1, LWM2M_CONTENT_SENML_JSON, &part), COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343", token, 20, 0, 0, &part), COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_EQUAL(fetch_block(&context, "[{\"n\":\"/27343\"}]", token, 20, 1, &part), COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL_FATAL(snapshot_get(&context, "/27343", token, 10, 0, 0, &part), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(memcmp(part.payload, full.payload, part.payload_len), 0);
+    CU_ASSERT_EQUAL(state.calls, 4);
+    request.code = COAP_FETCH;
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    request.code = COAP_GET;
+    coap_set_header_uri_path(&request, "/27343/0");
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    CU_ASSERT_EQUAL(events.submitted, 0);
+    coap_set_header_uri_path(&request, "/27343");
+    dm_compositeResponseSubmitted(&context, 2, 1, &request, &part, COAP_NO_ERROR);
+    dm_compositeResponseSubmitted(&context, 1, 2, &request, &part, COAP_NO_ERROR);
+    CU_ASSERT_EQUAL(events.submitted, 0);
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    CU_ASSERT_EQUAL(events.submitted, 1);
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    CU_ASSERT_EQUAL(events.submitted, 1);
+    lwm2m_free(part.payload);
+    coap_free_header(&part);
+    coap_free_header(&request);
+    lwm2m_free(full.payload);
+    coap_free_header(&full);
+    dm_clearCompositeSnapshots(&context, 1, 1);
+    CU_ASSERT_EQUAL(events.released, 1);
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343", token, 20, 1, 0, &part), COAP_404_NOT_FOUND);
+}
+
+static void snapshot_get_strict_errors_and_opt_in(void)
+{
+    lwm2m_context_t context;
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instances[2];
+    read_state_t state;
+    read_events_t events = {0};
+    coap_packet_t response, request = {0};
+    lwm2m_uri_t uri;
+    read_fixture(&context, &server, &object, instances, &state);
+    lwm2m_set_composite_read_event_callback(&context, composite_read_event, &events);
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343/0/0", 1, 1, UINT32_MAX, 0, &response), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(state.readId, 0);
+    CU_ASSERT_PTR_NULL(context.compositeSnapshots);
+    lwm2m_free(response.payload);
+    coap_free_header(&response);
+    object.flags = LWM2M_OBJECT_FLAG_SNAPSHOT_READ;
+    state.failedInstance = 0;
+    state.failure = COAP_405_METHOD_NOT_ALLOWED;
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343/0/0", 1, 2, UINT32_MAX, 0, &response), COAP_405_METHOD_NOT_ALLOWED);
+    CU_ASSERT_EQUAL(fetch(&context, "[{\"n\":\"/27343/0/0\"}]", 0, &response), COAP_404_NOT_FOUND);
+    state.failedInstance = -1;
+    state.deniedInstance = 1;
+    state.calls = 0;
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343", 1, 3, UINT32_MAX, 0, &response), COAP_401_UNAUTHORIZED);
+    CU_ASSERT_EQUAL(state.calls, 0);
+    state.deniedInstance = -1;
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343/0/0", 1, 4, UINT32_MAX, 65535, &response), COAP_406_NOT_ACCEPTABLE);
+    CU_ASSERT_PTR_NULL(context.compositeSnapshots);
+    coap_init_message(&request, COAP_TYPE_CON, COAP_GET, 5);
+    coap_set_header_token(&request, (uint8_t *)"o", 1);
+    coap_set_header_observe(&request, 1);
+    CU_ASSERT(lwm2m_stringToUri("/27343/0/0", 10, &uri) > 0);
+    memset(&response, 0, sizeof(response));
+    CU_ASSERT_EQUAL(dm_handleRequest(&context, &uri, &server, &request, &response), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(state.readId, 0);
+    CU_ASSERT_PTR_NULL(context.compositeSnapshots);
+    CU_ASSERT_EQUAL(events.submitted, 0);
+    lwm2m_free(response.payload);
+    coap_free_header(&response);
+    coap_free_header(&request);
+    state.closeDuringRead = 2;
+    CU_ASSERT_EQUAL(snapshot_get(&context, "/27343/0/0", 1, 6, UINT32_MAX, 0, &response), COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_PTR_NULL(context.compositeSnapshots);
+    CU_ASSERT_EQUAL(context.currentCompositeReadId, 0);
+}
+
+#ifdef WAKAAMA_TEST_FAULTS
+static void snapshot_get_every_allocation_failure(void)
+{
+    size_t limit;
+    bool success = false;
+    for (limit = 0; limit < 256; ++limit)
+    {
+        lwm2m_context_t context;
+        lwm2m_server_t server;
+        lwm2m_object_t object;
+        lwm2m_list_t instances[2];
+        read_state_t state;
+        read_events_t events = {0};
+        coap_packet_t response = {0}, request = {0};
+        lwm2m_uri_t uri;
+        uint8_t result;
+        read_fixture(&context, &server, &object, instances, &state);
+        object.flags = LWM2M_OBJECT_FLAG_SNAPSHOT_READ;
+        lwm2m_set_composite_read_event_callback(&context, composite_read_event, &events);
+        CU_ASSERT(lwm2m_stringToUri("/27343", 6, &uri) > 0);
+        coap_init_message(&request, COAP_TYPE_CON, COAP_GET, 1);
+        test_malloc_fail_after(limit);
+        result = dm_handleRequest(&context, &uri, &server, &request, &response);
+        test_malloc_fault_disable();
+        CU_ASSERT(result == COAP_500_INTERNAL_SERVER_ERROR || result == COAP_205_CONTENT);
+        if (result != COAP_205_CONTENT) CU_ASSERT_PTR_NULL(response.payload);
+        CU_ASSERT_EQUAL(context.currentCompositeReadId, 0);
+        CU_ASSERT_EQUAL(events.submitted, 0);
+        lwm2m_free(response.payload);
+        coap_free_header(&response);
+        coap_free_header(&request);
+        dm_clearCompositeSnapshots(&context, 0, 0);
+        CU_ASSERT(events.released <= 1);
+        CU_ASSERT_EQUAL(test_malloc_live_allocations(), 0);
+        if (result == COAP_205_CONTENT) {
+            CU_ASSERT_EQUAL(state.calls, 2);
+            CU_ASSERT(state.readId > 0);
+            CU_ASSERT_EQUAL(events.released, 1);
+            success = true;
+            break;
+        }
+    }
+    CU_ASSERT_TRUE(success);
+    CU_ASSERT(limit > 0);
+}
+#endif
+
 static void codec_large_and_exact_limit(void)
 {
     static uint8_t bytes[LWM2M_SENML_MAX_SERIALIZED_SIZE + 1];
@@ -890,6 +1143,9 @@ static void read_block1_operation_limit(void)
 }
 
 static struct TestTable table[] = {
+    {"Q04 snapshot GET formats and scopes", snapshot_get_formats_and_scopes},
+    {"Q05 snapshot GET bytes and submission", snapshot_get_frozen_bytes_and_submission},
+    {"Q14 snapshot GET errors and opt in", snapshot_get_strict_errors_and_opt_in},
     {"Q11 Block1 operation size limit", read_block1_operation_limit},
     {"Q03 aggregate limit and empty resource", codec_aggregate_and_empty_resources},
     {"Q03 large codec and exact limit", codec_large_and_exact_limit},
@@ -911,6 +1167,7 @@ static struct TestTable table[] = {
     {"Q14 outbound Send merged RIID", send_uses_merged_data_without_read_evidence},
     {"Q05 complete byte submission evidence", read_submission_evidence_requires_every_byte},
 #ifdef WAKAAMA_TEST_FAULTS
+    {"Q12 snapshot GET every allocation failure", snapshot_get_every_allocation_failure},
     {"Q11 fake clock expiration boundary", read_snapshot_clock_boundary},
     {"Q12 every allocation failure", read_every_allocation_failure_is_clean},
 #endif

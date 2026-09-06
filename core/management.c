@@ -546,6 +546,8 @@ struct _lwm2m_composite_snapshot_
     /* 최소 Block 크기 16 byte 단위의 제출 범위. 순서 역전/중복에서도 전체 제출만 인정한다. */
     uint8_t submitted[(COMPOSITE_SNAPSHOT_BYTES_MAX / 16U + 7U) / 8U];
     bool allSubmitted;
+    uint8_t method;
+    lwm2m_uri_t uri;
     uint16_t serverShortId;
     uint64_t generation;
     uint16_t messageId;
@@ -601,9 +603,13 @@ void dm_expireCompositeSnapshots(lwm2m_context_t *contextP, time_t now)
 }
 
 static bool prv_compositeKeyMatches(const lwm2m_composite_snapshot_t *snapshot,
-                                    uint16_t serverId, uint64_t generation, const coap_packet_t *message)
+                                    uint16_t serverId, uint64_t generation, const lwm2m_uri_t *uri,
+                                    const coap_packet_t *message)
 {
     return snapshot->serverShortId == serverId && snapshot->generation == generation &&
+           snapshot->method == message->code &&
+           snapshot->uri.objectId == uri->objectId && snapshot->uri.instanceId == uri->instanceId &&
+           snapshot->uri.resourceId == uri->resourceId && snapshot->uri.resourceInstanceId == uri->resourceInstanceId &&
            snapshot->tokenLength == message->token_len &&
            memcmp(snapshot->token, message->token, snapshot->tokenLength) == 0 &&
            snapshot->requestFormat == (uint16_t)message->content_type &&
@@ -650,7 +656,7 @@ static uint8_t prv_compositeSnapshotReply(lwm2m_context_t *contextP,
 }
 
 static lwm2m_composite_snapshot_t *prv_newCompositeSnapshot(lwm2m_context_t *contextP,
-    uint16_t serverId, uint64_t generation, const coap_packet_t *message, lwm2m_media_type_t format,
+    uint16_t serverId, uint64_t generation, const lwm2m_uri_t *uri, const coap_packet_t *message, lwm2m_media_type_t format,
     uint8_t *buffer, size_t length, time_t now, int dataCount, const lwm2m_data_t *data, uint64_t id)
 {
     lwm2m_composite_snapshot_t *snapshot = lwm2m_malloc(sizeof(*snapshot));
@@ -660,15 +666,29 @@ static lwm2m_composite_snapshot_t *prv_newCompositeSnapshot(lwm2m_context_t *con
     size_t subjectIndex = 0;
     if (snapshot == NULL) return NULL;
     memset(snapshot, 0, sizeof(*snapshot));
-    for (i = 0; i < (size_t)dataCount; ++i)
+    if (message->code == COAP_GET)
+        subjectCount = LWM2M_URI_IS_SET_INSTANCE(uri) ? 1U : (size_t)dataCount;
+    else for (i = 0; i < (size_t)dataCount; ++i)
     {
         if (data[i].value.asChildren.count > COMPOSITE_SNAPSHOT_BYTES_MAX / sizeof(lwm2m_uri_t) - subjectCount)
         { lwm2m_free(snapshot); return NULL; }
         subjectCount += data[i].value.asChildren.count;
     }
+    if (subjectCount == 0 || subjectCount > COMPOSITE_SNAPSHOT_BYTES_MAX / sizeof(*snapshot->subjects))
+    { lwm2m_free(snapshot); return NULL; }
     snapshot->subjects = lwm2m_malloc(subjectCount * sizeof(*snapshot->subjects));
     if (snapshot->subjects == NULL) { lwm2m_free(snapshot); return NULL; }
-    for (i = 0; i < (size_t)dataCount; ++i)
+    if (message->code == COAP_GET)
+    {
+        for (i = 0; i < subjectCount; ++i)
+        {
+            snapshot->subjects[i] = *uri;
+            if (!LWM2M_URI_IS_SET_INSTANCE(uri)) snapshot->subjects[i].instanceId = data[i].id;
+            snapshot->subjects[i].resourceId = LWM2M_MAX_ID;
+            snapshot->subjects[i].resourceInstanceId = LWM2M_MAX_ID;
+        }
+    }
+    else for (i = 0; i < (size_t)dataCount; ++i)
     {
         size_t j;
         for (j = 0; j < data[i].value.asChildren.count; ++j)
@@ -680,10 +700,15 @@ static lwm2m_composite_snapshot_t *prv_newCompositeSnapshot(lwm2m_context_t *con
         }
     }
     snapshot->subjectCount = subjectCount;
-    snapshot->request = lwm2m_malloc(message->payload_len);
-    if (snapshot->request == NULL) { prv_freeCompositeSnapshot(contextP, snapshot); return NULL; }
-    memcpy(snapshot->request, message->payload, message->payload_len);
+    if (message->payload_len != 0)
+    {
+        snapshot->request = lwm2m_malloc(message->payload_len);
+        if (snapshot->request == NULL) { prv_freeCompositeSnapshot(contextP, snapshot); return NULL; }
+        memcpy(snapshot->request, message->payload, message->payload_len);
+    }
     snapshot->requestLength = message->payload_len;
+    snapshot->method = message->code;
+    snapshot->uri = *uri;
     snapshot->serverShortId = serverId;
     snapshot->generation = generation;
     snapshot->messageId = message->mid;
@@ -710,12 +735,21 @@ void dm_compositeResponseSubmitted(lwm2m_context_t *contextP, uint16_t serverId,
     uint64_t generation, const coap_packet_t *request, const coap_packet_t *response, uint8_t sendResult)
 {
     lwm2m_composite_snapshot_t *snapshot;
+    lwm2m_uri_t uri;
     size_t offset = 0, end, i, units;
-    if (sendResult != COAP_NO_ERROR || request->code != COAP_FETCH || response->code != COAP_205_CONTENT ||
+    if (sendResult != COAP_NO_ERROR || (request->code != COAP_FETCH && request->code != COAP_GET) ||
+        IS_OPTION(request, COAP_OPTION_OBSERVE) || response->code != COAP_205_CONTENT ||
         response->payload == NULL || response->payload_len == 0 || request->token_len > LWM2M_COAP_TOKEN_MAX_LEN)
         return;
+    LWM2M_URI_RESET(&uri);
+    if (request->code == COAP_GET &&
+        uri_decode(contextP->altPath, request->uri_path, request->code, &uri) != LWM2M_REQUEST_TYPE_DM)
+        return;
     for (snapshot = contextP->compositeSnapshots; snapshot != NULL; snapshot = snapshot->next)
-        if (snapshot->serverShortId == serverId && snapshot->generation == generation &&
+        if (snapshot->method == request->code &&
+            snapshot->uri.objectId == uri.objectId && snapshot->uri.instanceId == uri.instanceId &&
+            snapshot->uri.resourceId == uri.resourceId && snapshot->uri.resourceInstanceId == uri.resourceInstanceId &&
+            snapshot->serverShortId == serverId && snapshot->generation == generation &&
             snapshot->tokenLength == request->token_len &&
             memcmp(snapshot->token, request->token, request->token_len) == 0 &&
             response->etag_len == sizeof(snapshot->etag) &&
@@ -757,7 +791,7 @@ static bool prv_evictSubmittedComposite(lwm2m_context_t *contextP)
     return true;
 }
 
-static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
+static uint8_t prv_readSnapshot(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
                                 coap_packet_t *message, coap_packet_t *response)
 {
     lwm2m_uri_t *paths = NULL;
@@ -775,12 +809,14 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     uint32_t blockNumber = 0;
     size_t snapshotCount = 0;
     uint64_t readId = 0;
+    bool composite = message->code == COAP_FETCH;
     time_t now;
-    if (LWM2M_URI_IS_SET_OBJECT(uriP) || IS_OPTION(message, COAP_OPTION_URI_QUERY))
+    if ((composite && LWM2M_URI_IS_SET_OBJECT(uriP)) || IS_OPTION(message, COAP_OPTION_URI_QUERY))
         return COAP_400_BAD_REQUEST;
     /* Composite 관찰은 일반 조회로 성공 처리하지 않는다. 별도 상태 계약으로 연결한다. */
     if (IS_OPTION(message, COAP_OPTION_OBSERVE)) return COAP_405_METHOD_NOT_ALLOWED;
-    if (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)) return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+    if (composite && !IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)) return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+    if (!composite && message->payload_len != 0) return COAP_400_BAD_REQUEST;
     if (message->token_len > LWM2M_COAP_TOKEN_MAX_LEN || message->accept_num > 1)
         return COAP_400_BAD_REQUEST;
     if (message->payload_len > LWM2M_COMPOSITE_MAX_REQUEST_SIZE) return COAP_413_ENTITY_TOO_LARGE;
@@ -788,11 +824,11 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     if (now < 0) return COAP_500_INTERNAL_SERVER_ERROR;
     dm_expireCompositeSnapshots(contextP, now);
     (void)coap_get_header_block2(message, &blockNumber, NULL, NULL, NULL);
-    if (blockNumber == 0 && message->payload_len == 0) return COAP_400_BAD_REQUEST;
+    if (composite && blockNumber == 0 && message->payload_len == 0) return COAP_400_BAD_REQUEST;
     for (snapshot = contextP->compositeSnapshots; snapshot != NULL; snapshot = snapshot->next)
     {
         ++snapshotCount;
-        if (prv_compositeKeyMatches(snapshot, serverId, generation, message))
+        if (prv_compositeKeyMatches(snapshot, serverId, generation, uriP, message))
         {
             if (blockNumber != 0 || snapshot->messageId == message->mid)
                 return prv_compositeSnapshotReply(contextP, snapshot, message, response);
@@ -807,7 +843,7 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     if (blockNumber != 0) return COAP_404_NOT_FOUND;
     if (snapshotCount >= COMPOSITE_SNAPSHOT_LIMIT && !prv_evictSubmittedComposite(contextP))
         return COAP_503_SERVICE_UNAVAILABLE;
-    switch ((uint16_t)message->content_type)
+    if (composite) switch ((uint16_t)message->content_type)
     {
 #ifdef LWM2M_SUPPORT_SENML_JSON
     case LWM2M_CONTENT_SENML_JSON:
@@ -821,7 +857,7 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
 #endif
     default: return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
     }
-    if (count <= 0)
+    if (composite && count <= 0)
         return count == -2 ? COAP_500_INTERNAL_SERVER_ERROR :
                count == -3 ? COAP_413_ENTITY_TOO_LARGE : COAP_400_BAD_REQUEST;
 #ifdef LWM2M_SUPPORT_SENML_CBOR
@@ -831,7 +867,7 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
 #endif
     result = COAP_406_NOT_ACCEPTABLE;
     if (message->accept_num > 1) goto cleanup;
-    if (message->accept_num == 1)
+    if (composite && message->accept_num == 1)
     {
         switch (message->accept[0])
         {
@@ -851,16 +887,35 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
         /* 일반 OI 권한은 집계 단계에서 best-effort로 검사한다(OMA Core 8.2.1).
          * Security/OSCORE 명시 요청만 정규화 전에 전체 거절한다. */
     }
+    if (!composite && contextP->compositeAccessCallback != NULL)
+    {
+        lwm2m_object_t *object = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+        lwm2m_list_t *instance;
+        if (object == NULL) { result = COAP_404_NOT_FOUND; goto cleanup; }
+        if (LWM2M_URI_IS_SET_INSTANCE(uriP))
+        {
+            if (!contextP->compositeAccessCallback(contextP, serverId, uriP, false, contextP->compositeAccessUserData))
+            { result = COAP_401_UNAUTHORIZED; goto cleanup; }
+        }
+        else for (instance = object->instanceList; instance != NULL; instance = instance->next)
+        {
+            lwm2m_uri_t subject = *uriP;
+            subject.instanceId = instance->id;
+            if (!contextP->compositeAccessCallback(contextP, serverId, &subject, false, contextP->compositeAccessUserData))
+            { result = COAP_401_UNAUTHORIZED; goto cleanup; }
+        }
+    }
     if (contextP->nextCompositeReadId == UINT64_MAX)
     { result = COAP_503_SERVICE_UNAVAILABLE; goto cleanup; }
     readId = ++contextP->nextCompositeReadId;
     contextP->currentCompositeReadId = readId;
-    result = object_readCompositeData(contextP, paths, (size_t)count, &size, &data);
+    result = composite ? object_readCompositeData(contextP, paths, (size_t)count, &size, &data) :
+                         object_readData(contextP, uriP, &size, &data);
     contextP->currentCompositeReadId = 0;
     if (result != COAP_205_CONTENT)
     {
         /* 권한이 모두 없으면 4.01, 허용된 선택자에 읽을 값이 없으면 4.04다. */
-        if (result != COAP_401_UNAUTHORIZED &&
+        if (composite && result != COAP_401_UNAUTHORIZED &&
             result >= COAP_400_BAD_REQUEST && result < COAP_500_INTERNAL_SERVER_ERROR)
             result = COAP_404_NOT_FOUND;
         goto cleanup;
@@ -872,13 +927,19 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
                 break;
         if (active == NULL) { result = COAP_503_SERVICE_UNAVAILABLE; goto cleanup; }
     }
-    length = lwm2m_data_serialize(NULL, size, data, &format, &buffer);
+    if (!composite && message->accept_num != 0)
+    {
+        result = utils_getResponseFormat(message->accept_num, message->accept, size, data,
+                                        LWM2M_URI_IS_SET_RESOURCE(uriP), &format);
+        if (result != COAP_205_CONTENT) goto cleanup;
+    }
+    length = lwm2m_data_serialize(composite ? NULL : uriP, size, data, &format, &buffer);
     if (length <= 0)
     { result = length == -3 ? COAP_413_ENTITY_TOO_LARGE : COAP_500_INTERNAL_SERVER_ERROR; goto cleanup; }
     if ((size_t)length > COMPOSITE_SNAPSHOT_BYTES_MAX || message->payload_len > LWM2M_COMPOSITE_MAX_REQUEST_SIZE)
     { result = COAP_413_ENTITY_TOO_LARGE; goto cleanup; }
     {
-        snapshot = prv_newCompositeSnapshot(contextP, serverId, generation, message, format,
+        snapshot = prv_newCompositeSnapshot(contextP, serverId, generation, uriP, message, format,
                                              buffer, (size_t)length, now, size, data, readId);
         if (snapshot == NULL) { result = COAP_500_INTERNAL_SERVER_ERROR; goto cleanup; }
         readId = 0; /* 이후 증거 해제는 snapshot owner만 수행한다. */
@@ -1014,6 +1075,14 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
             }
             else
             {
+#ifndef LWM2M_VERSION_1_0
+                lwm2m_object_t *object = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+                if (object != NULL && (object->flags & LWM2M_OBJECT_FLAG_SNAPSHOT_READ) != 0)
+                {
+                    result = prv_readSnapshot(contextP, uriP, message, response);
+                    break;
+                }
+#endif
 #ifdef LWM2M_RAW_BLOCK2_READS
                 if (object_raw_block2_read_supported(contextP, uriP))
                 {
@@ -1219,7 +1288,7 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
 
 #ifndef LWM2M_VERSION_1_0
     case COAP_FETCH:
-        result = prv_readComposite(contextP, uriP, message, response);
+        result = prv_readSnapshot(contextP, uriP, message, response);
         break;
     case COAP_IPATCH:
         if (LWM2M_URI_IS_SET_OBJECT(uriP) || IS_OPTION(message, COAP_OPTION_URI_QUERY) ||

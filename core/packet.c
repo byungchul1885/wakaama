@@ -294,6 +294,32 @@ static bool prv_uses_raw_block1(lwm2m_context_t *contextP, void *fromSessionH, c
 }
 #endif
 
+static bool prv_durable_block1_exchange(lwm2m_context_t *contextP, coap_packet_t *message)
+{
+#ifdef LWM2M_CLIENT_MODE
+    lwm2m_uri_t uri;
+    lwm2m_object_t *object;
+#ifndef LWM2M_VERSION_1_0
+    if (message->code==COAP_IPATCH) {
+        bool found=false;
+        /* root Composite는 모든 등록 consumer가 영속 교환을 선언했을 때만 허용한다. */
+        for (object=contextP->objectList;object!=NULL;object=object->next) {
+            if (object->writeCompositeFunc==NULL) continue;
+            if ((object->flags & LWM2M_OBJECT_FLAG_DURABLE_BLOCK1_EXCHANGE)==0U) return false;
+            found=true;
+        }
+        return found;
+    }
+#endif
+    if (uri_decode(contextP->altPath,message->uri_path,message->code,&uri)!=LWM2M_REQUEST_TYPE_DM) return false;
+    object=contextP->objectList;
+    while (object!=NULL && object->objID!=uri.objectId) object=object->next;
+    return object!=NULL && (object->flags & LWM2M_OBJECT_FLAG_DURABLE_BLOCK1_EXCHANGE)!=0U;
+#else
+    (void)contextP; (void)message; return false;
+#endif
+}
+
 static uint8_t handle_request(lwm2m_context_t * contextP,
                               void * fromSessionH,
                               coap_packet_t * message,
@@ -1014,6 +1040,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 }
 #endif
                 coap_error_code = message_send(contextP, response, fromSessionH);
+                if (coap_error_code == NO_ERROR && block1Uri != NULL)
+                    coap_block1_mark_response_submitted(prv_get_peer_block_data(contextP, fromSessionH),
+                        block1Uri, message->token, message->token_len, response->code, prv_durable_block1_exchange(contextP,message));
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
                 if (!block1Replay &&
                     (!IS_OPTION(message, COAP_OPTION_BLOCK1) ||
@@ -1043,6 +1072,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 if (1 == coap_set_status_code(response, coap_error_code))
                 {
                     coap_error_code = message_send(contextP, response, fromSessionH);
+                    if (coap_error_code == NO_ERROR && block1Uri != NULL)
+                        coap_block1_mark_response_submitted(prv_get_peer_block_data(contextP, fromSessionH),
+                            block1Uri, message->token, message->token_len, response->code, prv_durable_block1_exchange(contextP,message));
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
                     if (!block1Replay &&
                         (!IS_OPTION(message, COAP_OPTION_BLOCK1) ||

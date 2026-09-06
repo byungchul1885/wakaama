@@ -536,6 +536,9 @@ typedef uint8_t (*lwm2m_delete_callback_t) (lwm2m_context_t * contextP, uint16_t
  * callback은 기존 목록 노드를 교체/해제할 수 있으며 core는 반환 뒤 이전 노드를 빌리지 않는다.
  */
 #define LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION (1UL << 0)
+/* 모든 Block1 mutation의 첫 MID를 영속 replay 원장에 연결하는 객체만 사용한다.
+ * 완료 뒤 같은 Token/새 MID의 Block 0을 새 교환으로 application에 전달한다. */
+#define LWM2M_OBJECT_FLAG_DURABLE_BLOCK1_EXCHANGE (1UL << 1)
 
 struct _lwm2m_object_t
 {
@@ -650,6 +653,8 @@ struct _lwm2m_block_data_
     bool                            lastBlockMore;
     bool                            rawBlock1;
     bool                            responseCached;
+    bool                            responseSubmitted;
+    bool                            allowTokenReuse;
     uint8_t                         responseCode;
     bool                            responseHasLocationPath;
     char                            responseLocationPath[LWM2M_BLOCK1_LOCATION_PATH_MAX_LEN + 1];

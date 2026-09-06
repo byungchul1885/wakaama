@@ -166,6 +166,27 @@ static void test_block1_same_message_after_success(void) {
     free_block_data(blk1);
 }
 
+static void test_completed_block1_token_reuse_starts_new_exchange(void) {
+    int raw;
+    for (raw=0;raw<2;++raw) {
+        lwm2m_block_data_t *blocks=NULL;
+        uint8_t *output=NULL;
+        size_t length=0;
+        uint16_t exchange=0;
+        CU_ASSERT_EQUAL(handle_block(&blocks,(const uint8_t *)"12345",5,BLOCK_SIZE,700,0,true,raw!=0,&output,&length),COAP_231_CONTINUE)
+        CU_ASSERT_EQUAL(handle_block(&blocks,(const uint8_t *)"67",2,BLOCK_SIZE,701,1,false,raw!=0,&output,&length),NO_ERROR)
+        CU_ASSERT_EQUAL(coap_block1_cache_response(blocks,URI,DEFAULT_TOKEN,sizeof(DEFAULT_TOKEN),COAP_204_CHANGED,NULL),0)
+        CU_ASSERT_FALSE(blocks->responseSubmitted)
+        coap_block1_mark_response_submitted(blocks,URI,DEFAULT_TOKEN,sizeof(DEFAULT_TOKEN),COAP_204_CHANGED,true);
+        CU_ASSERT_TRUE(blocks->responseSubmitted)
+        CU_ASSERT_EQUAL(handle_block(&blocks,(const uint8_t *)"abcde",5,BLOCK_SIZE,710,0,true,raw!=0,&output,&length),COAP_231_CONTINUE)
+        CU_ASSERT_EQUAL(coap_block1_get_exchange_mid(blocks,URI,DEFAULT_TOKEN,sizeof(DEFAULT_TOKEN),&exchange),1)
+        CU_ASSERT_EQUAL(exchange,710)
+        CU_ASSERT_EQUAL(handle_block(&blocks,(const uint8_t *)"fg",2,BLOCK_SIZE,711,1,false,raw!=0,&output,&length),NO_ERROR)
+        free_block_data(blocks);
+    }
+}
+
 static void test_block1_rejects_altered_retransmission(void) {
     lwm2m_block_data_t *blk1 = NULL;
     uint8_t *resultBuffer = NULL;
@@ -1394,6 +1415,7 @@ static struct TestTable table[] = {
     {"test of test_block1_nominal()", test_block1_nominal},
     {"test of test_block1_retransmit()", test_block1_retransmit},
     {"test of test_block1_same_message_after_success()", test_block1_same_message_after_success},
+    {"완료 Block1 Token 재사용은 새 MID 교환", test_completed_block1_token_reuse_starts_new_exchange},
     {"altered Block1 retransmission is rejected", test_block1_rejects_altered_retransmission},
     {"TKL0 Block1 uses first MID for block zero", test_block1_tkl0_uses_first_mid_for_block_zero},
     {"Block1 token, size, and gap isolation", test_block1_token_size_and_gap_are_isolated},

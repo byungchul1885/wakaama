@@ -426,6 +426,8 @@ static uint8_t prv_block1_accept(lwm2m_block_data_t **blockDataHeadP,
     blockData->lastBlockLength = length;
     blockData->lastBlockMore = blockMore;
     blockData->responseCached = false;
+    blockData->responseSubmitted = false;
+    blockData->allowTokenReuse = false;
     blockData->responseHasLocationPath = false;
     blockData->responseLocationPath[0] = '\0';
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
@@ -490,6 +492,21 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockDataHeadP,
     identifier.tokenLength = (uint8_t)tokenLength;
     if (tokenLength > 0) memcpy(identifier.token, token, tokenLength);
     blockData = find_block_data(*blockDataHeadP, identifier, BLOCK_1);
+
+    /* 완료 응답 이후 같은 Token의 새 Block 0/MID는 새 교환이다.
+     * 진행 중이거나 응답이 아직 확정되지 않은 수신은 이 경로로 교체하지 않는다.
+     * 과거 교환의 업무 replay는 application의 영속 identity 원장이 책임진다. */
+    if (blockData != NULL && blockNum == 0U && blockData->identifier.mid != mid
+        && !blockData->lastBlockMore && blockData->responseCached && blockData->responseSubmitted
+        && blockData->allowTokenReuse
+        && ((blockData->responseCode >> 5) == 2 || (blockData->responseCode >> 5) == 4
+            || (blockData->responseCode >> 5) == 5)
+        && blockData->responseCode != COAP_231_CONTINUE
+        && prv_block_shape_valid(length, blockSize, blockMore) && (length == 0U || buffer != NULL))
+    {
+        prv_block_data_remove(blockDataHeadP, blockData);
+        blockData = NULL;
+    }
 
     /*
      * Token이 없는 non-raw Block1은 첫 Block의 MID까지 logical exchange identity다.
@@ -572,6 +589,7 @@ int coap_block1_cache_response(lwm2m_block_data_t *blockDataHead,
     if (blockData == NULL) return -1;
     blockData->responseCode = responseCode;
     blockData->responseCached = true;
+    blockData->responseSubmitted = false;
     blockData->responseHasLocationPath = locationPath != NULL;
     if (locationPath != NULL)
     {
@@ -582,6 +600,22 @@ int coap_block1_cache_response(lwm2m_block_data_t *blockDataHead,
         blockData->responseLocationPath[0] = '\0';
     }
     return 0;
+}
+
+void coap_block1_mark_response_submitted(lwm2m_block_data_t *blockDataHead, const char *uri,
+    const uint8_t *token, size_t tokenLength, uint8_t responseCode, bool allowTokenReuse)
+{
+    block_data_identifier_t identifier={0};
+    lwm2m_block_data_t *blockData;
+    if (uri==NULL || tokenLength>LWM2M_COAP_TOKEN_MAX_LEN || (tokenLength>0U && token==NULL)) return;
+    identifier.uri=(char *)uri; identifier.tokenLength=(uint8_t)tokenLength;
+    if (tokenLength>0U) memcpy(identifier.token,token,tokenLength);
+    blockData=find_block_data(blockDataHead,identifier,BLOCK_1);
+    if (blockData!=NULL && blockData->responseCached && !blockData->lastBlockMore && blockData->responseCode==responseCode)
+    {
+        blockData->responseSubmitted=true;
+        blockData->allowTokenReuse=allowTokenReuse;
+    }
 }
 
 int coap_block1_get_cached_response(lwm2m_block_data_t *blockDataHead,

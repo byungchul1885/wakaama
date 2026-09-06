@@ -338,6 +338,10 @@ int json_findAndCheckData(const lwm2m_uri_t * uriP, uri_depth_t baseLevel, size_
 #endif
 
 // defined in block.c
+/* 입력 buffer는 호출 동안만 빌린다. outputBuffer는 blockData 소유이며 다음 상태 변경까지 유효하다.
+ * 영속 교환 처리를 선언한 객체는 완료 응답 제출 성공 뒤 동일 Token/새 첫 MID의 Block 0에서
+ * 이전 blockData를 해제하고 새 교환을 만든다. 그 밖의 객체의 Token replay는 유지한다.
+ * caller는 보관했던 노드/header pointer를 재사용하지 않는다. 업무 replay는 application이 담당한다. */
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
 uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, const uint8_t *token,
                             size_t tokenLength, uint16_t mid, const uint8_t *buffer, size_t length,
@@ -352,6 +356,9 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, con
 /* locationPath는 호출 중 복사되므로 caller가 계속 소유한다. */
 int coap_block1_cache_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
                                size_t tokenLength, uint8_t responseCode, const char *locationPath);
+/* message_send 성공 뒤 호출한다. 입력을 보관하지 않으며 상대 수신/영속 저장 ACK를 뜻하지 않는다. */
+void coap_block1_mark_response_submitted(lwm2m_block_data_t *blockData, const char *uri,
+    const uint8_t *token, size_t tokenLength, uint8_t responseCode, bool allowTokenReuse);
 /* locationPathP는 blockData 소유 borrowed pointer이며 다음 Block1 상태 변경 전까지만 유효하다. */
 int coap_block1_get_cached_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
                                      size_t tokenLength, uint8_t *responseCodeP, const char **locationPathP);

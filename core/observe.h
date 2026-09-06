@@ -56,6 +56,11 @@ uint8_t observe_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2
                               lwm2m_attributes_t *attrP);
 void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeoutP);
 void observe_clear(lwm2m_context_t *contextP, lwm2m_uri_t *uriP);
+/* 실제 삭제 뒤 호출한다. 설정/사본은 즉시 해제하고 다음 tick에 4.04 종료를 보낸다. */
+void observe_markDeleted(lwm2m_context_t *contextP, lwm2m_uri_t *uriP);
+/* observed/watcher는 현재 목록의 borrowed 값이다. 분리/해제 후 오류를 보내며 caller는 재참조하지 않는다. */
+void observe_terminate(lwm2m_context_t *contextP, lwm2m_observed_t *observed,
+                       lwm2m_watcher_t *watcher, uint8_t code);
 bool observe_handleNotify(lwm2m_context_t *contextP, void *fromSessionH, coap_packet_t *message,
                           coap_packet_t *response);
 void observe_remove(lwm2m_observation_t *observationP);

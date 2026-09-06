@@ -150,6 +150,7 @@ uint8_t observe_prepareSnapshot(const lwm2m_uri_t *uriP, int count, const lwm2m_
     if (length < 0 || selected != format || (size_t)length > LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT)
     {
         lwm2m_free(*bufferP); *bufferP = NULL;
+        if (selected != format) return COAP_406_NOT_ACCEPTABLE;
         return length == -3 || length > (int)LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT
             ? COAP_413_ENTITY_TOO_LARGE : COAP_500_INTERNAL_SERVER_ERROR;
     }
@@ -313,6 +314,8 @@ static bool prv_connected(const lwm2m_server_t *server)
 void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeoutP)
 {
     lwm2m_observed_t *observed;
+    size_t ended = 0;
+restart:
     if (contextP->observeEpoch == UINT64_MAX) return;
     for (observed = contextP->observedList; observed != NULL; observed = observed->next)
     {
@@ -336,6 +339,12 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
             int count = 0, length;
             uint8_t result;
             if (!watcher->active || !prv_connected(watcher->server)) continue;
+            if (watcher->terminalCode != 0)
+            {
+                observe_terminate(contextP, observed, watcher, watcher->terminalCode);
+                if (++ended < LWM2M_OBSERVER_LIMIT) goto restart;
+                prv_wait(timeoutP, 1); return;
+            }
             observe_getParameters(contextP, &uri, watcher->server, true, &attr);
             pmin = attr.toSet & LWM2M_ATTR_FLAG_MIN_PERIOD ? attr.minPeriod : 0;
             pmax = attr.toSet & LWM2M_ATTR_FLAG_MAX_PERIOD ? attr.maxPeriod : 0;
@@ -368,6 +377,13 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
             }
             if (result != COAP_205_CONTENT || !observe_captureValue(&uri, count, data, &current))
             {
+                if (result >= COAP_400_BAD_REQUEST && result < COAP_500_INTERNAL_SERVER_ERROR)
+                {
+                    lwm2m_data_free(count, data);
+                    observe_terminate(contextP, observed, watcher, result);
+                    if (++ended < LWM2M_OBSERVER_LIMIT) goto restart;
+                    prv_wait(timeoutP, 1); return;
+                }
                 LOG_ARG_WARN("Observe value unavailable /%u/%u/%u code=%u", uri.objectId, uri.instanceId,
                              uri.resourceId, result);
                 lwm2m_data_free(count, data);
@@ -375,6 +391,13 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
                 continue;
             }
             numeric = observe_numericValue(&current);
+            if (watcher->format == LWM2M_CONTENT_OPAQUE && current.type != LWM2M_TYPE_OPAQUE)
+            {
+                lwm2m_data_free(count, data);
+                observe_terminate(contextP, observed, watcher, COAP_406_NOT_ACCEPTABLE);
+                if (++ended < LWM2M_OBSERVER_LIMIT) goto restart;
+                prv_wait(timeoutP, 1); return;
+            }
             valueChanged = changed;
             if (!numeric)
             {
@@ -382,6 +405,12 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
                 if (result != COAP_NO_ERROR || !observe_snapshotFits(contextP, watcher, snapshotLength))
                 {
                     lwm2m_free(buffer); lwm2m_data_free(count, data);
+                    if (result >= COAP_400_BAD_REQUEST && result < COAP_500_INTERNAL_SERVER_ERROR)
+                    {
+                        observe_terminate(contextP, observed, watcher, result);
+                        if (++ended < LWM2M_OBSERVER_LIMIT) goto restart;
+                        prv_wait(timeoutP, 1); return;
+                    }
                     prv_wait(timeoutP, 1);
                     LOG_ARG_WARN("Observe comparison unavailable /%u/%u/%u code=%u", uri.objectId,
                                  uri.instanceId, uri.resourceId, result != COAP_NO_ERROR ? result : COAP_503_SERVICE_UNAVAILABLE);

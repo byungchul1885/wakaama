@@ -218,6 +218,7 @@ uint8_t observe_handleRequest(lwm2m_context_t * contextP,
         watcherP->lastTime = lwm2m_gettime();
         watcherP->lastEvaluation = watcherP->lastTime;
         watcherP->notifyPending = false;
+        watcherP->terminalCode = 0;
         watcherP->update = false;
         watcherP->lastValue = initialValue;
         watcherP->evaluatedValue = initialValue;
@@ -265,6 +266,32 @@ static void prv_removeWatcher(lwm2m_context_t *contextP, lwm2m_observed_t *obser
         prv_unlinkObserved(contextP, observed);
         lwm2m_free(observed);
     }
+}
+
+void observe_terminate(lwm2m_context_t *contextP, lwm2m_observed_t *observed,
+                       lwm2m_watcher_t *watcher, uint8_t code)
+{
+    coap_packet_t response;
+    lwm2m_watcher_t **link = &observed->watcherList;
+    lwm2m_uri_t uri = observed->uri;
+    void *session = watcher->server->sessionH;
+    uint16_t serverId = watcher->server->shortID;
+    bool deleted = watcher->terminalCode == COAP_404_NOT_FOUND;
+    uint8_t result;
+    coap_init_message(&response, COAP_TYPE_NON, code, contextP->nextMID++);
+    coap_set_header_token(&response, watcher->token, watcher->tokenLen);
+    while (*link != watcher) link = &(*link)->next;
+    /* message의 Token은 사본이다. callback 전에 borrowed 관찰의 수명을 끝낸다. */
+    prv_removeWatcher(contextP, observed, link);
+    result = message_send(contextP, &response, session);
+    coap_free_header(&response);
+    if (deleted && result == COAP_NO_ERROR)
+        LOG_ARG_DBG("Observe ended /%u/%u/%u server=%u code=%u", uri.objectId,
+                    uri.instanceId, uri.resourceId, serverId, code);
+    else
+        LOG_ARG_WARN("Observe ended /%u/%u/%u server=%u code=%u send=%u", uri.objectId,
+                     uri.instanceId, uri.resourceId, serverId, code, result);
+    (void)uri; (void)serverId; (void)result;
 }
 
 void observe_cancel(lwm2m_context_t *contextP, uint16_t mid, void *fromSessionH)
@@ -316,6 +343,41 @@ void observe_forgetServer(lwm2m_context_t *contextP, lwm2m_server_t *serverP)
     }
 }
 
+static bool prv_contains(const lwm2m_uri_t *root, const lwm2m_uri_t *child)
+{
+    return child->objectId == root->objectId &&
+           (!LWM2M_URI_IS_SET_INSTANCE(root) || child->instanceId == root->instanceId) &&
+           (!LWM2M_URI_IS_SET_RESOURCE(root) || child->resourceId == root->resourceId)
+#ifndef LWM2M_VERSION_1_0
+           && (!LWM2M_URI_IS_SET_RESOURCE_INSTANCE(root) || child->resourceInstanceId == root->resourceInstanceId)
+#endif
+           ;
+}
+
+void observe_markDeleted(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
+{
+    lwm2m_observed_t **link = &contextP->observedList;
+    observe_changedLifetime(contextP);
+    observe_clearParameters(contextP, uriP);
+    while (*link != NULL)
+    {
+        lwm2m_observed_t *observed = *link;
+        if (prv_contains(uriP, &observed->uri))
+        {
+            lwm2m_watcher_t *watcher;
+            for (watcher = observed->watcherList; watcher != NULL; watcher = watcher->next)
+            {
+                watcher->terminalCode = COAP_404_NOT_FOUND;
+                observe_replaceSnapshot(contextP, watcher, NULL, 0);
+            }
+            if (observed->watcherList == NULL)
+            { *link = observed->next; lwm2m_free(observed); continue; }
+        }
+        link = &observed->next;
+    }
+    lwm2m_resource_value_changed(contextP, uriP);
+}
+
 void observe_clear(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
 {
     lwm2m_observed_t **link = &contextP->observedList;
@@ -324,14 +386,7 @@ void observe_clear(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
     while (*link != NULL)
     {
         lwm2m_observed_t *observed = *link;
-        if (observed->uri.objectId == uriP->objectId &&
-            (!LWM2M_URI_IS_SET_INSTANCE(uriP) || observed->uri.instanceId == uriP->instanceId) &&
-            (!LWM2M_URI_IS_SET_RESOURCE(uriP) || observed->uri.resourceId == uriP->resourceId)
-#ifndef LWM2M_VERSION_1_0
-            && (!LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP) ||
-                observed->uri.resourceInstanceId == uriP->resourceInstanceId)
-#endif
-           )
+        if (prv_contains(uriP, &observed->uri))
         {
             *link = observed->next;
             while (observed->watcherList != NULL)

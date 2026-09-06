@@ -22,12 +22,17 @@ typedef struct {
     bool tree;
     bool reverse;
     bool boolean;
+    uint8_t readCode;
+    unsigned reads;
+    const uint8_t *externalBytes;
 } value_fixture_t;
 
 static uint8_t read_values(lwm2m_context_t *context, uint16_t iid, int *count,
                             lwm2m_data_t **data, lwm2m_object_t *object) {
     value_fixture_t *f = object->userData;
     (void)context; (void)iid;
+    ++f->reads;
+    if (f->readCode != 0) return f->readCode;
     if (*count == 0) {
         *count = 2; *data = lwm2m_data_new(2);
         if (*data == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
@@ -50,7 +55,8 @@ static uint8_t read_values(lwm2m_context_t *context, uint16_t iid, int *count,
     } else {
         if (*count != 1) return COAP_400_BAD_REQUEST;
         if (f->type == LWM2M_TYPE_STRING) lwm2m_data_encode_nstring((const char *)f->bytes, f->length, *data);
-        else if (f->type == LWM2M_TYPE_OPAQUE) lwm2m_data_encode_opaque(f->bytes, f->length, *data);
+        else if (f->type == LWM2M_TYPE_OPAQUE)
+            lwm2m_data_encode_opaque(f->externalBytes != NULL ? f->externalBytes : f->bytes, f->length, *data);
         else if (f->type == LWM2M_TYPE_BOOLEAN) lwm2m_data_encode_bool(f->boolean, *data);
         else lwm2m_data_encode_objlink(3303, f->bytes[0], *data);
     }
@@ -341,6 +347,141 @@ static void nonnumeric_send_callback_removal_and_numeric_reobserve(void) {
     cleanup(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
 }
 
+static void terminal_packet(uint8_t code, uint8_t token) {
+    coap_packet_t response;
+    size_t length;
+    const uint8_t *raw = test_get_response_buffer(&length);
+    CU_ASSERT_EQUAL(coap_parse_message(&response, (uint8_t *)raw, (uint16_t)length), NO_ERROR);
+    CU_ASSERT_EQUAL(response.type, COAP_TYPE_NON); CU_ASSERT_EQUAL(response.code, code);
+    CU_ASSERT_EQUAL(response.token_len, 1); CU_ASSERT_EQUAL(response.token[0], token);
+    CU_ASSERT_FALSE(IS_OPTION(&response, COAP_OPTION_OBSERVE));
+    CU_ASSERT_FALSE(IS_OPTION(&response, COAP_OPTION_CONTENT_TYPE));
+    CU_ASSERT_EQUAL(response.payload_len, 0); coap_free_header(&response);
+}
+
+static void terminal_read_errors_preserve_attributes_not_observers(void) {
+    const uint8_t codes[] = {COAP_400_BAD_REQUEST, COAP_401_UNAUTHORIZED, COAP_403_FORBIDDEN,
+        COAP_404_NOT_FOUND, COAP_405_METHOD_NOT_ALLOWED, COAP_406_NOT_ACCEPTABLE,
+        COAP_412_PRECONDITION_FAILED, COAP_415_UNSUPPORTED_CONTENT_FORMAT};
+    size_t i, baseline = test_malloc_live_allocations();
+    for (i = 0; i < sizeof(codes); ++i) {
+        value_fixture_t f;
+        lwm2m_attributes_t attr = {0};
+        setup(&f, false); CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_CBOR), COAP_205_CONTENT);
+        attr.toSet = LWM2M_ATTR_FLAG_MAX_PERIOD; attr.maxPeriod = 10;
+        CU_ASSERT_EQUAL(observe_setParameters(&f.context, &f.path, &f.server, &attr), COAP_204_CHANGED);
+        f.readCode = codes[i]; tick_value(&f, 101, 1, true); terminal_packet(codes[i], 1);
+        CU_ASSERT_PTR_NULL(f.context.observedList); CU_ASSERT_EQUAL(f.context.observeSnapshotBytes, 0);
+        CU_ASSERT_PTR_NOT_NULL(f.context.attributeList);
+        f.readCode = 0; f.bytes[0] = 'z'; tick_value(&f, 120, 0, true);
+        cleanup(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    }
+}
+
+static uint8_t delete_value(lwm2m_context_t *context, uint16_t iid, lwm2m_object_t *object) {
+    (void)context; (void)iid;
+    object->instanceList = NULL;
+    return COAP_202_DELETED;
+}
+
+static void delete_recreate_old_token_ends_and_new_observe_survives(void) {
+    value_fixture_t f;
+    lwm2m_attributes_t attr = {0};
+    size_t baseline = test_malloc_live_allocations();
+    setup(&f, false); f.object.deleteFunc = delete_value;
+    CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_CBOR), COAP_205_CONTENT);
+    attr.toSet = LWM2M_ATTR_FLAG_MAX_PERIOD; attr.maxPeriod = 10;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &f.path, &f.server, &attr), COAP_204_CHANGED);
+    lwm2m_uri_t iid = f.path; iid.resourceId = LWM2M_MAX_ID;
+    test_reset_response_history(); f.reads = 0;
+    CU_ASSERT_EQUAL(object_delete(&f.context, &iid), COAP_202_DELETED);
+    CU_ASSERT_EQUAL(test_response_count(), 0); CU_ASSERT_EQUAL(f.reads, 0);
+    CU_ASSERT_EQUAL(f.context.observeSnapshotBytes, 0); CU_ASSERT_PTR_NULL(f.context.attributeList);
+    CU_ASSERT_EQUAL(f.context.observedList->watcherList->terminalCode, COAP_404_NOT_FOUND);
+    f.object.instanceList = &f.instance; f.bytes[0] = 'z';
+    tick_value(&f, 101, 1, true); terminal_packet(COAP_404_NOT_FOUND, 1);
+    CU_ASSERT_EQUAL(f.reads, 0); CU_ASSERT_PTR_NULL(f.context.observedList);
+    CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_JSON), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(object_delete(&f.context, &iid), COAP_202_DELETED);
+    f.object.instanceList = &f.instance;
+    /* 명시적 재Observe는 새 초기값으로 관계와 종료 예약을 함께 교체한다. */
+    CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_CBOR), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(f.context.observedList->watcherList->terminalCode, 0);
+    tick_value(&f, 102, 0, true);
+    f.bytes[0] = 'a'; tick_value(&f, 103, 1, true);
+    cleanup(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
+static void removed_before_terminal_send(void) {
+    CU_ASSERT_PTR_NULL(removing->context.observedList);
+    CU_ASSERT_EQUAL(removing->context.observeSnapshotBytes, 0);
+    observe_clear(&removing->context, &removing->path);
+}
+
+static void terminal_send_failure_callback_disconnect_and_parent_scope(void) {
+    size_t baseline = test_malloc_live_allocations();
+    value_fixture_t f;
+    unsigned mode;
+    for (mode = 0; mode < 3; ++mode) {
+        setup(&f, false); CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_CBOR), COAP_205_CONTENT);
+        observe_markDeleted(&f.context, &f.path);
+        if (mode == 0) test_fail_next_response();
+        if (mode == 1) test_malloc_fail_after(0);
+        if (mode == 2) { removing = &f; test_set_send_callback(removed_before_terminal_send); }
+        tick_value(&f, 101, mode == 2 ? 1 : 0, false); test_malloc_fault_disable();
+        CU_ASSERT_PTR_NULL(f.context.observedList); CU_ASSERT_EQUAL(f.context.observeSnapshotBytes, 0);
+        cleanup(&f); removing = NULL; CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    }
+    setup(&f, false); CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_CBOR), COAP_205_CONTENT);
+    observe_markDeleted(&f.context, &f.path); f.server.sessionH = NULL;
+    tick_value(&f, 101, 0, false); CU_ASSERT_PTR_NOT_NULL(f.context.observedList);
+    f.server.sessionH = &f.server; tick_value(&f, 102, 1, false);
+    terminal_packet(COAP_404_NOT_FOUND, 1); cleanup(&f);
+    setup(&f, true); CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_CBOR), COAP_205_CONTENT);
+    lwm2m_observed_t *parent = f.context.observedList;
+    f.tree = false; f.path.resourceId = 0;
+    CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_CBOR), COAP_205_CONTENT);
+    observe_markDeleted(&f.context, &f.path);
+    CU_ASSERT_TRUE(parent->watcherList->update); CU_ASSERT_EQUAL(parent->watcherList->terminalCode, 0);
+    observe_clear(&f.context, &f.path);
+    CU_ASSERT_PTR_EQUAL(f.context.observedList, parent);
+    f.path.resourceId = LWM2M_MAX_ID; cleanup(&f);
+    CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
+static void terminal_size_growth_and_full_observer_quota(void) {
+    value_fixture_t f;
+    lwm2m_server_t other = {0};
+    lwm2m_data_t value = {0};
+    size_t i, baseline = test_malloc_live_allocations();
+    uint8_t *large = lwm2m_malloc(LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT + 1U);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(large);
+    memset(large, 0xff, LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT + 1U);
+    setup(&f, false); f.type = LWM2M_TYPE_OPAQUE; f.externalBytes = large;
+    CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_SENML_CBOR), COAP_205_CONTENT);
+    f.length = LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT + 1U;
+    tick_value(&f, 101, 1, true); terminal_packet(COAP_413_ENTITY_TOO_LARGE, 1);
+    CU_ASSERT_PTR_NULL(f.context.observedList); CU_ASSERT_EQUAL(f.context.observeSnapshotBytes, 0);
+    cleanup(&f); lwm2m_free(large);
+    setup(&f, false); f.type = LWM2M_TYPE_OPAQUE;
+    CU_ASSERT_EQUAL(start(&f, LWM2M_CONTENT_OPAQUE), COAP_205_CONTENT);
+    f.type = LWM2M_TYPE_BOOLEAN; tick_value(&f, 101, 1, true);
+    terminal_packet(COAP_406_NOT_ACCEPTABLE, 1);
+    CU_ASSERT_PTR_NULL(f.context.observedList); cleanup(&f);
+    setup(&f, false); other.shortID = 2; other.status = STATE_REGISTERED; other.sessionH = &other;
+    value.type = LWM2M_TYPE_OPAQUE; value.value.asBuffer.buffer = f.bytes; value.value.asBuffer.length = 1;
+    for (i = 0; i < LWM2M_OBSERVER_SERVER_LIMIT; ++i) {
+        CU_ASSERT_EQUAL(direct_observe(&f, &f.server, (uint8_t)i, 0, &value), COAP_205_CONTENT);
+        CU_ASSERT_EQUAL(direct_observe(&f, &other, (uint8_t)i, 0, &value), COAP_205_CONTENT);
+    }
+    CU_ASSERT_EQUAL(f.context.observeSnapshotBytes, 2U * LWM2M_OBSERVER_SERVER_LIMIT);
+    observe_markDeleted(&f.context, &f.path);
+    CU_ASSERT_EQUAL(f.context.observeSnapshotBytes, 0);
+    tick_value(&f, 101, 2U * LWM2M_OBSERVER_SERVER_LIMIT, false);
+    CU_ASSERT_PTR_NULL(f.context.observedList);
+    cleanup(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
 CU_ErrorCode create_notify_values_test_suit(void) {
     struct TestTable table[] = {
         {"Q09 scalar exact values and eventless evaluation", scalar_exact_values_and_evaluation_without_event},
@@ -349,6 +490,10 @@ CU_ErrorCode create_notify_values_test_suit(void) {
         {"Q12 retained byte quota cancel rst forget and close", retained_byte_quota_reobserve_cancel_rst_forget_close},
         {"Q05 snapshot tree boundaries and borrowed input", snapshot_tree_boundaries_and_borrowed_input},
         {"Q12 nonnumeric callback removal and numeric reobserve", nonnumeric_send_callback_removal_and_numeric_reobserve},
+        {"Q12 terminal read errors preserve attributes", terminal_read_errors_preserve_attributes_not_observers},
+        {"Q13 delete recreate old token and new Observe", delete_recreate_old_token_ends_and_new_observe_survives},
+        {"Q12 terminal failure callback disconnect and parent scope", terminal_send_failure_callback_disconnect_and_parent_scope},
+        {"Q12 terminal size growth and full observer quota", terminal_size_growth_and_full_observer_quota},
         {NULL, NULL}
     };
     CU_pSuite suite = CU_add_suite("notify values", NULL, NULL);

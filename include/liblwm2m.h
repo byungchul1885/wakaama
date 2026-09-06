@@ -868,6 +868,7 @@ typedef struct _lwm2m_watcher_
     uint16_t lastMid;
     time_t lastEvaluation;
     bool notifyPending;
+    uint8_t terminalCode;
     uint64_t changeSequence;
     lwm2m_observe_value_t lastValue;
     lwm2m_observe_value_t evaluatedValue;

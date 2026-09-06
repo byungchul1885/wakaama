@@ -840,7 +840,7 @@ uint8_t object_delete(lwm2m_context_t * contextP,
             ((objectP->flags & LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION) == 0U ||
              lwm2m_list_find(objectP->instanceList, uriP->instanceId) == NULL))
         {
-            observe_clear(contextP, uriP);
+            observe_markDeleted(contextP, uriP);
         }
     }
     else
@@ -868,7 +868,7 @@ uint8_t object_delete(lwm2m_context_t * contextP,
                     break;
                 }
                 tempUri.instanceId = instanceId;
-                observe_clear(contextP, &tempUri);
+                observe_markDeleted(contextP, &tempUri);
             }
             instanceP = objectP->instanceList;
         }

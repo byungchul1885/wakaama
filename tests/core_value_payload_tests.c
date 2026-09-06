@@ -3,6 +3,7 @@
 #include "tests.h"
 #include "connection.h"
 #include "CUnit/Basic.h"
+#include <limits.h>
 #include <string.h>
 #ifdef WAKAAMA_TEST_FAULTS
 #include "helper/faults.h"
@@ -243,11 +244,70 @@ static void empty_serialization_failure_keeps_observation(void)
     }
 }
 
+static void explicit_limit_keeps_default_and_bounds_every_output(void)
+{
+    const size_t maximum = 4U * 1024U * 1024U;
+    static const char jsonPrefix[] = "[{\"bn\":\"/3303/0/1\",\"vs\":\"";
+    size_t baseline = test_malloc_live_allocations(), form;
+    uint8_t *input = lwm2m_malloc(maximum);
+    lwm2m_uri_t path;
+    lwm2m_data_t value = {0};
+    CU_ASSERT_PTR_NOT_NULL_FATAL(input); memset(input, 'x', maximum);
+    LWM2M_URI_RESET(&path); path.objectId = 3303; path.instanceId = 0; path.resourceId = 1;
+    value.id = 1; value.type = LWM2M_TYPE_STRING; value.value.asBuffer.buffer = input;
+    for (form = 0; form < 2; ++form) {
+        lwm2m_media_type_t format = form ? LWM2M_CONTENT_SENML_JSON : LWM2M_CONTENT_SENML_CBOR;
+        uint8_t *output = NULL;
+        lwm2m_data_t *decoded = NULL;
+        /* CBOR: array/map/base-name(9 bytes)/value label/32-bit text length의 합은 19다. */
+        size_t overhead = form ? sizeof(jsonPrefix) - 1 + 3 : 19;
+        int length, count;
+        value.value.asBuffer.length = maximum - overhead;
+        length = lwm2m_data_serialize_senml_values(&path, 1, &value, format, maximum, &output);
+        CU_ASSERT_EQUAL_FATAL(length, maximum);
+        count = lwm2m_data_parse(&path, output, (size_t)length, format, &decoded);
+        CU_ASSERT_EQUAL_FATAL(count, 1); CU_ASSERT_EQUAL(decoded[0].id, 1);
+        CU_ASSERT_EQUAL(decoded[0].type, LWM2M_TYPE_STRING);
+        CU_ASSERT_EQUAL_FATAL(decoded[0].value.asBuffer.length, value.value.asBuffer.length);
+        CU_ASSERT_EQUAL(memcmp(decoded[0].value.asBuffer.buffer, input, value.value.asBuffer.length), 0);
+        lwm2m_data_free(count, decoded); lwm2m_free(output); output = NULL;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize_senml_values(&path, 1, &value, format, maximum - 1, &output), -3);
+        CU_ASSERT_PTR_NULL(output);
+        value.value.asBuffer.length++;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize_senml_values(&path, 1, &value, format, maximum, &output), -3);
+        CU_ASSERT_PTR_NULL(output); value.value.asBuffer.length--;
+        CU_ASSERT_EQUAL(data_serialize_values(&path, 1, &value, &format, &output), -3);
+        CU_ASSERT_PTR_NULL(output);
+        CU_ASSERT_EQUAL(lwm2m_data_serialize(&path, 1, &value, &format, &output), -3);
+        CU_ASSERT_PTR_NULL(output);
+        test_malloc_fail_after(0);
+        CU_ASSERT_EQUAL(lwm2m_data_serialize_senml_values(&path, 1, &value, format, maximum, &output), -2);
+        test_malloc_fault_disable(); CU_ASSERT_PTR_NULL(output);
+        value.value.asBuffer.length = 0;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize_senml_values(&path, 1, &value, format, 0, &output), -1);
+        CU_ASSERT_PTR_NULL(output);
+        CU_ASSERT_EQUAL(lwm2m_data_serialize_senml_values(&path, 1, &value, format, (size_t)INT_MAX + 1, &output), -1);
+        CU_ASSERT_PTR_NULL(output);
+        CU_ASSERT_EQUAL(lwm2m_data_serialize_senml_values(&path, 1, NULL, format, maximum, &output), -1);
+        CU_ASSERT_PTR_NULL(output);
+        value.type = LWM2M_TYPE_UNDEFINED;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize_senml_values(&path, 1, &value, format, maximum, &output), -1);
+        CU_ASSERT_PTR_NULL(output); value.type = LWM2M_TYPE_STRING;
+        length = lwm2m_data_serialize_senml_values(&path, 0, NULL, format, 2, &output);
+        CU_ASSERT_TRUE_FATAL(length > 0); assert_empty(output, (size_t)length, format); lwm2m_free(output);
+        output = NULL;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize_senml_values(&path, 1, &value, LWM2M_CONTENT_TLV, maximum, &output), -1);
+        CU_ASSERT_PTR_NULL(output);
+    }
+    lwm2m_free(input); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
 static struct TestTable table[] = {
     {"ordinary Observe Cancel empty and genuine values", ordinary_observe_cancel_have_value_payloads},
     {"Notify empty transitions and identical values", notify_empty_transitions_and_no_value_change},
     {"Send value-only payload without Read evidence", send_serializes_values_without_read_obligation},
     {"empty payload allocation failure and invalid leaf", empty_serialization_failure_keeps_observation},
+    {"explicit owner limit exact overflow allocation and default isolation", explicit_limit_keeps_default_and_bounds_every_output},
     {NULL, NULL}
 };
 

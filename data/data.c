@@ -858,6 +858,26 @@ int data_serialize_values(lwm2m_uri_t *uriP, int size, lwm2m_data_t *dataP,
     return result;
 }
 
+int lwm2m_data_serialize_senml_values(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *dataP,
+                                       lwm2m_media_type_t format, size_t maxBytes, uint8_t **bufferP)
+{
+    if (bufferP == NULL) return -1;
+    *bufferP = NULL;
+    /* 비-SenML 빌드에도 공개 API를 두되 미지원 형식은 명시적으로 거절한다. */
+    (void)uriP; (void)size; (void)dataP; (void)maxBytes;
+    switch (format) {
+#ifdef LWM2M_SUPPORT_SENML_JSON
+    case LWM2M_CONTENT_SENML_JSON:
+        return senml_json_serialize_values(uriP, size, dataP, maxBytes, bufferP);
+#endif
+#ifdef LWM2M_SUPPORT_SENML_CBOR
+    case LWM2M_CONTENT_SENML_CBOR:
+        return senml_cbor_serialize_values(uriP, size, dataP, maxBytes, bufferP);
+#endif
+    default: return -1;
+    }
+}
+
 int lwm2m_data_append(int *sizeP, lwm2m_data_t **dataP, int addDataSize, lwm2m_data_t *addDataP) {
     int result = 0;
     int tmpSize = (*sizeP) + addDataSize;

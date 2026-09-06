@@ -303,6 +303,8 @@ int senml_json_serialize(const lwm2m_uri_t * uriP, int size, const lwm2m_data_t 
 /* 값 payload 전용: 빈 컨테이너는 생략하고 미정의 leaf는 거절한다.
  * 입력은 borrowed/불변이며 성공 출력은 caller가 lwm2m_free한다. 실패 출력은 NULL이다. */
 int senml_json_serialize_read(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP);
+int senml_json_serialize_values(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP,
+                                  size_t maxBytes, uint8_t **bufferP);
 #endif
 
 #ifdef LWM2M_SUPPORT_SENML_CBOR
@@ -323,6 +325,8 @@ int senml_cbor_parse_paths(const uint8_t *buffer, size_t length, lwm2m_uri_t **u
 int senml_cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP);
 /* senml_json_serialize_read와 같은 입력/출력 소유권 및 값 전용 계약이다. */
 int senml_cbor_serialize_read(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP);
+int senml_cbor_serialize_values(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP,
+                                  size_t maxBytes, uint8_t **bufferP);
 #endif
 
 // defined in senml_common.c

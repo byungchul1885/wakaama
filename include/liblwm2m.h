@@ -448,6 +448,14 @@ typedef enum {
 lwm2m_data_t * lwm2m_data_new(int size);
 int lwm2m_data_parse(lwm2m_uri_t * uriP, const uint8_t * buffer, size_t bufferLen, lwm2m_media_type_t format, lwm2m_data_t ** dataP);
 int lwm2m_data_serialize(lwm2m_uri_t * uriP, int size, lwm2m_data_t * dataP, lwm2m_media_type_t * formatP, uint8_t ** bufferP);
+
+/* SenML 값 전용 직렬화. URI/tree는 borrowed/불변이며 caller가 owner 정책의 양의 byte 상한을
+ * 명시한다(최대 INT_MAX). 일반 Read/Send의 기본 한도는 바꾸지 않는다. JSON/CBOR만 허용한다.
+ * 빈 OI/MR은 생략, 미정의 leaf는 거절, 실제 빈 문자열/Opaque는 보존한다.
+ * 성공 반환은 전체 byte 수이며 출력은 caller가 lwm2m_free한다. 실패 시 출력은 NULL이다.
+ * -1: 입력/형식/상한 오류, -2: 할당 실패, -3: 직렬화 결과의 상한 초과. */
+int lwm2m_data_serialize_senml_values(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *dataP,
+                                       lwm2m_media_type_t format, size_t maxBytes, uint8_t **bufferP);
 void lwm2m_data_free(int size, lwm2m_data_t * dataP);
 int lwm2m_data_append(int *sizeP, lwm2m_data_t **dataP, int addDataSize, lwm2m_data_t *addDataP);
 int lwm2m_data_append_one(int *sizeP, lwm2m_data_t **dataP, lwm2m_data_type_t type, uint16_t id);

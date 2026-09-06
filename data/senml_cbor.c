@@ -608,7 +608,7 @@ static size_t prv_serializeBody(int count, const lwm2m_data_t *values, const uin
 }
 
 static int prv_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP,
-                         uint8_t **bufferP, bool readResponse)
+                         uint8_t **bufferP, bool readResponse, size_t maxBytes)
 {
     uint8_t baseUri[URI_MAX_STRING_LEN], header[9];
     int baseLength, count, headerLength;
@@ -616,10 +616,11 @@ static int prv_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *
     lwm2m_data_t *target = NULL;
     const uint8_t *parent = NULL;
     size_t parentLength = 0, records, outputRecords;
-    senml_writer_t measured = {NULL, LWM2M_SENML_MAX_SERIALIZED_SIZE, 0, 0};
+    senml_writer_t measured = {NULL, maxBytes, 0, 0};
     senml_writer_t output;
     if (bufferP == NULL) return -1;
     *bufferP = NULL;
+    if (maxBytes == 0 || maxBytes > INT_MAX) return -1;
     if (size < 0 || (size > 0 && tlvP == NULL)) return -1;
     baseLength = lwm2m_uriToString(uriP, baseUri, sizeof(baseUri), &baseLevel);
     if (baseLength < 0) return -1;
@@ -659,8 +660,12 @@ static int prv_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *
 }
 
 int senml_cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP)
-{ return prv_serialize(uriP, size, tlvP, bufferP, false); }
+{ return prv_serialize(uriP, size, tlvP, bufferP, false, LWM2M_SENML_MAX_SERIALIZED_SIZE); }
 
 int senml_cbor_serialize_read(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP)
-{ return prv_serialize(uriP, size, tlvP, bufferP, true); }
+{ return prv_serialize(uriP, size, tlvP, bufferP, true, LWM2M_SENML_MAX_SERIALIZED_SIZE); }
+
+int senml_cbor_serialize_values(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP,
+                                  size_t maxBytes, uint8_t **bufferP)
+{ return prv_serialize(uriP, size, tlvP, bufferP, true, maxBytes); }
 #endif

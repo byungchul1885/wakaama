@@ -328,6 +328,9 @@ bool senml_validate_write_records(senml_record_t *records, int count);
 #endif
 int senml_records_to_paths(const senml_record_t *records, int count, lwm2m_uri_t **urisP);
 lwm2m_data_t *senml_extendData(lwm2m_data_t *parentP, lwm2m_data_type_t type, uint16_t id);
+/* 출력 tree는 caller 소유이며 문자열/opaque 버퍼를 입력에서 이전받는다.
+ * 실패 시 출력은 NULL이고 일부 입력 버퍼도 이미 이전/해제되어 비워질 수 있다.
+ * 입력 tree 자체는 항상 caller 소유이며 성공/실패 모두 lwm2m_data_free로 별도 해제한다. */
 int senml_dataStrip(int size, lwm2m_data_t *dataP, lwm2m_data_t **resultP);
 lwm2m_data_t *senml_findDataItem(lwm2m_data_t *listP, size_t count, uint16_t id);
 uri_depth_t senml_decreaseLevel(uri_depth_t level);
@@ -359,6 +362,7 @@ int json_convertTime(const uint8_t *valueStart, size_t valueLen, time_t *t);
 size_t json_unescapeString(uint8_t *dst, const uint8_t *src, size_t len);
 size_t json_escapeString(uint8_t *dst, size_t dstLen, const uint8_t *src, size_t srcLen);
 lwm2m_data_t * json_extendData(lwm2m_data_t * parentP);
+/* senml_dataStrip과 같은 소유권 이전/실패 계약이다. */
 int json_dataStrip(int size, lwm2m_data_t * dataP, lwm2m_data_t ** resultP);
 lwm2m_data_t * json_findDataItem(lwm2m_data_t * listP, size_t count, uint16_t id);
 uri_depth_t json_decreaseLevel(uri_depth_t level);

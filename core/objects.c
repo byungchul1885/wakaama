@@ -421,6 +421,59 @@ static void prv_updateServerInfo(lwm2m_context_t * contextP, lwm2m_object_t *ser
 }
 
 #ifndef LWM2M_VERSION_1_0
+void lwm2m_set_composite_write_callback(lwm2m_context_t *contextP,
+    lwm2m_composite_write_callback_t callback, void *userData)
+{
+    if (contextP == NULL) return;
+    contextP->compositeWriteCallback = callback;
+    contextP->compositeWriteUserData = userData;
+}
+
+static uint8_t prv_compositeWriteAccess(lwm2m_context_t *contextP, int count,
+                                        const lwm2m_data_t *objects)
+{
+    int i;
+    for (i = 0; i < count; i++)
+    {
+        const lwm2m_data_t *object = objects + i;
+        if (object->id == LWM2M_SECURITY_OBJECT_ID || object->id == LWM2M_OSCORE_OBJECT_ID)
+            return COAP_401_UNAUTHORIZED;
+    }
+    for (i = 0; i < count; i++)
+    {
+        const lwm2m_data_t *object = objects + i;
+        size_t j;
+        if (object->type != LWM2M_TYPE_OBJECT) return COAP_400_BAD_REQUEST;
+        if (LWM2M_LIST_FIND(contextP->objectList, object->id) == NULL) return COAP_404_NOT_FOUND;
+        for (j = 0; j < object->value.asChildren.count; j++)
+        {
+            const lwm2m_data_t *instance = object->value.asChildren.array + j;
+            lwm2m_uri_t uri;
+            size_t k;
+            if (instance->type != LWM2M_TYPE_OBJECT_INSTANCE) return COAP_400_BAD_REQUEST;
+            LWM2M_URI_RESET(&uri);
+            uri.objectId = object->id;
+            uri.instanceId = instance->id;
+            for (k = 0; k < instance->value.asChildren.count; k++)
+            {
+                const lwm2m_data_t *resource = instance->value.asChildren.array + k;
+                size_t leaf, leaves = resource->type == LWM2M_TYPE_MULTIPLE_RESOURCE ?
+                    resource->value.asChildren.count : 1;
+                uri.resourceId = resource->id;
+                for (leaf = 0; leaf < leaves; leaf++)
+                {
+                    uri.resourceInstanceId = resource->type == LWM2M_TYPE_MULTIPLE_RESOURCE ?
+                        resource->value.asChildren.array[leaf].id : LWM2M_MAX_ID;
+                    if (contextP->compositeAccessCallback != NULL &&
+                        !contextP->compositeAccessCallback(contextP, contextP->currentDmServerShortId,
+                            &uri, true, contextP->compositeAccessUserData)) return COAP_401_UNAUTHORIZED;
+                }
+            }
+        }
+    }
+    return COAP_NO_ERROR;
+}
+
 uint8_t object_writeComposite(lwm2m_context_t *contextP, lwm2m_media_type_t format,
                               const uint8_t *buffer, size_t length)
 {
@@ -429,7 +482,7 @@ uint8_t object_writeComposite(lwm2m_context_t *contextP, lwm2m_media_type_t form
     int count;
     uint8_t result;
 
-    if (buffer == NULL || length == 0) return COAP_400_BAD_REQUEST;
+    if (contextP == NULL || buffer == NULL || length == 0) return COAP_400_BAD_REQUEST;
     switch (format)
     {
 #ifdef LWM2M_SUPPORT_SENML_JSON
@@ -446,6 +499,16 @@ uint8_t object_writeComposite(lwm2m_context_t *contextP, lwm2m_media_type_t form
         return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
     }
     if (count <= 0) return COAP_400_BAD_REQUEST;
+    if (contextP->compositeWriteCallback != NULL)
+    {
+        result = prv_compositeWriteAccess(contextP, count, dataP);
+        if (result == COAP_NO_ERROR)
+            result = contextP->compositeWriteCallback(contextP, format, (size_t)count,
+                                                      dataP, contextP->compositeWriteUserData);
+        /* callback 뒤 객체/server list의 이전 pointer를 사용하지 않는다. */
+        lwm2m_data_free(count, dataP);
+        return result;
+    }
     /* 서로 다른 owner를 순차 호출하면 원자성을 보장할 수 없다. 변경 전에 거절한다. */
     result = COAP_405_METHOD_NOT_ALLOWED;
     if (count == 1 && dataP->type == LWM2M_TYPE_OBJECT)

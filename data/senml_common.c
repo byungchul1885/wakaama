@@ -302,30 +302,35 @@ lwm2m_data_t *senml_extendData(lwm2m_data_t *parentP, lwm2m_data_type_t type, ui
 
 int senml_dataStrip(int size, lwm2m_data_t *dataP, lwm2m_data_t **resultP) {
     int i;
-    int j;
 
+    if (resultP == NULL) return -1;
+    *resultP = NULL;
+    if (size <= 0 || dataP == NULL) return -1;
     *resultP = lwm2m_data_new(size);
     if (*resultP == NULL)
         return -1;
 
-    j = 0;
     for (i = 0; i < size; i++) {
-        memcpy((*resultP) + j, dataP + i, sizeof(lwm2m_data_t));
+        memcpy((*resultP) + i, dataP + i, sizeof(lwm2m_data_t));
 
         switch (dataP[i].type) {
         case LWM2M_TYPE_OBJECT:
         case LWM2M_TYPE_OBJECT_INSTANCE:
         case LWM2M_TYPE_MULTIPLE_RESOURCE: {
+            /* 원본 자식 배열을 복사본의 소유 포인터로 남기지 않는다. 실패해도 두 tree를 안전하게 해제한다. */
+            (*resultP)[i].value.asChildren.array = NULL;
+            (*resultP)[i].value.asChildren.count = 0;
             if (dataP[i].value.asChildren.count != 0) {
                 int childLen;
 
                 childLen = senml_dataStrip(dataP[i].value.asChildren.count, dataP[i].value.asChildren.array,
-                                           &((*resultP)[j].value.asChildren.array));
+                                           &((*resultP)[i].value.asChildren.array));
                 if (childLen <= 0) {
-                    /* skip this one */
-                    j--;
+                    lwm2m_data_free(size, *resultP);
+                    *resultP = NULL;
+                    return -1;
                 } else {
-                    (*resultP)[j].value.asChildren.count = childLen;
+                    (*resultP)[i].value.asChildren.count = childLen;
                 }
             }
             break;
@@ -340,8 +345,6 @@ int senml_dataStrip(int size, lwm2m_data_t *dataP, lwm2m_data_t **resultP) {
             /* do nothing */
             break;
         }
-
-        j++;
     }
 
     return size;

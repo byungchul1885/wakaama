@@ -374,9 +374,11 @@ static bool prv_convertValue(const senml_record_t *recordP, lwm2m_data_t *target
     case LWM2M_TYPE_STRING:
         lwm2m_data_encode_nstring((const char *)recordP->value.value.asBuffer.buffer,
                                   recordP->value.value.asBuffer.length, targetP);
+        if (targetP->type != LWM2M_TYPE_STRING) return false;
         break;
     case LWM2M_TYPE_OPAQUE:
         lwm2m_data_encode_opaque(recordP->value.value.asBuffer.buffer, recordP->value.value.asBuffer.length, targetP);
+        if (targetP->type != LWM2M_TYPE_OPAQUE) return false;
         break;
     default:
         if (recordP->value.type != LWM2M_TYPE_UNDEFINED) {

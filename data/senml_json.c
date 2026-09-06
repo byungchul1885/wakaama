@@ -517,6 +517,7 @@ static bool prv_convertValue(const _record_t * recordP,
             {
                 lwm2m_data_encode_nstring((char *)string, stringLen, targetP);
                 lwm2m_free(string);
+                if (targetP->type != LWM2M_TYPE_STRING) return false;
             }
             else
             {

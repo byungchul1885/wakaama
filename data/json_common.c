@@ -511,54 +511,8 @@ lwm2m_data_t * json_extendData(lwm2m_data_t * parentP)
 
 int json_dataStrip(int size, lwm2m_data_t * dataP, lwm2m_data_t ** resultP)
 {
-    int i;
-    int j;
-
-    *resultP = lwm2m_data_new(size);
-    if (*resultP == NULL) return -1;
-
-    j = 0;
-    for (i = 0 ; i < size ; i++)
-    {
-        memcpy((*resultP) + j, dataP + i, sizeof(lwm2m_data_t));
-
-        switch (dataP[i].type)
-        {
-        case LWM2M_TYPE_OBJECT:
-        case LWM2M_TYPE_OBJECT_INSTANCE:
-        case LWM2M_TYPE_MULTIPLE_RESOURCE:
-        {
-            int childLen;
-
-            childLen = json_dataStrip(dataP[i].value.asChildren.count,
-                                      dataP[i].value.asChildren.array,
-                                      &((*resultP)[j].value.asChildren.array));
-            if (childLen <= 0)
-            {
-                /* skip this one */
-                j--;
-            }
-            else
-            {
-                (*resultP)[j].value.asChildren.count = childLen;
-            }
-            break;
-        }
-        case LWM2M_TYPE_STRING:
-        case LWM2M_TYPE_OPAQUE:
-        case LWM2M_TYPE_CORE_LINK:
-            dataP[i].value.asBuffer.length = 0;
-            dataP[i].value.asBuffer.buffer = NULL;
-            break;
-        default:
-            /* do nothing */
-            break;
-        }
-
-        j++;
-    }
-
-    return size;
+    /* JSON/CBOR의 소유권 이전과 부분 할당 실패 처리를 같은 구현으로 유지한다. */
+    return senml_dataStrip(size, dataP, resultP);
 }
 
 lwm2m_data_t * json_findDataItem(lwm2m_data_t * listP, size_t count, uint16_t id)

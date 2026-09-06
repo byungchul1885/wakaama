@@ -1142,7 +1142,252 @@ static void read_block1_operation_limit(void)
     }
 }
 
+typedef struct {
+    unsigned calls;
+    unsigned published;
+    unsigned accessCalls;
+    int deniedRiid;
+    int values[3];
+} write_state_t;
+
+static bool write_access(lwm2m_context_t *context, uint16_t serverId,
+                          const lwm2m_uri_t *uri, bool writing, void *userData)
+{
+    write_state_t *state = userData;
+    (void)context;
+    state->accessCalls++;
+    CU_ASSERT_TRUE(writing);
+    CU_ASSERT_TRUE(LWM2M_URI_IS_SET_RESOURCE(uri));
+    return serverId == 1 && (!LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uri) ||
+                             (int)uri->resourceInstanceId != state->deniedRiid);
+}
+
+static uint8_t atomic_write_owner(lwm2m_context_t *context, lwm2m_media_type_t format,
+                                   size_t count, const lwm2m_data_t *objects, void *userData)
+{
+    write_state_t *state = userData;
+    int candidate[3];
+    unsigned mask = 0;
+    size_t i;
+    bool hasFormat;
+    lwm2m_media_type_t observedFormat;
+    state->calls++;
+    CU_ASSERT_EQUAL(lwm2m_get_current_request_content_format(context, &hasFormat, &observedFormat), COAP_NO_ERROR);
+    CU_ASSERT_TRUE(hasFormat);
+    CU_ASSERT_EQUAL(format, observedFormat);
+    memcpy(candidate, state->values, sizeof(candidate));
+    CU_ASSERT_EQUAL(count, 2);
+    for (i = 0; i < count; i++)
+    {
+        size_t j;
+        CU_ASSERT_EQUAL(objects[i].type, LWM2M_TYPE_OBJECT);
+        for (j = 0; j < objects[i].value.asChildren.count; j++)
+        {
+            const lwm2m_data_t *instance = objects[i].value.asChildren.array + j;
+            const lwm2m_data_t *resource = instance->value.asChildren.array;
+            int index;
+            int64_t value;
+            CU_ASSERT_EQUAL(instance->type, LWM2M_TYPE_OBJECT_INSTANCE);
+            CU_ASSERT_EQUAL(instance->value.asChildren.count, 1);
+            if (objects[i].id == 33000 && instance->id < 2 && resource->id == 1)
+                index = instance->id;
+            else if (objects[i].id == 33001 && instance->id == 0 && resource->id == 7 &&
+                     resource->type == LWM2M_TYPE_MULTIPLE_RESOURCE && resource->value.asChildren.count == 1 &&
+                     resource->value.asChildren.array[0].id == 9)
+            {
+                index = 2;
+                resource = resource->value.asChildren.array;
+            }
+            else return COAP_400_BAD_REQUEST;
+            if (!lwm2m_data_decode_int(resource, &value) || value < 0 || value > 10)
+                return COAP_400_BAD_REQUEST;
+            candidate[index] = (int)value;
+            mask |= 1U << index;
+        }
+    }
+    if (mask != 7) return COAP_400_BAD_REQUEST;
+    /* 예시 owner도 마지막 입력을 검증한 뒤에만 공개한다. core가 개별 Write를 호출하면 이 시험은 실패한다. */
+    memcpy(state->values, candidate, sizeof(candidate));
+    state->published++;
+    return COAP_204_CHANGED;
+}
+
+static const char atomic_json[] = "[{\"n\":\"/33000/0/1\",\"v\":1},{\"n\":\"/33000/1/1\",\"v\":2},{\"n\":\"/33001/0/7/9\",\"v\":3}]";
+/* 독립 CBOR golden. 두 객체, 세 OI/RIID 경로의 정수 값이다. */
+static const uint8_t atomic_cbor[] = {0x83,
+    0xa2,0x00,0x6a,'/','3','3','0','0','0','/','0','/','1',0x02,0x01,
+    0xa2,0x00,0x6a,'/','3','3','0','0','0','/','1','/','1',0x02,0x02,
+    0xa2,0x00,0x6c,'/','3','3','0','0','1','/','0','/','7','/','9',0x02,0x03};
+
+static uint8_t atomic_write_request(write_state_t *state, const uint8_t *payload, size_t length,
+                                      lwm2m_media_type_t format, int mode)
+{
+    lwm2m_context_t context;
+    lwm2m_server_t server;
+    lwm2m_object_t objects[2];
+    lwm2m_list_t instances[2];
+    read_state_t readState;
+    coap_packet_t request = {0}, response = {0};
+    lwm2m_uri_t uri;
+    uint8_t result;
+    read_fixture(&context, &server, objects, instances, &readState);
+    objects[0].objID = 33000;
+    objects[1] = objects[0];
+    objects[1].objID = 33001;
+    objects[0].next = objects + 1;
+    if (mode == 1) objects[0].next = NULL;
+    if (mode == 2) server.shortID = 2;
+    lwm2m_set_composite_access_callback(&context, write_access, state);
+    if (mode != 3) lwm2m_set_composite_write_callback(&context, atomic_write_owner, state);
+    coap_init_message(&request, COAP_TYPE_CON, COAP_IPATCH, 800);
+    coap_set_header_content_type(&request, format);
+    coap_set_payload(&request, (uint8_t *)payload, length);
+    LWM2M_URI_RESET(&uri);
+    result = dm_handleRequest(&context, &uri, &server, &request, &response);
+    coap_free_header(&request);
+    coap_free_header(&response);
+    CU_ASSERT_FALSE(context.currentDmRequestActive);
+    lwm2m_set_composite_write_callback(&context, NULL, NULL);
+    CU_ASSERT_PTR_NULL(context.compositeWriteCallback);
+    return result;
+}
+
+static void write_whole_tree_one_owner_json_cbor(void)
+{
+    size_t i;
+    for (i = 0; i < 2; i++)
+    {
+        write_state_t state = {0, 0, 0, -1, {8, 8, 8}};
+        CU_ASSERT_EQUAL(atomic_write_request(&state, i ? atomic_cbor : (const uint8_t *)atomic_json,
+            i ? sizeof(atomic_cbor) : strlen(atomic_json),
+            i ? LWM2M_CONTENT_SENML_CBOR : LWM2M_CONTENT_SENML_JSON, 0), COAP_204_CHANGED);
+        CU_ASSERT_EQUAL(state.calls, 1);
+        CU_ASSERT_EQUAL(state.published, 1);
+        CU_ASSERT_EQUAL(state.accessCalls, 3);
+        CU_ASSERT_EQUAL(state.values[0], 1);
+        CU_ASSERT_EQUAL(state.values[1], 2);
+        CU_ASSERT_EQUAL(state.values[2], 3);
+    }
+}
+
+static void write_preflight_and_last_owner_failure_are_atomic(void)
+{
+    const char *invalid[] = {
+        "[{\"n\":\"/33000/0/1\",\"v\":1},{\"n\":\"/33000/1/1\",\"v\":2},{\"n\":\"/33001/0/7/9\",\"v\":99}]",
+        "[{\"n\":\"/33000/0/1\",\"v\":1},{\"n\":\"/0/0/1\",\"v\":2}]",
+        "[{\"n\":\"/33000/0/1\",\"v\":1},{\"n\":\"/21/0/1\",\"v\":2}]",
+        "[{\"n\":\"/33000/0/1\",\"v\":1},{\"n\":\"/33000/0/1\",\"v\":2}]",
+        "[{\"n\":\"/33000/0/1\",\"v\":1},{\"n\":\"/33001/0/7/9\"}]"
+    };
+    size_t i;
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+    {
+        write_state_t state = {0, 0, 0, -1, {8, 8, 8}};
+        CU_ASSERT_EQUAL(atomic_write_request(&state, (const uint8_t *)invalid[i], strlen(invalid[i]),
+            LWM2M_CONTENT_SENML_JSON, 0), i == 1 || i == 2 ? COAP_401_UNAUTHORIZED : COAP_400_BAD_REQUEST);
+        CU_ASSERT_EQUAL(state.calls, i == 0 ? 1 : 0);
+        CU_ASSERT_EQUAL(state.published, 0);
+        CU_ASSERT_EQUAL(state.values[0], 8);
+        CU_ASSERT_EQUAL(state.values[1], 8);
+        CU_ASSERT_EQUAL(state.values[2], 8);
+    }
+    for (i = 0; i < 4; i++)
+    {
+        write_state_t state = {0, 0, 0, -1, {8, 8, 8}};
+        if (i == 0) state.deniedRiid = 9;
+        CU_ASSERT_EQUAL(atomic_write_request(&state, (const uint8_t *)atomic_json, strlen(atomic_json),
+            LWM2M_CONTENT_SENML_JSON, (int)i),
+            i == 1 ? COAP_404_NOT_FOUND : i == 3 ? COAP_405_METHOD_NOT_ALLOWED : COAP_401_UNAUTHORIZED);
+        CU_ASSERT_EQUAL(state.calls, 0);
+        CU_ASSERT_EQUAL(state.published, 0);
+        CU_ASSERT_EQUAL(state.values[0], 8);
+        CU_ASSERT_EQUAL(state.values[1], 8);
+        CU_ASSERT_EQUAL(state.values[2], 8);
+    }
+}
+
+#ifdef WAKAAMA_TEST_FAULTS
+static void write_parser_owned_buffers_every_allocation_failure(void)
+{
+    const char json[] = "[{\"n\":\"/33000/0/1\",\"vs\":\"abc\"},{\"n\":\"/33001/0/7/9\",\"vd\":\"AP8B\"}]";
+    const uint8_t cbor[] = {0x82,
+        0xa2,0,0x6a,'/','3','3','0','0','0','/','0','/','1',3,0x63,'a','b','c',
+        0xa2,0,0x6c,'/','3','3','0','0','1','/','0','/','7','/','9',8,0x43,0,0xff,1};
+    size_t baseline = test_malloc_live_allocations();
+    int format;
+    for (format = 0; format < 2; format++)
+    {
+        size_t fail, calls;
+        lwm2m_data_t *data = NULL;
+        int count;
+        test_malloc_fail_after((size_t)-1);
+        count = format ? senml_cbor_parse_composite(cbor, sizeof(cbor), &data) :
+            senml_json_parse_composite((const uint8_t *)json, strlen(json), &data);
+        calls = test_malloc_observed_calls();
+        test_malloc_fault_disable();
+        CU_ASSERT_EQUAL_FATAL(count, 2);
+        CU_ASSERT_EQUAL(data[0].value.asChildren.array[0].value.asChildren.array[0].type, LWM2M_TYPE_STRING);
+        CU_ASSERT_EQUAL(data[0].value.asChildren.array[0].value.asChildren.array[0].value.asBuffer.length, 3);
+        CU_ASSERT_EQUAL(memcmp(data[0].value.asChildren.array[0].value.asChildren.array[0].value.asBuffer.buffer, "abc", 3), 0);
+        {
+            const lwm2m_data_t *leaf = data[1].value.asChildren.array[0].value.asChildren.array[0].value.asChildren.array;
+            CU_ASSERT_EQUAL(leaf->type, LWM2M_TYPE_OPAQUE);
+            CU_ASSERT_EQUAL(leaf->value.asBuffer.length, 3);
+            CU_ASSERT_EQUAL(memcmp(leaf->value.asBuffer.buffer, "\0\xff\1", 3), 0);
+        }
+        lwm2m_data_free(count, data);
+        CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+        for (fail = 0; fail < calls; fail++)
+        {
+            data = NULL;
+            test_malloc_fail_after(fail);
+            count = format ? senml_cbor_parse_composite(cbor, sizeof(cbor), &data) :
+                senml_json_parse_composite((const uint8_t *)json, strlen(json), &data);
+            test_malloc_fault_disable();
+            CU_ASSERT(count <= 0);
+            CU_ASSERT_PTR_NULL(data);
+            if (count > 0) lwm2m_data_free(count, data);
+            CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+        }
+    }
+}
+
+static void write_tree_every_allocation_failure(void)
+{
+    size_t baseline = test_malloc_live_allocations();
+    size_t calls, fail;
+    write_state_t state = {0, 0, 0, -1, {8, 8, 8}};
+    test_malloc_fail_after((size_t)-1);
+    CU_ASSERT_EQUAL(atomic_write_request(&state, atomic_cbor, sizeof(atomic_cbor), LWM2M_CONTENT_SENML_CBOR, 0), COAP_204_CHANGED);
+    calls = test_malloc_observed_calls();
+    test_malloc_fault_disable();
+    CU_ASSERT(calls > 0);
+    CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    for (fail = 0; fail < calls; fail++)
+    {
+        write_state_t attempt = {0, 0, 0, -1, {8, 8, 8}};
+        uint8_t result;
+        test_malloc_fail_after(fail);
+        result = atomic_write_request(&attempt, atomic_cbor, sizeof(atomic_cbor), LWM2M_CONTENT_SENML_CBOR, 0);
+        test_malloc_fault_disable();
+        CU_ASSERT_NOT_EQUAL(result, COAP_204_CHANGED);
+        CU_ASSERT_EQUAL(attempt.calls, 0);
+        CU_ASSERT_EQUAL(attempt.published, 0);
+        CU_ASSERT_EQUAL(attempt.values[0], 8);
+        CU_ASSERT_EQUAL(attempt.values[1], 8);
+        CU_ASSERT_EQUAL(attempt.values[2], 8);
+        CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    }
+}
+#endif
+
 static struct TestTable table[] = {
+    {"Q06 composite whole tree atomic owner", write_whole_tree_one_owner_json_cbor},
+    {"Q06 write preflight and last owner failure", write_preflight_and_last_owner_failure_are_atomic},
+#ifdef WAKAAMA_TEST_FAULTS
+    {"Q12 write tree every allocation failure", write_tree_every_allocation_failure},
+    {"Q12 write parser owned buffers failure", write_parser_owned_buffers_every_allocation_failure},
+#endif
     {"Q04 snapshot GET formats and scopes", snapshot_get_formats_and_scopes},
     {"Q05 snapshot GET bytes and submission", snapshot_get_frozen_bytes_and_submission},
     {"Q14 snapshot GET errors and opt in", snapshot_get_strict_errors_and_opt_in},

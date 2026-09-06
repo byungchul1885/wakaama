@@ -1497,13 +1497,17 @@ static bool prv_compositeCovers(const lwm2m_uri_t *parent, const lwm2m_uri_t *ch
 
 /* callback 이후 owner의 최신 목록을 재조회한다. 목록 노드나 next를 보관하지 않는다. */
 static uint8_t prv_readCompositePath(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
-                                    size_t *countP, lwm2m_data_t **dataP)
+                                    size_t *countP, lwm2m_data_t **dataP,
+                                    bool *authorizedP, bool *deniedP)
 {
     lwm2m_object_t *objectP;
     if (contextP->currentDmRequestActive && contextP->compositeAccessCallback != NULL &&
         !contextP->compositeAccessCallback(contextP, contextP->currentDmServerShortId, uriP,
                                            false, contextP->compositeAccessUserData))
+    {
+        *deniedP = true;
         return COAP_401_UNAUTHORIZED;
+    }
     if (!LWM2M_URI_IS_SET_OBJECT(uriP) || !LWM2M_URI_IS_SET_INSTANCE(uriP))
     {
         uint32_t nextId = 0;
@@ -1533,7 +1537,7 @@ static uint8_t prv_readCompositePath(lwm2m_context_t *contextP, lwm2m_uri_t *uri
                 child.instanceId = instanceP->id;
                 nextId = (uint32_t)instanceP->id + 1;
             }
-            result = prv_readCompositePath(contextP, &child, countP, dataP);
+            result = prv_readCompositePath(contextP, &child, countP, dataP, authorizedP, deniedP);
             if (result >= COAP_500_INTERNAL_SERVER_ERROR) return result;
             if (result == COAP_205_CONTENT) any = true;
             else if (result != COAP_404_NOT_FOUND) lastResult = result;
@@ -1546,7 +1550,12 @@ static uint8_t prv_readCompositePath(lwm2m_context_t *contextP, lwm2m_uri_t *uri
         lwm2m_data_t *values = NULL;
         lwm2m_data_t objectNode;
         lwm2m_data_t *instance;
-        uint8_t result = object_readData(contextP, uriP, &size, &values);
+        uint8_t result;
+        /* 읽을 RID가 없어도 실제 OI의 R 권한을 얻었으면 전체 권한은 허용된 것이다. */
+        objectP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+        if (objectP != NULL && LWM2M_LIST_FIND(objectP->instanceList, uriP->instanceId) != NULL)
+            *authorizedP = true;
+        result = object_readData(contextP, uriP, &size, &values);
         if (result != COAP_205_CONTENT) return result;
         if (size <= 0) { lwm2m_data_free(size, values); return COAP_404_NOT_FOUND; }
         instance = lwm2m_data_new(1);
@@ -1575,6 +1584,7 @@ uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, s
     size_t count = 0;
     size_t i;
     uint8_t result = COAP_404_NOT_FOUND;
+    bool authorized = false, denied = false;
     *sizeP = 0;
     *dataP = NULL;
     if (uriP == NULL && numUris != 0) return COAP_400_BAD_REQUEST;
@@ -1594,7 +1604,7 @@ uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, s
             { covered = true; break; }
         }
         if (covered) continue;
-        partialResult = prv_readCompositePath(contextP, uriP + i, &count, dataP);
+        partialResult = prv_readCompositePath(contextP, uriP + i, &count, dataP, &authorized, &denied);
         if (partialResult >= COAP_500_INTERNAL_SERVER_ERROR)
         {
             lwm2m_data_free((int)count, *dataP);
@@ -1604,6 +1614,11 @@ uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, s
         if (partialResult != COAP_404_NOT_FOUND) result = partialResult;
     }
     *sizeP = (int)count;
+    if (count == 0 && contextP->currentDmRequestActive)
+    {
+        if (authorized) return COAP_404_NOT_FOUND;
+        if (denied) return COAP_401_UNAUTHORIZED;
+    }
     return count > 0 ? COAP_205_CONTENT : result;
 }
 #endif

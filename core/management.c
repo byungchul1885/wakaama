@@ -848,10 +848,8 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     {
         if (paths[i].objectId == LWM2M_SECURITY_OBJECT_ID || paths[i].objectId == LWM2M_OSCORE_OBJECT_ID)
         { result = COAP_401_UNAUTHORIZED; goto cleanup; }
-        if (contextP->compositeAccessCallback != NULL &&
-            !contextP->compositeAccessCallback(contextP, serverId, paths + i, false,
-                                               contextP->compositeAccessUserData))
-        { result = COAP_401_UNAUTHORIZED; goto cleanup; }
+        /* 일반 OI 권한은 집계 단계에서 best-effort로 검사한다(OMA Core 8.2.1).
+         * Security/OSCORE 명시 요청만 정규화 전에 전체 거절한다. */
     }
     if (contextP->nextCompositeReadId == UINT64_MAX)
     { result = COAP_503_SERVICE_UNAVAILABLE; goto cleanup; }
@@ -861,8 +859,9 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     contextP->currentCompositeReadId = 0;
     if (result != COAP_205_CONTENT)
     {
-        /* 권한/문법은 위에서 검사했다. 유효한 선택자에 읽을 값이 없으면 4.04다. */
-        if (result >= COAP_400_BAD_REQUEST && result < COAP_500_INTERNAL_SERVER_ERROR)
+        /* 권한이 모두 없으면 4.01, 허용된 선택자에 읽을 값이 없으면 4.04다. */
+        if (result != COAP_401_UNAUTHORIZED &&
+            result >= COAP_400_BAD_REQUEST && result < COAP_500_INTERNAL_SERVER_ERROR)
             result = COAP_404_NOT_FOUND;
         goto cleanup;
     }

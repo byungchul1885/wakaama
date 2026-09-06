@@ -316,6 +316,60 @@ static void read_rejections_before_callback(void)
     }
 }
 
+static void read_authorization_is_best_effort(void)
+{
+    const char *requests[] = {
+        "[{\"n\":\"/27343/0/0\"},{\"n\":\"/27343/1/0\"}]",
+        "[{\"n\":\"/27343/1/0\"},{\"n\":\"/27343/0/0\"}]",
+        "[{\"n\":\"/27343\"}]", "[{\"n\":\"/\"}]"
+    };
+    size_t i;
+    uint16_t format;
+    for (format = LWM2M_CONTENT_SENML_JSON; format <= LWM2M_CONTENT_SENML_CBOR; format += 2)
+    for (i = 0; i < sizeof(requests) / sizeof(requests[0]); i++)
+    {
+        lwm2m_context_t context;
+        lwm2m_server_t server;
+        lwm2m_object_t object;
+        lwm2m_list_t instances[2];
+        read_state_t state;
+        coap_packet_t response;
+        lwm2m_data_t *decoded = NULL;
+        int count;
+        read_fixture(&context, &server, &object, instances, &state);
+        state.deniedInstance = 1;
+        CU_ASSERT_EQUAL_FATAL(fetch(&context, requests[i], format, &response), COAP_205_CONTENT);
+        CU_ASSERT_EQUAL(state.calls, 1);
+        count = lwm2m_data_parse(NULL, response.payload, response.payload_len, format, &decoded);
+        CU_ASSERT_EQUAL_FATAL(count, 1);
+        CU_ASSERT_EQUAL(decoded[0].id, 27343);
+        CU_ASSERT_EQUAL_FATAL(decoded[0].value.asChildren.count, 1);
+        CU_ASSERT_EQUAL(decoded[0].value.asChildren.array[0].id, 0);
+        lwm2m_data_free(count, decoded);
+        lwm2m_free(response.payload);
+        coap_free_header(&response);
+
+        state.calls = 0;
+        CU_ASSERT_EQUAL(fetch(&context, "[{\"n\":\"/27343/1/0\"}]", format, &response),
+                        COAP_401_UNAUTHORIZED);
+        CU_ASSERT_EQUAL(state.calls, 0);
+        CU_ASSERT_PTR_NULL(response.payload);
+        coap_free_header(&response);
+        /* 허용된 OI에 RID가 없을 때에는 다른 거절 IID 때문에 4.01이 되지 않는다. */
+        CU_ASSERT_EQUAL(fetch(&context, "[{\"n\":\"/27343/0/99\"},{\"n\":\"/27343/1/0\"}]",
+                              format, &response), COAP_404_NOT_FOUND);
+        CU_ASSERT_EQUAL(state.calls, 1);
+        CU_ASSERT_PTR_NULL(response.payload);
+        coap_free_header(&response);
+        server.shortID = 2;
+        state.calls = 0;
+        CU_ASSERT_EQUAL(fetch(&context, requests[i], format, &response), COAP_401_UNAUTHORIZED);
+        CU_ASSERT_EQUAL(state.calls, 0);
+        CU_ASSERT_PTR_NULL(response.payload);
+        coap_free_header(&response);
+    }
+}
+
 static void read_packet_fetch_method(void)
 {
     /* CoAP 헤더/Content-Format을 고정 bytes로 작성하여 요청 serializer와 독립시킨다. */
@@ -656,6 +710,7 @@ static struct TestTable table[] = {
     {"Q04 multi IID and overlap", read_multi_instance_and_overlap},
     {"Q04 missing versus internal failure", read_best_effort_and_internal_failure},
     {"Q01 preflight rejection", read_rejections_before_callback},
+    {"Q01 best-effort read authorization", read_authorization_is_best_effort},
     {"Q02 actual FETCH packet dispatch", read_packet_fetch_method},
     {"Q11 Block2 immutable snapshot", read_block2_snapshot_survives_changes},
     {"Q12 snapshot quota and close", read_snapshot_quota_and_session_cleanup},

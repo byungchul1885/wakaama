@@ -20,6 +20,9 @@ typedef struct {
     unsigned reads;
     bool removeOnRead;
     bool readFailure;
+    lwm2m_dm_operation_t readOperation;
+    uint64_t readEvidenceId;
+    uint16_t readServer;
 } fixture_t;
 
 static uint8_t read_value(lwm2m_context_t *context, uint16_t iid, int *count,
@@ -27,6 +30,9 @@ static uint8_t read_value(lwm2m_context_t *context, uint16_t iid, int *count,
     fixture_t *f = object->userData;
     (void)iid;
     ++f->reads;
+    f->readOperation = lwm2m_get_current_operation(context);
+    f->readEvidenceId = lwm2m_get_current_composite_read_id(context);
+    f->readServer = context->currentDmServerShortId;
     if (f->removeOnRead) observe_clear(context, &f->path);
     if (f->readFailure) return COAP_503_SERVICE_UNAVAILABLE;
     if (*count != 1 || *data == NULL) return COAP_400_BAD_REQUEST;
@@ -317,6 +323,67 @@ static void all_notify_allocation_failures_keep_retry(void) {
     }
 }
 
+static void ignore_read_event(lwm2m_context_t *context, uint64_t id,
+                               lwm2m_composite_read_event_t event, void *userData) {
+    (void)context; (void)id; (void)event; (void)userData;
+}
+
+static bool deny_notify(lwm2m_context_t *context, uint16_t sid, const lwm2m_uri_t *uri,
+                         bool write, void *userData) {
+    (void)context; (void)sid; (void)uri; (void)write; (void)userData;
+    return false;
+}
+
+static void read_purpose_isolation_and_role_recheck(void) {
+    fixture_t f;
+    lwm2m_data_t *data = NULL;
+    lwm2m_attributes_t attr = {0};
+    int count = 0;
+    init(&f);
+    f.context.currentDmOperation = LWM2M_DM_OPERATION_READ;
+    f.context.currentDmRequestActive = true;
+    f.context.currentDmServerShortId = 77;
+    f.context.currentDmSessionGeneration = 19;
+    f.context.currentCompositeReadId = 91;
+    f.context.compositeReadEventCallback = ignore_read_event;
+    f.context.currentRequestTokenLen = 1; f.context.currentRequestToken[0] = 9;
+    CU_ASSERT_EQUAL(dm_readNotification(&f.context, f.servers + 1, &f.path, &count, &data), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(f.readOperation, LWM2M_DM_OPERATION_NOTIFY);
+    CU_ASSERT_EQUAL(f.readEvidenceId, 0); CU_ASSERT_EQUAL(f.readServer, 2);
+    CU_ASSERT_EQUAL(f.context.currentDmOperation, LWM2M_DM_OPERATION_READ);
+    CU_ASSERT_EQUAL(f.context.currentDmServerShortId, 77); CU_ASSERT_EQUAL(f.context.currentDmSessionGeneration, 19);
+    CU_ASSERT_EQUAL(lwm2m_get_current_composite_read_id(&f.context), 91);
+    CU_ASSERT_EQUAL(f.context.currentRequestToken[0], 9); CU_ASSERT_EQUAL(f.context.currentRequestTokenLen, 1);
+    lwm2m_data_free(count, data); data = NULL; count = 0;
+    f.context.compositeAccessCallback = deny_notify; f.reads = 0;
+    CU_ASSERT_EQUAL(dm_readNotification(&f.context, f.servers, &f.path, &count, &data), COAP_401_UNAUTHORIZED);
+    CU_ASSERT_EQUAL(f.reads, 0); CU_ASSERT_PTR_NULL(data);
+    CU_ASSERT_EQUAL(f.context.currentDmOperation, LWM2M_DM_OPERATION_READ);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD; attr.minPeriod = 1;
+    parameters(&f, 0, &attr);
+    CU_ASSERT_EQUAL(f.readOperation, LWM2M_DM_OPERATION_WRITE_ATTRIBUTES);
+    CU_ASSERT_EQUAL(f.readEvidenceId, 0);
+    CU_ASSERT_EQUAL(f.context.currentDmOperation, LWM2M_DM_OPERATION_READ);
+    f.context.compositeAccessCallback = NULL;
+    CU_ASSERT_EQUAL(request_observe(&f, 0), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(f.readOperation, LWM2M_DM_OPERATION_OBSERVE);
+    CU_ASSERT_EQUAL(f.readEvidenceId, 0);
+    CU_ASSERT_EQUAL(request_observe(&f, 1), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(f.readOperation, LWM2M_DM_OPERATION_OBSERVE_CANCEL);
+    CU_ASSERT_EQUAL(f.readEvidenceId, 0);
+    f.context.serverList = f.servers;
+    CU_ASSERT_EQUAL(lwm2m_send_with_token(&f.context, 1, &f.path, 1,
+                                          (const uint8_t *)"send", 4, NULL, NULL), NO_ERROR);
+    CU_ASSERT_EQUAL(f.readOperation, LWM2M_DM_OPERATION_SEND);
+    CU_ASSERT_EQUAL(f.readEvidenceId, 0);
+    CU_ASSERT_EQUAL(f.context.currentDmOperation, LWM2M_DM_OPERATION_READ);
+    CU_ASSERT_EQUAL(lwm2m_get_current_composite_read_id(&f.context), 91);
+    while (f.context.transactionList != NULL)
+        transaction_remove(&f.context, f.context.transactionList);
+    f.context.serverList = NULL;
+    clear(&f);
+}
+
 CU_ErrorCode create_notify_test_suit(void) {
     struct TestTable table[] = {
         {"Q09 pmin AND and pending latest value", pmin_and_pending},
@@ -329,6 +396,7 @@ CU_ErrorCode create_notify_test_suit(void) {
         {"Q12 initial allocation failures and cancel before failed Read", initial_failures_and_cancel_before_read_failure},
         {"Q09 Q10 unsigned float and sequence boundaries", unsigned_float_and_sequence_boundaries},
         {"Q12 every Notify allocation failure retains retry", all_notify_allocation_failures_keep_retry},
+        {"Q05 Q01 pure read purpose and current role", read_purpose_isolation_and_role_recheck},
         {NULL, NULL}
     };
     CU_pSuite suite = CU_add_suite("notify timing", NULL, NULL);

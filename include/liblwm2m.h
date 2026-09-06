@@ -928,7 +928,10 @@ typedef enum
     LWM2M_DM_OPERATION_CREATE,
     LWM2M_DM_OPERATION_DELETE,
     /* 일반 Read와 별도 전달 증거로 처리한다. URI는 root이며 경로는 payload에 있다. */
-    LWM2M_DM_OPERATION_READ_COMPOSITE
+    LWM2M_DM_OPERATION_READ_COMPOSITE,
+    /* 내부 값 조회 목적이다. 외부 DM 응답/Read 완료 증거로 사용하지 않는다. */
+    LWM2M_DM_OPERATION_NOTIFY,
+    LWM2M_DM_OPERATION_SEND
 } lwm2m_dm_operation_t;
 
 typedef struct
@@ -1069,6 +1072,7 @@ struct _lwm2m_context_
     uint8_t              currentRequestToken[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t               currentRequestTokenLen;
     bool                 currentDmRequestActive;
+    lwm2m_dm_operation_t currentDmOperation;
     bool                 currentDmRequestCanDefer;
     bool                 currentDmRequestHasContentFormat;
     lwm2m_media_type_t    currentDmRequestContentFormat;
@@ -1230,7 +1234,12 @@ int lwm2m_get_current_request_content_format(lwm2m_context_t *contextP,
 int lwm2m_get_current_request_identity(lwm2m_context_t *contextP,
                                        uint16_t *serverShortIdP,
                                        uint64_t *sessionGenerationP,
-                                       uint16_t *messageIdP);
+                                      uint16_t *messageIdP);
+/* callback 동안의 조회 목적만 반환한다. 포인터/Token/완료 권한을 제공하지 않는다.
+ * Observe/Cancel/Notify/Send/Discover/Write-Attributes는 값 조회일 뿐 Read 완료 증거가 아니다.
+ * context가 없거나 직접 callback을 호출하는 기존 경로의 UNKNOWN은 순수 조회로 간주하지 않는다. */
+lwm2m_dm_operation_t lwm2m_get_current_operation(const lwm2m_context_t *contextP);
+bool lwm2m_is_pure_value_read(const lwm2m_context_t *contextP);
 int lwm2m_refresh_session_generation(lwm2m_context_t *contextP, void *sessionH);
 #endif
 #endif

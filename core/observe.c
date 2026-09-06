@@ -500,7 +500,12 @@ static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
     if (ret != NO_ERROR)
         return ret;
 
-    ret = object_readCompositeData(contextP, urisP, numUris, &size, &dataP);
+    {
+        lwm2m_dm_operation_t previous = contextP->currentDmOperation;
+        contextP->currentDmOperation = LWM2M_DM_OPERATION_SEND;
+        ret = object_readCompositeData(contextP, urisP, numUris, &size, &dataP);
+        contextP->currentDmOperation = previous;
+    }
     if (ret != COAP_205_CONTENT)
         return ret;
 

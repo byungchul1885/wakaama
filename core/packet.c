@@ -141,7 +141,7 @@ void lwm2m_set_dm_response_submitted_callback(
     contextP->dmResponseSubmittedUserData = userData;
 }
 
-static lwm2m_dm_operation_t prv_dm_operation(const coap_packet_t *requestP,
+lwm2m_dm_operation_t dm_getOperation(const coap_packet_t *requestP,
                                              const lwm2m_uri_t *uriP)
 {
     if (requestP == NULL || uriP == NULL)
@@ -219,7 +219,7 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
     {
         return;
     }
-    submission.operation = prv_dm_operation(requestP, &submission.uri);
+    submission.operation = dm_getOperation(requestP, &submission.uri);
     if (submission.operation == LWM2M_DM_OPERATION_CREATE &&
         responseP->code == COAP_201_CREATED &&
         createdLocationPath != NULL)

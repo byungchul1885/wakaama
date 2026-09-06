@@ -266,6 +266,7 @@ void dm_clearDeferredRequests(lwm2m_context_t *contextP)
     }
     contextP->currentDmDeferredRequestId = 0U;
     contextP->currentDmRequestActive = false;
+    contextP->currentDmOperation = LWM2M_DM_OPERATION_UNKNOWN;
     contextP->currentDmRequestCanDefer = false;
 }
 
@@ -315,6 +316,7 @@ typedef struct
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t tokenLength;
     bool requestActive;
+    lwm2m_dm_operation_t operation;
     bool requestCanDefer;
     bool hasContentFormat;
     lwm2m_media_type_t contentFormat;
@@ -327,6 +329,7 @@ typedef struct
 
 static int prv_beginDmRequestScope(lwm2m_context_t *contextP,
                                    lwm2m_server_t *serverP,
+                                   const lwm2m_uri_t *uriP,
                                    coap_packet_t *message,
                                    lwm2m_media_type_t format,
                                    uint16_t exchangeMid,
@@ -342,6 +345,7 @@ static int prv_beginDmRequestScope(lwm2m_context_t *contextP,
     memcpy(scopeP->token, contextP->currentRequestToken, sizeof(scopeP->token));
     scopeP->tokenLength = contextP->currentRequestTokenLen;
     scopeP->requestActive = contextP->currentDmRequestActive;
+    scopeP->operation = contextP->currentDmOperation;
     scopeP->requestCanDefer = contextP->currentDmRequestCanDefer;
     scopeP->hasContentFormat = contextP->currentDmRequestHasContentFormat;
     scopeP->contentFormat = contextP->currentDmRequestContentFormat;
@@ -356,6 +360,7 @@ static int prv_beginDmRequestScope(lwm2m_context_t *contextP,
         memcpy(contextP->currentRequestToken, message->token, message->token_len);
     contextP->currentRequestTokenLen = message->token_len;
     contextP->currentDmRequestActive = true;
+    contextP->currentDmOperation = dm_getOperation(message, uriP);
     contextP->currentDmRequestCanDefer = false;
     contextP->currentDmRequestHasContentFormat =
         IS_OPTION(message, COAP_OPTION_CONTENT_TYPE);
@@ -393,6 +398,7 @@ static void prv_endDmRequestScope(lwm2m_context_t *contextP,
     memcpy(contextP->currentRequestToken, scopeP->token, sizeof(scopeP->token));
     contextP->currentRequestTokenLen = scopeP->tokenLength;
     contextP->currentDmRequestActive = scopeP->requestActive;
+    contextP->currentDmOperation = scopeP->operation;
     contextP->currentDmRequestCanDefer = requestCanDefer;
     contextP->currentDmRequestHasContentFormat = scopeP->hasContentFormat;
     contextP->currentDmRequestContentFormat = scopeP->contentFormat;
@@ -401,6 +407,52 @@ static void prv_endDmRequestScope(lwm2m_context_t *contextP,
     contextP->currentDmMessageId = scopeP->messageId;
     contextP->currentDmTransportMessageId = scopeP->transportMessageId;
     contextP->currentDmDeferredRequestId = deferredRequestId;
+}
+
+lwm2m_dm_operation_t lwm2m_get_current_operation(const lwm2m_context_t *contextP)
+{
+    return contextP != NULL ? contextP->currentDmOperation : LWM2M_DM_OPERATION_UNKNOWN;
+}
+
+bool lwm2m_is_pure_value_read(const lwm2m_context_t *contextP)
+{
+    switch (lwm2m_get_current_operation(contextP))
+    {
+    case LWM2M_DM_OPERATION_OBSERVE:
+    case LWM2M_DM_OPERATION_OBSERVE_CANCEL:
+    case LWM2M_DM_OPERATION_NOTIFY:
+    case LWM2M_DM_OPERATION_SEND:
+    case LWM2M_DM_OPERATION_DISCOVER:
+    case LWM2M_DM_OPERATION_WRITE_ATTRIBUTES: return true;
+    default: return false;
+    }
+}
+
+uint8_t dm_readNotification(lwm2m_context_t *contextP, lwm2m_server_t *serverP,
+                             lwm2m_uri_t *uriP, int *sizeP, lwm2m_data_t **dataP)
+{
+    dm_request_scope_t scope;
+    coap_packet_t request;
+    uint64_t readId;
+    uint8_t result;
+    if (contextP == NULL || serverP == NULL || uriP == NULL || sizeP == NULL || dataP == NULL)
+        return COAP_400_BAD_REQUEST;
+    readId = contextP->currentCompositeReadId;
+    coap_init_message(&request, COAP_TYPE_NON, COAP_GET, 0);
+    result = (uint8_t)prv_beginDmRequestScope(contextP, serverP, uriP, &request,
+                                              LWM2M_CONTENT_SENML_CBOR, 0, &scope);
+    if (result != NO_ERROR) return result;
+    contextP->currentDmOperation = LWM2M_DM_OPERATION_NOTIFY;
+    contextP->currentCompositeReadId = 0;
+    if (uriP->objectId == LWM2M_SECURITY_OBJECT_ID || uriP->objectId == LWM2M_OSCORE_OBJECT_ID ||
+        (contextP->compositeAccessCallback != NULL &&
+         !contextP->compositeAccessCallback(contextP, contextP->currentDmServerShortId, uriP, false,
+                                            contextP->compositeAccessUserData)))
+        result = COAP_401_UNAUTHORIZED;
+    else result = object_readData(contextP, uriP, sizeP, dataP);
+    contextP->currentCompositeReadId = readId;
+    prv_endDmRequestScope(contextP, &scope);
+    return result;
 }
 #endif
 
@@ -608,7 +660,8 @@ void lwm2m_set_composite_read_event_callback(lwm2m_context_t *contextP,
 uint64_t lwm2m_get_current_composite_read_id(const lwm2m_context_t *contextP)
 {
     return contextP != NULL && contextP->currentDmRequestActive &&
-        contextP->compositeReadEventCallback != NULL ? contextP->currentCompositeReadId : 0;
+        contextP->compositeReadEventCallback != NULL && !lwm2m_is_pure_value_read(contextP)
+        ? contextP->currentCompositeReadId : 0;
 }
 
 static void prv_compositeReadEvent(lwm2m_context_t *contextP, uint64_t id, lwm2m_composite_read_event_t event)
@@ -1100,6 +1153,7 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
     {
         result = (uint8_t)prv_beginDmRequestScope(contextP,
                                                   serverP,
+                                                  uriP,
                                                   message,
                                                   format,
                                                   exchangeMid,

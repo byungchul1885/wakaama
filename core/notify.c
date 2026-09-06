@@ -50,6 +50,7 @@
 */
 
 #include "internals.h"
+#include "management.h"
 #include <limits.h>
 #include <math.h>
 
@@ -229,7 +230,11 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
             if (watcher->notifyPending && sinceReport < pmin) prv_wait(timeoutP, pmin - sinceReport);
             if (!evaluate && !maxDue && !sendPending) continue;
 
+#ifndef LWM2M_VERSION_1_0
+            result = dm_readNotification(contextP, watcher->server, &uri, &count, &data);
+#else
             result = object_readData(contextP, &uri, &count, &data);
+#endif
             if (epoch != contextP->observeEpoch || attributeEpoch != contextP->attributeEpoch)
             {
                 lwm2m_data_free(count, data);

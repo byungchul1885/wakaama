@@ -237,7 +237,16 @@ uint8_t observe_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
         prv_resolveParameters(contextP, &entry->uri, shortID, true, uriP, &candidate, &effective);
         if (!observe_attributesCoherent(&effective)) return COAP_400_BAD_REQUEST;
     }
-    result = object_checkReadable(contextP, uriP, &candidate);
+    {
+#ifndef LWM2M_VERSION_1_0
+        lwm2m_dm_operation_t previous = contextP->currentDmOperation;
+        contextP->currentDmOperation = LWM2M_DM_OPERATION_WRITE_ATTRIBUTES;
+#endif
+        result = object_checkReadable(contextP, uriP, &candidate);
+#ifndef LWM2M_VERSION_1_0
+        contextP->currentDmOperation = previous;
+#endif
+    }
     if (result != COAP_205_CONTENT) return result;
     /* callback 후 빌린 entry/server pointer를 사용하지 않고 epoch와 최신 owner를 확인한다. */
     if (epoch != contextP->attributeEpoch) return COAP_503_SERVICE_UNAVAILABLE;

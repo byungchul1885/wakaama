@@ -872,7 +872,8 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     size_t complete_buffer_size;
                     size_t requestLimit = 0;
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
-                    if (message->code == COAP_FETCH) requestLimit = LWM2M_COMPOSITE_MAX_REQUEST_SIZE;
+                    if (message->code == COAP_FETCH || message->code == COAP_IPATCH)
+                        requestLimit = LWM2M_COMPOSITE_MAX_REQUEST_SIZE;
 #endif
                     // parse block1 header
                     coap_get_header_block1(message, &block1_num, &block1_more, &block1_size, NULL);

@@ -328,6 +328,19 @@ lwm2m_data_t *senml_findDataItem(lwm2m_data_t *listP, size_t count, uint16_t id)
 uri_depth_t senml_decreaseLevel(uri_depth_t level);
 int senml_findAndCheckData(const lwm2m_uri_t *uriP, uri_depth_t baseLevel, size_t size, const lwm2m_data_t *tlvP,
                            lwm2m_data_t **targetP, uri_depth_t *targetLevelP);
+/* SenML serializer는 측정→정확한 크기 할당→기록을 수행한다. 입력 tree는 전체 호출 동안
+ * borrowed/불변이며 출력은 caller가 lwm2m_free한다. 실패 출력은 NULL이다.
+ * -1: 잘못된 tree/내부 오류, -2: 할당 실패, -3: 직렬화 상한 초과(부분 출력 없음). */
+#ifndef LWM2M_SENML_MAX_SERIALIZED_SIZE
+#define LWM2M_SENML_MAX_SERIALIZED_SIZE 65536U
+#endif
+typedef struct {
+    uint8_t *buffer; /* NULL이면 bytes를 기록하지 않고 길이만 계산한다. */
+    size_t capacity;
+    size_t length;
+    int error;
+} senml_writer_t;
+void senml_writer_append(senml_writer_t *writer, const void *bytes, size_t length);
 #endif
 
 // defined in json_common.c

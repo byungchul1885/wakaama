@@ -874,7 +874,7 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     }
     length = lwm2m_data_serialize(NULL, size, data, &format, &buffer);
     if (length <= 0)
-    { result = COAP_500_INTERNAL_SERVER_ERROR; goto cleanup; }
+    { result = length == -3 ? COAP_413_ENTITY_TOO_LARGE : COAP_500_INTERNAL_SERVER_ERROR; goto cleanup; }
     if ((size_t)length > COMPOSITE_SNAPSHOT_BYTES_MAX || message->payload_len > COMPOSITE_SNAPSHOT_BYTES_MAX)
     { result = COAP_413_ENTITY_TOO_LARGE; goto cleanup; }
     {

@@ -31,8 +31,6 @@
 #error SenML JSON not supported with LwM2M 1.0
 #endif
 
-#define PRV_JSON_BUFFER_SIZE 1024
-
 #define JSON_FALSE_STRING                 "false"
 #define JSON_FALSE_STRING_SIZE            5
 #define JSON_TRUE_STRING                  "true"
@@ -885,369 +883,204 @@ error:
     return -1;
 }
 
-static int prv_serializeValue(const lwm2m_data_t * tlvP,
-                              uint8_t * buffer,
-                              size_t bufferLen)
+static void prv_jsonText(senml_writer_t *writer, const char *text)
 {
-    size_t res;
-    size_t head;
+    senml_writer_append(writer, text, strlen(text));
+}
 
-    switch (tlvP->type)
+static void prv_serializeValue(const lwm2m_data_t *value, senml_writer_t *writer)
+{
+    uint8_t scalar[64];
+    size_t length = 0, i;
+    switch (value->type)
     {
     case LWM2M_TYPE_STRING:
     case LWM2M_TYPE_CORE_LINK:
-        if (bufferLen < JSON_ITEM_STRING_BEGIN_SIZE) return -1;
-        memcpy(buffer, JSON_ITEM_STRING_BEGIN, JSON_ITEM_STRING_BEGIN_SIZE);
-        head = JSON_ITEM_STRING_BEGIN_SIZE;
-
-        res = json_escapeString(buffer + head,
-                                bufferLen - head,
-                                tlvP->value.asBuffer.buffer,
-                                tlvP->value.asBuffer.length);
-        if (res < tlvP->value.asBuffer.length) return -1;
-        head += res;
-
-        if (bufferLen - head < 1) return -1;
-        buffer[head++] = JSON_ITEM_STRING_END;
-
-        break;
-
-    case LWM2M_TYPE_INTEGER:
-    {
-        int64_t value;
-
-        if (0 == lwm2m_data_decode_int(tlvP, &value)) return -1;
-
-        if (bufferLen < JSON_ITEM_NUM_SIZE) return -1;
-        memcpy(buffer, JSON_ITEM_NUM, JSON_ITEM_NUM_SIZE);
-        head = JSON_ITEM_NUM_SIZE;
-
-        res = utils_intToText(value, buffer + head, bufferLen - head);
-        if (!res) return -1;
-        head += res;
-    }
-    break;
-
-    case LWM2M_TYPE_UNSIGNED_INTEGER:
-    {
-        uint64_t value;
-
-        if (0 == lwm2m_data_decode_uint(tlvP, &value)) return -1;
-
-        if (bufferLen < JSON_ITEM_NUM_SIZE) return -1;
-        memcpy(buffer, JSON_ITEM_NUM, JSON_ITEM_NUM_SIZE);
-        head = JSON_ITEM_NUM_SIZE;
-
-        res = utils_uintToText(value, buffer + head, bufferLen - head);
-        if (!res) return -1;
-        head += res;
-    }
-    break;
-
-    case LWM2M_TYPE_FLOAT:
-    {
-        double value;
-
-        if (0 == lwm2m_data_decode_float(tlvP, &value)) return -1;
-
-        if (bufferLen < JSON_ITEM_NUM_SIZE) return -1;
-        memcpy(buffer, JSON_ITEM_NUM, JSON_ITEM_NUM_SIZE);
-        head = JSON_ITEM_NUM_SIZE;
-
-        res = utils_floatToText(value, buffer + head, bufferLen - head, true);
-        if (!res) return -1;
-        /* Error if inf or nan */
-        if (buffer[head] != '-' && !isdigit(buffer[head])) return -1;
-        if (res > 1 && buffer[head] == '-' && !isdigit(buffer[head+1])) return -1;
-        head += res;
-    }
-    break;
-
-    case LWM2M_TYPE_BOOLEAN:
-    {
-        bool value;
-
-        if (0 == lwm2m_data_decode_bool(tlvP, &value)) return -1;
-
-        if (value)
+        prv_jsonText(writer, "\"vs\":\"");
+        if (value->value.asBuffer.length > 0 && value->value.asBuffer.buffer == NULL)
+        { writer->error = -1; return; }
+        for (i = 0; i < value->value.asBuffer.length && writer->error == 0; i++)
         {
-            if (bufferLen < JSON_ITEM_BOOL_SIZE + JSON_TRUE_STRING_SIZE) return -1;
-            memcpy(buffer,
-                   JSON_ITEM_BOOL JSON_TRUE_STRING,
-                   JSON_ITEM_BOOL_SIZE + JSON_TRUE_STRING_SIZE);
-            head = JSON_ITEM_BOOL_SIZE + JSON_TRUE_STRING_SIZE;
+            length = json_escapeString(scalar, sizeof(scalar), value->value.asBuffer.buffer + i, 1);
+            if (length == 0) { writer->error = -1; return; }
+            senml_writer_append(writer, scalar, length);
         }
-        else
-        {
-            if (bufferLen < JSON_ITEM_BOOL_SIZE + JSON_FALSE_STRING_SIZE) return -1;
-            memcpy(buffer,
-                   JSON_ITEM_BOOL JSON_FALSE_STRING,
-                   JSON_ITEM_BOOL_SIZE + JSON_FALSE_STRING_SIZE);
-            head = JSON_ITEM_BOOL_SIZE + JSON_FALSE_STRING_SIZE;
-        }
-    }
-    break;
-
+        prv_jsonText(writer, "\"");
+        return;
     case LWM2M_TYPE_OPAQUE:
-        if (bufferLen < JSON_ITEM_OPAQUE_BEGIN_SIZE) return -1;
-        memcpy(buffer, JSON_ITEM_OPAQUE_BEGIN, JSON_ITEM_OPAQUE_BEGIN_SIZE);
-        head = JSON_ITEM_OPAQUE_BEGIN_SIZE;
-
-        if (tlvP->value.asBuffer.length > 0)
+        prv_jsonText(writer, "\"vd\":\"");
+        if (value->value.asBuffer.length > 0 && value->value.asBuffer.buffer == NULL)
+        { writer->error = -1; return; }
+        for (i = 0; i < value->value.asBuffer.length && writer->error == 0;)
         {
-            int encodedLength = prv_encodeOpaque(tlvP->value.asBuffer.buffer,
-                                     tlvP->value.asBuffer.length,
-                                     buffer+head,
-                                     bufferLen - head);
-            if (encodedLength < 0) return -1;
-            head += (size_t)encodedLength;
+            size_t chunk = value->value.asBuffer.length - i;
+            int encoded;
+            if (chunk > 3) chunk = 3;
+            encoded = prv_encodeOpaque(value->value.asBuffer.buffer + i, chunk, scalar, sizeof(scalar));
+            if (encoded < 0) { writer->error = -1; return; }
+            senml_writer_append(writer, scalar, (size_t)encoded);
+            i += chunk;
         }
-
-        if (bufferLen - head < 1) return -1;
-        buffer[head++] = JSON_ITEM_OPAQUE_END;
+        prv_jsonText(writer, "\"");
+        return;
+    case LWM2M_TYPE_INTEGER:
+        prv_jsonText(writer, "\"v\":");
+        length = utils_intToText(value->value.asInteger, scalar, sizeof(scalar));
         break;
-
+    case LWM2M_TYPE_UNSIGNED_INTEGER:
+        prv_jsonText(writer, "\"v\":");
+        length = utils_uintToText(value->value.asUnsigned, scalar, sizeof(scalar));
+        break;
+    case LWM2M_TYPE_FLOAT:
+        if (!isfinite(value->value.asFloat)) { writer->error = -1; return; }
+        prv_jsonText(writer, "\"v\":");
+        length = utils_floatToText(value->value.asFloat, scalar, sizeof(scalar), true);
+        break;
+    case LWM2M_TYPE_BOOLEAN:
+        prv_jsonText(writer, value->value.asBoolean ? "\"vb\":true" : "\"vb\":false");
+        return;
     case LWM2M_TYPE_OBJECT_LINK:
-        if (bufferLen < JSON_ITEM_OBJECT_LINK_BEGIN_SIZE) return -1;
-        memcpy(buffer,
-               JSON_ITEM_OBJECT_LINK_BEGIN,
-               JSON_ITEM_OBJECT_LINK_BEGIN_SIZE);
-        head = JSON_ITEM_OBJECT_LINK_BEGIN_SIZE;
-
-        res = utils_objLinkToText(tlvP->value.asObjLink.objectId,
-                                  tlvP->value.asObjLink.objectInstanceId,
-                                  buffer + head,
-                                  bufferLen - head);
-        if (!res) return -1;
-        head += res;
-
-        if (bufferLen - head < 1) return -1;
-        buffer[head++] = JSON_ITEM_OBJECT_LINK_END;
-        break;
-
+        prv_jsonText(writer, "\"vlo\":\"");
+        length = utils_objLinkToText(value->value.asObjLink.objectId, value->value.asObjLink.objectInstanceId,
+                                     scalar, sizeof(scalar));
+        if (length == 0) { writer->error = -1; return; }
+        senml_writer_append(writer, scalar, length);
+        prv_jsonText(writer, "\"");
+        return;
     default:
-        return -1;
+        writer->error = -1;
+        return;
     }
-
-    return (int)head;
+    if (length == 0) { writer->error = -1; return; }
+    senml_writer_append(writer, scalar, length);
 }
 
-static int prv_serializeData(const lwm2m_data_t * tlvP,
-                             const uint8_t * baseUriStr,
-                             size_t baseUriLen,
-                             uri_depth_t baseLevel,
-                             const uint8_t * parentUriStr,
-                             size_t parentUriLen,
-                             uri_depth_t level,
-                             bool *baseNameOutput,
-                             uint8_t * buffer,
-                             size_t bufferLen)
+static void prv_serializeData(const lwm2m_data_t *value, const uint8_t *baseUri, size_t baseLength,
+                               uri_depth_t baseLevel, const uint8_t *parent, size_t parentLength,
+                               uri_depth_t level, bool *baseWritten, size_t *records,
+                               senml_writer_t *writer)
 {
-    size_t head;
-    int res;
-
-    head = 0;
-
-    switch (tlvP->type)
+    uint8_t path[URI_MAX_STRING_LEN];
+    size_t pathLength = parentLength, i;
+    int length;
+    bool field = false;
+    bool container = value->type == LWM2M_TYPE_OBJECT || value->type == LWM2M_TYPE_OBJECT_INSTANCE ||
+                     value->type == LWM2M_TYPE_MULTIPLE_RESOURCE;
+    if (writer->error != 0) return;
+    if (parentLength >= sizeof(path)) { writer->error = -1; return; }
+    if (parentLength > 0) memcpy(path, parent, parentLength);
+    length = utils_intToText(value->id, path + pathLength, sizeof(path) - pathLength);
+    if (length <= 0) { writer->error = -1; return; }
+    pathLength += (size_t)length;
+    switch (value->type)
     {
-    case LWM2M_TYPE_MULTIPLE_RESOURCE:
     case LWM2M_TYPE_OBJECT:
     case LWM2M_TYPE_OBJECT_INSTANCE:
-    {
-        uint8_t uriStr[URI_MAX_STRING_LEN];
-        size_t uriLen;
-        size_t index;
-
-        if (parentUriLen > 0)
-        {
-            if (URI_MAX_STRING_LEN < parentUriLen) return -1;
-            memcpy(uriStr, parentUriStr, parentUriLen);
-            uriLen = parentUriLen;
-        }
-        else
-        {
-            uriLen = 0;
-        }
-        res = utils_intToText(tlvP->id,
-                              uriStr + uriLen,
-                              URI_MAX_STRING_LEN - uriLen);
-        if (res <= 0) return -1;
-        uriLen += res;
-        uriStr[uriLen] = '/';
-        uriLen++;
-
-        head = 0;
-        for (index = 0 ; index < tlvP->value.asChildren.count; index++)
-        {
-            if (index != 0)
-            {
-                if (head + 1 > bufferLen) return 0;
-                buffer[head++] = JSON_SEPARATOR;
-            }
-
-            res = prv_serializeData(tlvP->value.asChildren.array + index,
-                                    baseUriStr,
-                                    baseUriLen,
-                                    baseLevel,
-                                    uriStr,
-                                    uriLen,
-                                    level,
-                                    baseNameOutput,
-                                    buffer + head,
-                                    bufferLen - head);
-            if (res < 0) return -1;
-            head += res;
-        }
-    }
-    break;
-
+    case LWM2M_TYPE_MULTIPLE_RESOURCE:
+        if (value->value.asChildren.count == 0) break;
+        if (pathLength >= sizeof(path) ||
+            (value->value.asChildren.count > 0 && value->value.asChildren.array == NULL))
+        { writer->error = -1; return; }
+        path[pathLength++] = '/';
+        for (i = 0; i < value->value.asChildren.count && writer->error == 0; i++)
+            prv_serializeData(value->value.asChildren.array + i, baseUri, baseLength, baseLevel,
+                               path, pathLength, level, baseWritten, records, writer);
+        return;
     default:
-        head = 0;
-        if (bufferLen < 1) return -1;
-        buffer[head++] = JSON_ITEM_BEGIN;
-
-        if (!*baseNameOutput && baseUriLen > 0)
-        {
-            if (bufferLen - head < baseUriLen + JSON_BN_HEADER_SIZE + 2) return -1;
-            memcpy(buffer + head, JSON_BN_HEADER, JSON_BN_HEADER_SIZE);
-            head += JSON_BN_HEADER_SIZE;
-            memcpy(buffer + head, baseUriStr, baseUriLen);
-            head += baseUriLen;
-            buffer[head++] = JSON_ITEM_STRING_END;
-            buffer[head++] = JSON_SEPARATOR;
-            *baseNameOutput = true;
-        }
-
-        /* TODO: support base time */
-
-        if (!baseUriLen || level > baseLevel)
-        {
-            if (bufferLen - head < JSON_ITEM_URI_SIZE) return -1;
-            memcpy(buffer + head, JSON_ITEM_URI, JSON_ITEM_URI_SIZE);
-            head += JSON_ITEM_URI_SIZE;
-
-            if (parentUriLen > 0)
-            {
-                if (bufferLen - head < parentUriLen) return -1;
-                memcpy(buffer + head, parentUriStr, parentUriLen);
-                head += parentUriLen;
-            }
-
-            res = utils_intToText(tlvP->id, buffer + head, bufferLen - head);
-            if (res <= 0) return -1;
-            head += res;
-
-            if (bufferLen - head < 2) return -1;
-            buffer[head++] = JSON_ITEM_URI_END;
-            if (tlvP->type != LWM2M_TYPE_UNDEFINED)
-            {
-                buffer[head++] = JSON_SEPARATOR;
-            }
-        }
-
-        if (tlvP->type != LWM2M_TYPE_UNDEFINED)
-        {
-            res = prv_serializeValue(tlvP, buffer + head, bufferLen - head);
-            if (res < 0) return -1;
-            head += res;
-        }
-
-        /* TODO: support time */
-
-        if (bufferLen - head < 1) return -1;
-        buffer[head++] = JSON_ITEM_END;
-
         break;
     }
-
-    return (int)head;
+    if (*records > 0) prv_jsonText(writer, ",");
+    (*records)++;
+    prv_jsonText(writer, "{");
+    if (!*baseWritten && baseLength > 0)
+    {
+        prv_jsonText(writer, "\"bn\":\"");
+        senml_writer_append(writer, baseUri, baseLength);
+        prv_jsonText(writer, "\"");
+        *baseWritten = true;
+        field = true;
+    }
+    if (baseLength == 0 || level > baseLevel)
+    {
+        if (field) prv_jsonText(writer, ",");
+        prv_jsonText(writer, "\"n\":\"");
+        senml_writer_append(writer, path, pathLength);
+        prv_jsonText(writer, "\"");
+        field = true;
+    }
+    if (!container && value->type != LWM2M_TYPE_UNDEFINED)
+    {
+        if (field) prv_jsonText(writer, ",");
+        prv_serializeValue(value, writer);
+    }
+    prv_jsonText(writer, "}");
 }
 
-int senml_json_serialize(const lwm2m_uri_t * uriP,
-                         int size,
-                         const lwm2m_data_t * tlvP,
-                         uint8_t ** bufferP)
+static void prv_serializePack(int count, const lwm2m_data_t *values, const uint8_t *baseUri,
+                               size_t baseLength, uri_depth_t baseLevel, uri_depth_t rootLevel,
+                               const uint8_t *parent, size_t parentLength, senml_writer_t *writer)
 {
-    int index;
-    size_t head;
-    uint8_t bufferJSON[PRV_JSON_BUFFER_SIZE];
-    uint8_t baseUriStr[URI_MAX_STRING_LEN];
-    int baseUriLen;
-    uri_depth_t rootLevel;
-    uri_depth_t baseLevel;
-    int num;
-    lwm2m_data_t * targetP;
-    const uint8_t *parentUriStr = NULL;
-    size_t parentUriLen = 0;
-
-    LOG_ARG_DBG("size: %d", size);
-    LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
-    if (size != 0 && tlvP == NULL) return -1;
-
-    baseUriLen = lwm2m_uriToString(uriP, baseUriStr, URI_MAX_STRING_LEN, &baseLevel);
-    if (baseUriLen < 0) return -1;
-    if (baseUriLen > 1
-     && baseLevel != URI_DEPTH_RESOURCE
-     && baseLevel != URI_DEPTH_RESOURCE_INSTANCE)
+    bool baseWritten = false;
+    size_t records = 0;
+    int i;
+    prv_jsonText(writer, "[");
+    for (i = 0; i < count && writer->error == 0; i++)
+        prv_serializeData(values + i, baseUri, baseLength, baseLevel, parent, parentLength,
+                           rootLevel, &baseWritten, &records, writer);
+    if (!baseWritten && records == 0 && baseLength > 0)
     {
-        if (baseUriLen >= URI_MAX_STRING_LEN -1) return 0;
-        baseUriStr[baseUriLen++] = '/';
+        if (baseLength > 1 && baseUri[baseLength - 1] == '/') baseLength--;
+        prv_jsonText(writer, "{\"bn\":\"");
+        senml_writer_append(writer, baseUri, baseLength);
+        prv_jsonText(writer, "\"}");
     }
-
-    num = json_findAndCheckData(uriP, baseLevel, size, tlvP, &targetP, &rootLevel);
-    if (num < 0) return -1;
-
-    if (baseLevel < rootLevel
-     && baseUriLen > 1
-     && baseUriStr[baseUriLen - 1] != '/')
-    {
-        if (baseUriLen >= URI_MAX_STRING_LEN -1) return 0;
-        baseUriStr[baseUriLen++] = '/';
-    }
-
-    if (!baseUriLen || baseUriStr[baseUriLen - 1] != '/')
-    {
-        parentUriStr = (const uint8_t *)"/";
-        parentUriLen = 1;
-    }
-
-    head = 0;
-    bufferJSON[head++] = JSON_HEADER;
-
-    bool baseNameOutput = false;
-    for (index = 0 ; index < num && head < PRV_JSON_BUFFER_SIZE ; index++)
-    {
-        int res;
-
-        if (index != 0)
-        {
-            if (head + 1 > PRV_JSON_BUFFER_SIZE) return 0;
-            bufferJSON[head++] = JSON_SEPARATOR;
-        }
-
-        res = prv_serializeData(targetP + index,
-                                baseUriStr,
-                                baseUriLen,
-                                baseLevel,
-                                parentUriStr,
-                                parentUriLen,
-                                rootLevel,
-                                &baseNameOutput,
-                                bufferJSON + head,
-                                PRV_JSON_BUFFER_SIZE - head);
-        if (res < 0) return res;
-        head += res;
-    }
-
-    if (head + 1 > PRV_JSON_BUFFER_SIZE) return 0;
-    bufferJSON[head++] = JSON_FOOTER;
-
-    *bufferP = (uint8_t *)lwm2m_malloc(head);
-    if (*bufferP == NULL) return -1;
-    memcpy(*bufferP, bufferJSON, head);
-
-    return head;
+    prv_jsonText(writer, "]");
 }
 
+int senml_json_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP)
+{
+    uint8_t baseUri[URI_MAX_STRING_LEN];
+    int baseLength, count;
+    uri_depth_t rootLevel, baseLevel;
+    lwm2m_data_t *target = NULL;
+    const uint8_t *parent = NULL;
+    size_t parentLength = 0;
+    senml_writer_t measured = {NULL, LWM2M_SENML_MAX_SERIALIZED_SIZE, 0, 0};
+    senml_writer_t output;
+    if (bufferP == NULL) return -1;
+    *bufferP = NULL;
+    if (size < 0 || (size > 0 && tlvP == NULL)) return -1;
+    baseLength = lwm2m_uriToString(uriP, baseUri, sizeof(baseUri), &baseLevel);
+    if (baseLength < 0) return -1;
+    if (baseLength > 1 && baseLevel != URI_DEPTH_RESOURCE && baseLevel != URI_DEPTH_RESOURCE_INSTANCE)
+    {
+        if ((size_t)baseLength >= sizeof(baseUri) - 1) return -1;
+        baseUri[baseLength++] = '/';
+    }
+    count = json_findAndCheckData(uriP, baseLevel, (size_t)size, tlvP, &target, &rootLevel);
+    if (count < 0) return -1;
+    if (baseLevel < rootLevel && baseLength > 1 && baseUri[baseLength - 1] != '/')
+    {
+        if ((size_t)baseLength >= sizeof(baseUri) - 1) return -1;
+        baseUri[baseLength++] = '/';
+    }
+    if (baseLength == 0 || baseUri[baseLength - 1] != '/')
+    { parent = (const uint8_t *)"/"; parentLength = 1; }
+    prv_serializePack(count, target, baseUri, (size_t)baseLength, baseLevel, rootLevel,
+                      parent, parentLength, &measured);
+    if (measured.error != 0) return measured.error;
+    if (measured.length > INT_MAX) return -3;
+    output.buffer = lwm2m_malloc(measured.length);
+    if (output.buffer == NULL) return -2;
+    output.capacity = measured.length;
+    output.length = 0;
+    output.error = 0;
+    prv_serializePack(count, target, baseUri, (size_t)baseLength, baseLevel, rootLevel,
+                      parent, parentLength, &output);
+    if (output.error != 0 || output.length != measured.length)
+    { lwm2m_free(output.buffer); return -1; }
+    *bufferP = output.buffer;
+    return (int)output.length;
+}
 #endif
 

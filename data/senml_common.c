@@ -21,6 +21,17 @@
 
 #if defined(LWM2M_SUPPORT_JSON) || defined(LWM2M_SUPPORT_SENML_JSON) || defined(LWM2M_SUPPORT_SENML_CBOR)
 
+void senml_writer_append(senml_writer_t *writer, const void *bytes, size_t length)
+{
+    if (writer->error != 0) return;
+    if (length > 0 && bytes == NULL) { writer->error = -1; return; }
+    if (writer->length > writer->capacity || length > writer->capacity - writer->length)
+    { writer->error = -3; return; }
+    if (length > 0 && writer->buffer != NULL)
+        memcpy(writer->buffer + writer->length, bytes, length);
+    writer->length += length;
+}
+
 int senml_records_to_paths(const senml_record_t *records, int count, lwm2m_uri_t **urisP)
 {
     lwm2m_uri_t *uris;
@@ -376,6 +387,7 @@ static int prv_findAndCheckData(const lwm2m_uri_t *uriP, uri_depth_t desiredLeve
 
     if (size == 0)
         return 0;
+    if (tlvP == NULL) return -1;
 
     if (size > 1) {
         if (tlvP[0].type == LWM2M_TYPE_OBJECT || tlvP[0].type == LWM2M_TYPE_OBJECT_INSTANCE) {

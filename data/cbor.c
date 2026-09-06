@@ -518,6 +518,7 @@ int cbor_put_type_and_value(uint8_t *buffer, size_t bufferLen, cbor_type_t type,
 }
 
 int cbor_put_singular(uint8_t *buffer, size_t bufferLen, const lwm2m_data_t *dataP) {
+    if (buffer == NULL || bufferLen == 0 || dataP == NULL) return 0;
     LOG_ARG_DBG("bufferLen: %zu, dataType: %s", bufferLen, STR_DATA_TYPE(dataP->type));
 
     int result = 0;
@@ -567,6 +568,7 @@ int cbor_put_singular(uint8_t *buffer, size_t bufferLen, const lwm2m_data_t *dat
                                   dataP->value.asBoolean ? CBOR_SIMPLE_TRUE : CBOR_SIMPLE_FALSE);
         break;
     case LWM2M_TYPE_OBJECT_LINK:
+        if (bufferLen <= (size_t)result + 1) return 0;
         res = snprintf((char *)buffer + result + 1, bufferLen - result - 1, "%u:%u", dataP->value.asObjLink.objectId,
                        dataP->value.asObjLink.objectInstanceId);
         if ((int)(bufferLen - result - 1) > res) {

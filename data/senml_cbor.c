@@ -17,6 +17,7 @@
  *******************************************************************************/
 
 #include "internals.h"
+#include <limits.h>
 #include <math.h>
 
 #ifdef LWM2M_SUPPORT_SENML_CBOR
@@ -24,8 +25,6 @@
 #ifdef LWM2M_VERSION_1_0
 #error SenML CBOR not supported with LwM2M 1.0
 #endif
-
-#define PRV_CBOR_BUFFER_SIZE 1024
 
 #define SENML_CBOR_BASE_SUM_LABEL -6
 #define SENML_CBOR_BASE_VALUE_LABEL -5
@@ -486,330 +485,171 @@ error:
     return -1;
 }
 
-static int prv_serializeBaseName(const uint8_t *baseUriStr, size_t baseUriLen, uint8_t *buffer, size_t bufferLen) {
-    int head = 0;
-    int res;
-    lwm2m_data_t data;
-    memset(&data, 0, sizeof(data));
-    data.type = LWM2M_TYPE_STRING;
-    data.value.asBuffer.buffer = (uint8_t *)baseUriStr;
-    data.value.asBuffer.length = baseUriLen;
-
-    // label
-    res = cbor_put_type_and_value(buffer + head, bufferLen - head, CBOR_TYPE_NEGATIVE_INTEGER,
-                                  SENML_CBOR_BASE_NAME_LABEL);
-    if (res <= 0)
-        return -1;
-    head += res;
-
-    // value
-    res = cbor_put_singular(buffer + head, bufferLen - head, &data);
-    if (res <= 0)
-        return -1;
-    return head + res;
+static void prv_cborHead(senml_writer_t *writer, cbor_type_t type, uint64_t value)
+{
+    uint8_t header[9];
+    int length = cbor_put_type_and_value(header, sizeof(header), type, value);
+    if (length <= 0) { writer->error = -1; return; }
+    senml_writer_append(writer, header, (size_t)length);
 }
 
-static int prv_serializeName(const uint8_t *parentUriStr, size_t parentUriLen, uint16_t id, uint8_t *buffer,
-                             size_t bufferLen) {
-    uint8_t uriStr[URI_MAX_STRING_LEN];
-    size_t uriLen;
-    int res;
-    int head = 0;
-    lwm2m_data_t data;
-
-    uriLen = 0;
-    if (parentUriLen > 0) {
-        if (sizeof(uriStr) < parentUriLen)
-            return -1;
-        memcpy(uriStr, parentUriStr, parentUriLen);
-        uriLen += parentUriLen;
-    }
-    res = utils_intToText(id, uriStr + parentUriLen, sizeof(uriStr) - parentUriLen);
-    if (res <= 0)
-        return -1;
-    uriLen += res;
-
-    // label
-    res = cbor_put_type_and_value(buffer + head, bufferLen - head, CBOR_TYPE_UNSIGNED_INTEGER, SENML_CBOR_NAME_LABEL);
-    if (res <= 0)
-        return -1;
-    head += res;
-
-    // value
-    memset(&data, 0, sizeof(data));
-    data.type = LWM2M_TYPE_STRING;
-    data.value.asBuffer.buffer = uriStr;
-    data.value.asBuffer.length = uriLen;
-    res = cbor_put_singular(buffer + head, bufferLen - head, &data);
-    if (res <= 0)
-        return -1;
-    return head + res;
+static void prv_cborBytes(senml_writer_t *writer, cbor_type_t type, const uint8_t *bytes, size_t length)
+{
+    prv_cborHead(writer, type, length);
+    senml_writer_append(writer, bytes, length);
 }
 
-static int prv_serializeValue(const lwm2m_data_t *tlvP, uint8_t *buffer, size_t bufferLen) {
-    int res;
-    int head = 0;
-    int label;
+static void prv_serializeBaseName(senml_writer_t *writer, const uint8_t *baseUri, size_t length)
+{
+    prv_cborHead(writer, CBOR_TYPE_NEGATIVE_INTEGER, (uint64_t)SENML_CBOR_BASE_NAME_LABEL);
+    prv_cborBytes(writer, CBOR_TYPE_TEXT_STRING, baseUri, length);
+}
 
-    switch (tlvP->type) {
+static void prv_serializeValue(const lwm2m_data_t *value, senml_writer_t *writer)
+{
+    unsigned label;
+    uint8_t scalar[32];
+    int length;
+    switch (value->type)
+    {
     case LWM2M_TYPE_STRING:
-    case LWM2M_TYPE_CORE_LINK:
-        label = SENML_CBOR_STRING_VALUE_LABEL;
-        break;
-    case LWM2M_TYPE_OPAQUE:
-        label = SENML_CBOR_DATA_VALUE_LABEL;
-        break;
+    case LWM2M_TYPE_CORE_LINK: label = SENML_CBOR_STRING_VALUE_LABEL; break;
+    case LWM2M_TYPE_OPAQUE: label = SENML_CBOR_DATA_VALUE_LABEL; break;
     case LWM2M_TYPE_INTEGER:
     case LWM2M_TYPE_UNSIGNED_INTEGER:
-    case LWM2M_TYPE_FLOAT:
-        label = SENML_CBOR_NUMERIC_VALUE_LABEL;
-        break;
-    case LWM2M_TYPE_BOOLEAN:
-        label = SENML_CBOR_BOOLEAN_VALUE_LABEL;
-        break;
-    case LWM2M_TYPE_OBJECT_LINK:
-        label = SENML_CBOR_OBJECT_LINK_LABEL;
-        break;
-    default:
-        return -1;
+    case LWM2M_TYPE_FLOAT: label = SENML_CBOR_NUMERIC_VALUE_LABEL; break;
+    case LWM2M_TYPE_BOOLEAN: label = SENML_CBOR_BOOLEAN_VALUE_LABEL; break;
+    case LWM2M_TYPE_OBJECT_LINK: label = SENML_CBOR_OBJECT_LINK_LABEL; break;
+    default: writer->error = -1; return;
     }
-
-    // label
-    if (label == SENML_CBOR_OBJECT_LINK_LABEL) {
-        lwm2m_data_t data;
-        data.type = LWM2M_TYPE_STRING;
-        data.value.asBuffer.buffer = (uint8_t *)"vlo";
-        data.value.asBuffer.length = 3;
-        res = cbor_put_singular(buffer + head, bufferLen - head, &data);
-    } else {
-        res = cbor_put_type_and_value(buffer + head, bufferLen - head, CBOR_TYPE_UNSIGNED_INTEGER, label);
+    if (label == SENML_CBOR_OBJECT_LINK_LABEL)
+        prv_cborBytes(writer, CBOR_TYPE_TEXT_STRING, (const uint8_t *)"vlo", 3);
+    else
+        prv_cborHead(writer, CBOR_TYPE_UNSIGNED_INTEGER, label);
+    if (value->type == LWM2M_TYPE_STRING || value->type == LWM2M_TYPE_CORE_LINK ||
+        value->type == LWM2M_TYPE_OPAQUE)
+    {
+        prv_cborBytes(writer, value->type == LWM2M_TYPE_OPAQUE ? CBOR_TYPE_BYTE_STRING : CBOR_TYPE_TEXT_STRING,
+                       value->value.asBuffer.buffer, value->value.asBuffer.length);
+        return;
     }
-    if (res <= 0)
-        return -1;
-    head += res;
-
-    // value
-    res = cbor_put_singular(buffer + head, bufferLen - head, tlvP);
-    if (res <= 0)
-        return -1;
-    return head + res;
+    length = cbor_put_singular(scalar, sizeof(scalar), value);
+    if (length <= 0) { writer->error = -1; return; }
+    senml_writer_append(writer, scalar, (size_t)length);
 }
 
-static int prv_serializeTlv(const lwm2m_data_t *tlvP, const uint8_t *baseUriStr, size_t baseUriLen,
-                            uri_depth_t baseLevel, const uint8_t *parentUriStr, size_t parentUriLen, uri_depth_t level,
-                            bool *baseNameOutput, uint8_t *buffer, size_t bufferLen) {
-    int res;
-    int head = 0;
-
-    // Count how many labels
-    res = 0;
-    if (!*baseNameOutput && baseUriLen > 0)
-        res++;
-    if (!baseUriLen || level > baseLevel)
-        res++;
-    switch (tlvP->type) {
-    case LWM2M_TYPE_UNDEFINED:
-    case LWM2M_TYPE_OBJECT:
-    case LWM2M_TYPE_OBJECT_INSTANCE:
-    case LWM2M_TYPE_MULTIPLE_RESOURCE:
-        // no value
-        break;
-    default:
-        res++;
-        break;
+static void prv_serializeData(const lwm2m_data_t *value, const uint8_t *baseUri, size_t baseLength,
+                               uri_depth_t baseLevel, const uint8_t *parent, size_t parentLength,
+                               uri_depth_t level, bool *baseWritten, size_t *records,
+                               senml_writer_t *writer)
+{
+    uint8_t path[URI_MAX_STRING_LEN];
+    size_t pathLength = parentLength, i;
+    int length;
+    bool container, hasValue, hasBase, hasName;
+    if (writer->error != 0) return;
+    if (parentLength >= sizeof(path)) { writer->error = -1; return; }
+    if (parentLength > 0) memcpy(path, parent, parentLength);
+    length = utils_intToText(value->id, path + pathLength, sizeof(path) - pathLength);
+    if (length <= 0) { writer->error = -1; return; }
+    pathLength += (size_t)length;
+    container = value->type == LWM2M_TYPE_OBJECT || value->type == LWM2M_TYPE_OBJECT_INSTANCE ||
+                value->type == LWM2M_TYPE_MULTIPLE_RESOURCE;
+    if (container && value->value.asChildren.count > 0)
+    {
+        if (pathLength >= sizeof(path) || value->value.asChildren.array == NULL)
+        { writer->error = -1; return; }
+        path[pathLength++] = '/';
+        for (i = 0; i < value->value.asChildren.count && writer->error == 0; i++)
+            prv_serializeData(value->value.asChildren.array + i, baseUri, baseLength, baseLevel,
+                               path, pathLength, level, baseWritten, records, writer);
+        return;
     }
-
-    // Start the record
-    res = cbor_put_type_and_value(buffer + head, bufferLen - head, CBOR_TYPE_MAP, res);
-    if (res <= 0)
-        return -1;
-    head += res;
-
-    if (!*baseNameOutput && baseUriLen > 0) {
-        res = prv_serializeBaseName(baseUriStr, baseUriLen, buffer + head, bufferLen - head);
-        if (res <= 0)
-            return -1;
-        head += res;
-        *baseNameOutput = true;
+    hasValue = !container && value->type != LWM2M_TYPE_UNDEFINED;
+    hasBase = !*baseWritten && baseLength > 0;
+    hasName = baseLength == 0 || level > baseLevel;
+    prv_cborHead(writer, CBOR_TYPE_MAP, (unsigned)hasBase + (unsigned)hasName + (unsigned)hasValue);
+    if (hasBase)
+    {
+        prv_serializeBaseName(writer, baseUri, baseLength);
+        *baseWritten = true;
     }
-
-    /* TODO: support base time */
-
-    if (!baseUriLen || level > baseLevel) {
-        res = prv_serializeName(parentUriStr, parentUriLen, tlvP->id, buffer + head, bufferLen - head);
-        if (res <= 0)
-            return -1;
-        head += res;
+    if (hasName)
+    {
+        prv_cborHead(writer, CBOR_TYPE_UNSIGNED_INTEGER, SENML_CBOR_NAME_LABEL);
+        prv_cborBytes(writer, CBOR_TYPE_TEXT_STRING, path, pathLength);
     }
-
-    switch (tlvP->type) {
-    case LWM2M_TYPE_UNDEFINED:
-    case LWM2M_TYPE_OBJECT:
-    case LWM2M_TYPE_OBJECT_INSTANCE:
-    case LWM2M_TYPE_MULTIPLE_RESOURCE:
-        // no value
-        break;
-    default:
-        res = prv_serializeValue(tlvP, buffer + head, bufferLen - head);
-        if (res < 0)
-            return -1;
-        head += res;
-        break;
-    }
-
-    /* TODO: support time */
-
-    return head;
+    if (hasValue) prv_serializeValue(value, writer);
+    (*records)++;
 }
 
-static int prv_serializeData(const lwm2m_data_t *tlvP, const uint8_t *baseUriStr, size_t baseUriLen,
-                             uri_depth_t baseLevel, const uint8_t *parentUriStr, size_t parentUriLen, uri_depth_t level,
-                             bool *baseNameOutput, int *numRecords, uint8_t *buffer, size_t bufferLen) {
-    size_t head;
-    int res;
-    uint8_t uriStr[URI_MAX_STRING_LEN];
-    size_t uriLen;
-
-    head = 0;
-
-    switch (tlvP->type) {
-    case LWM2M_TYPE_MULTIPLE_RESOURCE:
-    case LWM2M_TYPE_OBJECT:
-    case LWM2M_TYPE_OBJECT_INSTANCE: {
-        if (tlvP->value.asChildren.count == 0) {
-            res = prv_serializeTlv(tlvP, baseUriStr, baseUriLen, baseLevel, parentUriStr, parentUriLen, level,
-                                   baseNameOutput, buffer + head, bufferLen - head);
-            if (res < 0)
-                return -1;
-            head += res;
-            *numRecords += 1;
-        } else {
-            size_t index;
-
-            uriLen = 0;
-            if (parentUriLen > 0) {
-                if (URI_MAX_STRING_LEN < parentUriLen)
-                    return -1;
-                memcpy(uriStr, parentUriStr, parentUriLen);
-                uriLen += parentUriLen;
-            }
-            res = utils_intToText(tlvP->id, uriStr + uriLen, sizeof(uriStr) - uriLen);
-            if (res <= 0)
-                return -1;
-            uriLen += res;
-            if (uriLen >= sizeof(uriStr))
-                return -1;
-            uriStr[uriLen++] = '/';
-
-            for (index = 0; index < tlvP->value.asChildren.count; index++) {
-                res = prv_serializeData(tlvP->value.asChildren.array + index, baseUriStr, baseUriLen, baseLevel, uriStr,
-                                        uriLen, level, baseNameOutput, numRecords, buffer + head, bufferLen - head);
-                if (res < 0)
-                    return -1;
-                head += res;
-            }
-        }
-    } break;
-
-    default:
-        res = prv_serializeTlv(tlvP, baseUriStr, baseUriLen, baseLevel, parentUriStr, parentUriLen, level,
-                               baseNameOutput, buffer + head, bufferLen - head);
-        if (res < 0)
-            return -1;
-        head += res;
-        *numRecords += 1;
-        break;
+static size_t prv_serializeBody(int count, const lwm2m_data_t *values, const uint8_t *baseUri,
+                                 size_t baseLength, uri_depth_t baseLevel, uri_depth_t rootLevel,
+                                 const uint8_t *parent, size_t parentLength, senml_writer_t *writer)
+{
+    bool baseWritten = false;
+    size_t records = 0;
+    int i;
+    for (i = 0; i < count && writer->error == 0; i++)
+        prv_serializeData(values + i, baseUri, baseLength, baseLevel, parent, parentLength,
+                           rootLevel, &baseWritten, &records, writer);
+    if (!baseWritten && baseLength > 0 && writer->error == 0)
+    {
+        if (baseLength > 1 && baseUri[baseLength - 1] == '/') baseLength--;
+        prv_cborHead(writer, CBOR_TYPE_MAP, 1);
+        prv_serializeBaseName(writer, baseUri, baseLength);
+        records++;
     }
-
-    return (int)head;
+    return records;
 }
 
-int senml_cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP) {
-    int res;
-    int index;
-    size_t head;
-    int numRecords;
-    uint8_t bufferCBOR[PRV_CBOR_BUFFER_SIZE];
-    uint8_t baseUriStr[URI_MAX_STRING_LEN];
-    int baseUriLen;
-    uri_depth_t rootLevel;
-    uri_depth_t baseLevel;
-    int num;
-    lwm2m_data_t *targetP;
-    const uint8_t *parentUriStr = NULL;
-    size_t parentUriLen = 0;
-
-    LOG_ARG_DBG("size: %d", size);
-    LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
-    if (size != 0 && tlvP == NULL)
-        return -1;
-
-    baseUriLen = lwm2m_uriToString(uriP, baseUriStr, URI_MAX_STRING_LEN, &baseLevel);
-    if (baseUriLen < 0)
-        return -1;
-    if (baseUriLen > 1 && baseLevel != URI_DEPTH_RESOURCE && baseLevel != URI_DEPTH_RESOURCE_INSTANCE) {
-        if (baseUriLen >= URI_MAX_STRING_LEN - 1)
-            return 0;
-        baseUriStr[baseUriLen++] = '/';
+int senml_cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP)
+{
+    uint8_t baseUri[URI_MAX_STRING_LEN], header[9];
+    int baseLength, count, headerLength;
+    uri_depth_t rootLevel, baseLevel;
+    lwm2m_data_t *target = NULL;
+    const uint8_t *parent = NULL;
+    size_t parentLength = 0, records, outputRecords;
+    senml_writer_t measured = {NULL, LWM2M_SENML_MAX_SERIALIZED_SIZE, 0, 0};
+    senml_writer_t output;
+    if (bufferP == NULL) return -1;
+    *bufferP = NULL;
+    if (size < 0 || (size > 0 && tlvP == NULL)) return -1;
+    baseLength = lwm2m_uriToString(uriP, baseUri, sizeof(baseUri), &baseLevel);
+    if (baseLength < 0) return -1;
+    if (baseLength > 1 && baseLevel != URI_DEPTH_RESOURCE && baseLevel != URI_DEPTH_RESOURCE_INSTANCE)
+    {
+        if ((size_t)baseLength >= sizeof(baseUri) - 1) return -1;
+        baseUri[baseLength++] = '/';
     }
-
-    num = senml_findAndCheckData(uriP, baseLevel, size, tlvP, &targetP, &rootLevel);
-    if (num < 0)
-        return -1;
-
-    if (baseLevel < rootLevel && baseUriLen > 1 && baseUriStr[baseUriLen - 1] != '/') {
-        if (baseUriLen >= URI_MAX_STRING_LEN - 1)
-            return 0;
-        baseUriStr[baseUriLen++] = '/';
+    count = senml_findAndCheckData(uriP, baseLevel, (size_t)size, tlvP, &target, &rootLevel);
+    if (count < 0) return -1;
+    if (baseLevel < rootLevel && baseLength > 1 && baseUri[baseLength - 1] != '/')
+    {
+        if ((size_t)baseLength >= sizeof(baseUri) - 1) return -1;
+        baseUri[baseLength++] = '/';
     }
-
-    if (!baseUriLen || baseUriStr[baseUriLen - 1] != '/') {
-        parentUriStr = (const uint8_t *)"/";
-        parentUriLen = 1;
-    }
-
-    head = 0;
-    numRecords = 0;
-    bool baseNameOutput = false;
-    for (index = 0; index < num && head < PRV_CBOR_BUFFER_SIZE; index++) {
-        res =
-            prv_serializeData(targetP + index, baseUriStr, baseUriLen, baseLevel, parentUriStr, parentUriLen, rootLevel,
-                              &baseNameOutput, &numRecords, bufferCBOR + head, PRV_CBOR_BUFFER_SIZE - head);
-        if (res < 0)
-            return res;
-        head += res;
-    }
-
-    if (!baseNameOutput && baseUriLen > 0) {
-        // Remove trailing /
-        if (baseUriLen > 1)
-            baseUriLen -= 1;
-
-        // Start the record
-        res = cbor_put_type_and_value(bufferCBOR + head, PRV_CBOR_BUFFER_SIZE - head, CBOR_TYPE_MAP, 1);
-        if (res < 0)
-            return res;
-        head += res;
-
-        res = prv_serializeBaseName(baseUriStr, baseUriLen, bufferCBOR + head, PRV_CBOR_BUFFER_SIZE - head);
-        if (res < 0)
-            return res;
-        head += res;
-
-        baseNameOutput = true;
-        numRecords++;
-    }
-
-    *bufferP = (uint8_t *)lwm2m_malloc(head + 3);
-    if (*bufferP == NULL)
-        return -1;
-    res = cbor_put_type_and_value(*bufferP, 3, CBOR_TYPE_ARRAY, numRecords);
-    if (res <= 0)
-        return -1;
-    memcpy((*bufferP) + res, bufferCBOR, head);
-    head += res;
-
-    return head;
+    if (baseLength == 0 || baseUri[baseLength - 1] != '/')
+    { parent = (const uint8_t *)"/"; parentLength = 1; }
+    records = prv_serializeBody(count, target, baseUri, (size_t)baseLength, baseLevel, rootLevel,
+                                 parent, parentLength, &measured);
+    if (measured.error != 0) return measured.error;
+    headerLength = cbor_put_type_and_value(header, sizeof(header), CBOR_TYPE_ARRAY, records);
+    if (headerLength <= 0) return -1;
+    if ((size_t)headerLength > measured.capacity - measured.length ||
+        measured.length > INT_MAX - (size_t)headerLength) return -3;
+    output.capacity = measured.length + (size_t)headerLength;
+    output.buffer = lwm2m_malloc(output.capacity);
+    if (output.buffer == NULL) return -2;
+    output.length = 0;
+    output.error = 0;
+    senml_writer_append(&output, header, (size_t)headerLength);
+    outputRecords = prv_serializeBody(count, target, baseUri, (size_t)baseLength, baseLevel, rootLevel,
+                                       parent, parentLength, &output);
+    if (output.error != 0 || output.length != output.capacity || records != outputRecords)
+    { lwm2m_free(output.buffer); return -1; }
+    *bufferP = output.buffer;
+    return (int)output.length;
 }
-
 #endif

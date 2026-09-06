@@ -610,6 +610,7 @@ static int prv_findAndCheckData(const lwm2m_uri_t * uriP,
     int result;
 
     if (size == 0) return 0;
+    if (tlvP == NULL) return -1;
 
     if (size > 1)
     {

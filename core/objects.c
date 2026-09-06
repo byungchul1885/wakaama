@@ -295,7 +295,7 @@ uint8_t object_read(lwm2m_context_t * contextP,
             res = lwm2m_data_serialize(uriP, size, dataP, formatP, bufferP);
             if (res < 0)
             {
-                result = COAP_500_INTERNAL_SERVER_ERROR;
+                result = res == -3 ? COAP_413_ENTITY_TOO_LARGE : COAP_500_INTERNAL_SERVER_ERROR;
             }
             else
             {

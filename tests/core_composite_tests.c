@@ -700,7 +700,159 @@ static void read_submission_evidence_requires_every_byte(void)
     CU_ASSERT_EQUAL(events.released, 1);
 }
 
+static void codec_large_and_exact_limit(void)
+{
+    static uint8_t bytes[LWM2M_SENML_MAX_SERIALIZED_SIZE + 1];
+    const size_t lengths[] = {0, 1, 2, 3, 1023, 1024, 1025, 4096, 8192, 32768};
+    const char jsonEmpty[] = "[{\"bn\":\"/3303/0/9\",\"vs\":\"\"}]";
+    lwm2m_uri_t uri;
+    uint16_t formatId;
+    size_t i, j;
+    CU_ASSERT(lwm2m_stringToUri("/3303/0/9", 9, &uri) == 9);
+    for (formatId = LWM2M_CONTENT_SENML_JSON; formatId <= LWM2M_CONTENT_SENML_CBOR; formatId += 2)
+    {
+        lwm2m_media_type_t format = (lwm2m_media_type_t)formatId;
+        lwm2m_data_t value = {0}, *decoded = NULL;
+        uint8_t *output = NULL;
+        int size, count;
+        value.id = 9;
+        value.type = LWM2M_TYPE_OPAQUE;
+        value.value.asBuffer.buffer = bytes;
+        for (i = 0; i < sizeof(bytes); i++) bytes[i] = (uint8_t)i;
+        for (j = 0; j < sizeof(lengths) / sizeof(lengths[0]); j++)
+        {
+            value.value.asBuffer.length = lengths[j];
+            size = lwm2m_data_serialize(&uri, 1, &value, &format, &output);
+            CU_ASSERT_FATAL(size > 0);
+            if (lengths[j] >= 1024) CU_ASSERT(size > 1024);
+            CU_ASSERT(size <= (int)LWM2M_SENML_MAX_SERIALIZED_SIZE);
+            count = lwm2m_data_parse(&uri, output, (size_t)size, format, &decoded);
+            CU_ASSERT_EQUAL_FATAL(count, 1);
+            CU_ASSERT_EQUAL(decoded[0].id, 9);
+            CU_ASSERT_EQUAL(decoded[0].type, LWM2M_TYPE_OPAQUE);
+            CU_ASSERT_EQUAL_FATAL(decoded[0].value.asBuffer.length, lengths[j]);
+            if (lengths[j] > 0) CU_ASSERT_EQUAL(memcmp(decoded[0].value.asBuffer.buffer, bytes, lengths[j]), 0);
+            lwm2m_data_free(count, decoded);
+            lwm2m_free(output);
+            output = NULL;
+        }
+        /* 고정 wire overhead: JSON literal, CBOR array/map/bn/vs와 16-bit string 길이. */
+        memset(bytes, 'x', sizeof(bytes));
+        value.type = LWM2M_TYPE_STRING;
+        value.value.asBuffer.length = LWM2M_SENML_MAX_SERIALIZED_SIZE -
+            (formatId == LWM2M_CONTENT_SENML_JSON ? sizeof(jsonEmpty) - 1 : 17);
+        size = lwm2m_data_serialize(&uri, 1, &value, &format, &output);
+        CU_ASSERT_EQUAL_FATAL(size, LWM2M_SENML_MAX_SERIALIZED_SIZE);
+        count = lwm2m_data_parse(&uri, output, (size_t)size, format, &decoded);
+        CU_ASSERT_EQUAL_FATAL(count, 1);
+        CU_ASSERT_EQUAL_FATAL(decoded[0].value.asBuffer.length, value.value.asBuffer.length);
+        CU_ASSERT_EQUAL(memcmp(decoded[0].value.asBuffer.buffer, bytes, value.value.asBuffer.length), 0);
+        lwm2m_data_free(count, decoded);
+        lwm2m_free(output);
+        output = (uint8_t *)(uintptr_t)1;
+        value.value.asBuffer.length++;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize(&uri, 1, &value, &format, &output), -3);
+        CU_ASSERT_PTR_NULL(output);
+        value.value.asBuffer.length--;
+#ifdef WAKAAMA_TEST_FAULTS
+        test_malloc_fail_after(0);
+        size = lwm2m_data_serialize(&uri, 1, &value, &format, &output);
+        test_malloc_fault_disable();
+        CU_ASSERT_EQUAL(size, -2);
+        CU_ASSERT_PTR_NULL(output);
+        CU_ASSERT_EQUAL(test_malloc_live_allocations(), 0);
+#endif
+        value.value.asBuffer.buffer = NULL;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize(&uri, 1, &value, &format, &output), -1);
+        CU_ASSERT_PTR_NULL(output);
+    }
+}
+
+static void codec_cbor_tiny_object_link_buffer(void)
+{
+    lwm2m_data_t value = {0};
+    uint8_t bytes[16], expected[16];
+    size_t length;
+    lwm2m_data_encode_objlink(65535, 65535, &value);
+    memset(bytes, 0xa5, sizeof(bytes));
+    memcpy(expected, bytes, sizeof(bytes));
+    for (length = 0; length <= 1; length++)
+    {
+        CU_ASSERT_EQUAL(cbor_put_singular(bytes, length, &value), 0);
+        CU_ASSERT_EQUAL(memcmp(bytes, expected, sizeof(bytes)), 0);
+    }
+    CU_ASSERT_EQUAL(cbor_put_singular(NULL, 16, &value), 0);
+}
+
+static void codec_aggregate_and_empty_resources(void)
+{
+    static uint8_t bytes[65536];
+    uint16_t formatId;
+    lwm2m_uri_t uri;
+    for (formatId = LWM2M_CONTENT_SENML_JSON; formatId <= LWM2M_CONTENT_SENML_CBOR; formatId += 2)
+    {
+        lwm2m_media_type_t format = (lwm2m_media_type_t)formatId;
+        lwm2m_data_t values[2] = {{0}}, *decoded = NULL;
+        uint8_t *output = NULL;
+        int size, count;
+        size_t i;
+        memset(bytes, 'x', 32768);
+        memset(bytes + 32768, 'y', 32768);
+        CU_ASSERT(lwm2m_stringToUri("/3303/0", 7, &uri) == 7);
+        for (i = 0; i < 2; i++)
+        {
+            values[i].id = (uint16_t)i;
+            values[i].type = LWM2M_TYPE_STRING;
+            values[i].value.asBuffer.buffer = bytes + i * 32768;
+            values[i].value.asBuffer.length = 32700;
+        }
+        size = lwm2m_data_serialize(&uri, 2, values, &format, &output);
+        CU_ASSERT_FATAL(size > 65400 && size <= 65536);
+        count = lwm2m_data_parse(&uri, output, (size_t)size, format, &decoded);
+        CU_ASSERT_EQUAL_FATAL(count, 2);
+        for (i = 0; i < 2; i++)
+        {
+            CU_ASSERT_EQUAL(decoded[i].id, i);
+            CU_ASSERT_EQUAL_FATAL(decoded[i].value.asBuffer.length, 32700);
+            CU_ASSERT_EQUAL(memcmp(decoded[i].value.asBuffer.buffer, bytes + i * 32768, 32700), 0);
+        }
+        lwm2m_data_free(count, decoded);
+        lwm2m_free(output);
+        values[0].value.asBuffer.length = 32768;
+        values[1].value.asBuffer.length = 32768;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize(&uri, 2, values, &format, &output), -3);
+        CU_ASSERT_PTR_NULL(output);
+        memset(values, 0, sizeof(values));
+        values[0].id = 7;
+        values[0].type = LWM2M_TYPE_MULTIPLE_RESOURCE;
+        size = lwm2m_data_serialize(&uri, 1, values, &format, &output);
+        CU_ASSERT_FATAL(size > 0);
+        {
+            lwm2m_uri_t *paths = NULL;
+            count = formatId == LWM2M_CONTENT_SENML_JSON ?
+                senml_json_parse_paths(output, (size_t)size, &paths) :
+                senml_cbor_parse_paths(output, (size_t)size, &paths);
+            CU_ASSERT_EQUAL_FATAL(count, 1);
+            CU_ASSERT_EQUAL(paths[0].objectId, 3303);
+            CU_ASSERT_EQUAL(paths[0].instanceId, 0);
+            CU_ASSERT_EQUAL(paths[0].resourceId, 7);
+            lwm2m_free(paths);
+        }
+        lwm2m_free(output);
+        /* 선택 URI 아래의 잘못된 children pointer도 finder에서 거절한다. */
+        values[0].id = 3303;
+        values[0].type = LWM2M_TYPE_OBJECT;
+        values[0].value.asChildren.count = 1;
+        values[0].value.asChildren.array = NULL;
+        CU_ASSERT_EQUAL(lwm2m_data_serialize(&uri, 1, values, &format, &output), -1);
+        CU_ASSERT_PTR_NULL(output);
+    }
+}
+
 static struct TestTable table[] = {
+    {"Q03 aggregate limit and empty resource", codec_aggregate_and_empty_resources},
+    {"Q03 large codec and exact limit", codec_large_and_exact_limit},
+    {"Q03 CBOR tiny object link buffer", codec_cbor_tiny_object_link_buffer},
     {"Q02 JSON path scope", paths_json_preserve_scope},
     {"Q03 CBOR golden and truncation", paths_cbor_golden_and_every_truncation},
     {"Q02 invalid JSON and values", paths_reject_values_and_invalid_json},

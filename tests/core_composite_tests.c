@@ -1238,11 +1238,19 @@ static uint8_t atomic_write_request(write_state_t *state, const uint8_t *payload
     if (mode == 1) objects[0].next = NULL;
     if (mode == 2) server.shortID = 2;
     lwm2m_set_composite_access_callback(&context, write_access, state);
+    CU_ASSERT_FALSE(lwm2m_set_composite_write_max_size(&context, 1));
     if (mode != 3) {
         lwm2m_set_composite_write_callback(&context, atomic_write_owner, true, state);
         CU_ASSERT_TRUE(context.compositeWriteDurableBlock1);
         lwm2m_set_composite_write_callback(&context, atomic_write_owner, false, state);
         CU_ASSERT_FALSE(context.compositeWriteDurableBlock1);
+        CU_ASSERT_TRUE(lwm2m_set_composite_write_max_size(&context, length - 1));
+        CU_ASSERT_EQUAL(object_writeComposite(&context, format, payload, length), COAP_413_ENTITY_TOO_LARGE);
+        CU_ASSERT_FALSE(lwm2m_set_composite_write_max_size(&context, (size_t)INT32_MAX + 1));
+        CU_ASSERT_EQUAL(context.compositeWriteMaxSize, length - 1);
+        CU_ASSERT_TRUE(lwm2m_set_composite_write_max_size(&context, 0));
+        CU_ASSERT_EQUAL(context.compositeWriteMaxSize, 0);
+        CU_ASSERT_TRUE(lwm2m_set_composite_write_max_size(&context, length));
     }
     coap_init_message(&request, COAP_TYPE_CON, COAP_IPATCH, 800);
     coap_set_header_content_type(&request, format);
@@ -1255,6 +1263,7 @@ static uint8_t atomic_write_request(write_state_t *state, const uint8_t *payload
     lwm2m_set_composite_write_callback(&context, NULL, true, NULL);
     CU_ASSERT_PTR_NULL(context.compositeWriteCallback);
     CU_ASSERT_FALSE(context.compositeWriteDurableBlock1);
+    CU_ASSERT_EQUAL(context.compositeWriteMaxSize, 0);
     return result;
 }
 

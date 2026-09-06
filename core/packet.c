@@ -755,16 +755,35 @@ static char *prv_block1_key(coap_packet_t *message)
                      (unsigned int)message->content_type, (unsigned int)message->accept_num,
                      message->accept_num > 0 ? (unsigned int)message->accept[0] : 0U, uri);
         else if (key != NULL)
-            snprintf(key, capacity, "%s:%u:%u:%s",
-                     message->code == COAP_FETCH ? "FETCH" : "iPATCH",
+            snprintf(key, capacity, "iPATCH:%u:%u",
                      IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) ? 1U : 0U,
-                     (unsigned int)message->content_type, uri);
+                     (unsigned int)message->content_type);
         lwm2m_free(uri);
         return key;
     }
 #endif
     return uri;
 }
+
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+static uint8_t prv_composite_write_block1_preflight(lwm2m_context_t *contextP, coap_packet_t *message)
+{
+    lwm2m_uri_t uri;
+    if (uri_decode(contextP->altPath, message->uri_path, message->code, &uri) != LWM2M_REQUEST_TYPE_DM ||
+        LWM2M_URI_IS_SET_OBJECT(&uri) || IS_OPTION(message, COAP_OPTION_URI_QUERY) || IS_OPTION(message, COAP_OPTION_OBSERVE))
+        return COAP_400_BAD_REQUEST;
+    if (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)) return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+    switch ((unsigned int)message->content_type) {
+#ifdef LWM2M_SUPPORT_SENML_JSON
+    case LWM2M_CONTENT_SENML_JSON: return COAP_NO_ERROR;
+#endif
+#ifdef LWM2M_SUPPORT_SENML_CBOR
+    case LWM2M_CONTENT_SENML_CBOR: return COAP_NO_ERROR;
+#endif
+    default: return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+    }
+}
+#endif
 
 void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t length, void *fromSessionH) {
     uint8_t coap_error_code = NO_ERROR;
@@ -817,7 +836,12 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 coap_set_header_token(response, message->token, message->token_len);
             }
 
-            if (is_message_too_large(message, length)) {
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+            /* 큰 입력을 할당하기 전에 고정된 root/형식만 허용한다. peer당 최대 두 iPATCH key다. */
+            if (message->code == COAP_IPATCH && IS_OPTION(message, COAP_OPTION_BLOCK1))
+                coap_error_code = prv_composite_write_block1_preflight(contextP, message);
+#endif
+            if (coap_error_code == NO_ERROR && is_message_too_large(message, length)) {
                 coap_error_code = COAP_413_ENTITY_TOO_LARGE;
 
                 if (IS_OPTION(message, COAP_OPTION_BLOCK1)){
@@ -828,7 +852,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 } else {
                     coap_set_header_block1(response, 0, 1, lwm2m_get_coap_block_size());
                 }
-            } else if (IS_OPTION(message, COAP_OPTION_BLOCK1)) {
+            } else if (coap_error_code == NO_ERROR && IS_OPTION(message, COAP_OPTION_BLOCK1)) {
 #ifdef LWM2M_CLIENT_MODE
                 // get server
                 lwm2m_server_t * peerP;
@@ -872,8 +896,11 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     size_t complete_buffer_size;
                     size_t requestLimit = 0;
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
-                    if (message->code == COAP_FETCH || message->code == COAP_IPATCH)
+                    if (message->code == COAP_FETCH)
                         requestLimit = LWM2M_COMPOSITE_MAX_REQUEST_SIZE;
+                    else if (message->code == COAP_IPATCH)
+                        requestLimit = contextP->compositeWriteMaxSize != 0 ? contextP->compositeWriteMaxSize :
+                                       LWM2M_COMPOSITE_MAX_REQUEST_SIZE;
 #endif
                     // parse block1 header
                     coap_get_header_block1(message, &block1_num, &block1_more, &block1_size, NULL);

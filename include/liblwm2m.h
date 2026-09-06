@@ -985,7 +985,8 @@ void lwm2m_set_composite_access_callback(lwm2m_context_t *contextP,
 /* 전체 iPATCH tree를 단 한 번 전달하는 동기 owner 경계다. objects와 모든 자식/버퍼는
  * 호출 동안만 유효한 borrowed 값이며 변경/해제/보관하지 않는다. owner는 전체 경로의
  * 타입·쓰기 권한·IID 세대·revision을 검증하고 입력/후속 의도/replay를 원자적으로 확정한다.
- * 실패 반환 때 부분 반영과 외부 IO는 없어야 한다. core는 객체별 순차 Write나 보상을 하지 않는다.
+ * 실패 반환 때 부분 반영과 장치 실행/외부 공개는 없어야 한다. private 준비 파일의 소유권과
+ * commit 여부 대조 복구는 owner 책임이다. core는 객체별 순차 Write나 보상을 하지 않는다.
  * 성공은 2.04이며 비동기 수락/지연 응답은 지원하지 않는다. context/session을 닫지 않는다.
  * 현재 IID 존재 검사는 owner의 durable replay 판정 뒤 수행한다. 삭제 후 옛 요청 재전송이
  * 새 세대에 적용되지 않도록 할 책임도 owner에 있다. NULL로 해제하면 기존 단일 객체 경로다.
@@ -995,6 +996,10 @@ typedef uint8_t (*lwm2m_composite_write_callback_t)(lwm2m_context_t *contextP,
     lwm2m_media_type_t format, size_t count, const lwm2m_data_t *objects, void *userData);
 void lwm2m_set_composite_write_callback(lwm2m_context_t *contextP,
     lwm2m_composite_write_callback_t callback, bool durableBlock1, void *userData);
+/* 전체 iPATCH 논리 요청의 수신/parse 상한이다. 0은 기본 64 KiB로 복원한다.
+ * callback 설치 후, 요청 수신 전에 설정한다. FETCH/일반 Write/IPC의 한도는 바꾸지 않는다.
+ * INT32_MAX보다 큰 한도 또는 callback 없는 설정은 거절한다. 해제 시 기본값으로 복원된다. */
+bool lwm2m_set_composite_write_max_size(lwm2m_context_t *contextP, size_t maximum);
 typedef enum {
     LWM2M_COMPOSITE_READ_SUBMITTED,
     LWM2M_COMPOSITE_READ_RELEASED
@@ -1046,6 +1051,7 @@ struct _lwm2m_context_
     lwm2m_composite_access_callback_t compositeAccessCallback;
     void *compositeAccessUserData;
     lwm2m_composite_write_callback_t compositeWriteCallback;
+    size_t compositeWriteMaxSize;
     bool compositeWriteDurableBlock1;
     void *compositeWriteUserData;
     lwm2m_composite_read_event_callback_t compositeReadEventCallback;

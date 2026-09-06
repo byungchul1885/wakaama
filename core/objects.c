@@ -426,8 +426,16 @@ void lwm2m_set_composite_write_callback(lwm2m_context_t *contextP,
 {
     if (contextP == NULL) return;
     contextP->compositeWriteCallback = callback;
+    if (callback == NULL) contextP->compositeWriteMaxSize = 0;
     contextP->compositeWriteDurableBlock1 = callback != NULL && durableBlock1;
     contextP->compositeWriteUserData = userData;
+}
+
+bool lwm2m_set_composite_write_max_size(lwm2m_context_t *contextP, size_t maximum)
+{
+    if (contextP == NULL || contextP->compositeWriteCallback == NULL || maximum > INT32_MAX) return false;
+    contextP->compositeWriteMaxSize = maximum;
+    return true;
 }
 
 static uint8_t prv_compositeWriteAccess(lwm2m_context_t *contextP, int count,
@@ -484,6 +492,8 @@ uint8_t object_writeComposite(lwm2m_context_t *contextP, lwm2m_media_type_t form
     uint8_t result;
 
     if (contextP == NULL || buffer == NULL || length == 0) return COAP_400_BAD_REQUEST;
+    if (length > (contextP->compositeWriteMaxSize != 0 ? contextP->compositeWriteMaxSize :
+                   LWM2M_COMPOSITE_MAX_REQUEST_SIZE)) return COAP_413_ENTITY_TOO_LARGE;
     switch (format)
     {
 #ifdef LWM2M_SUPPORT_SENML_JSON

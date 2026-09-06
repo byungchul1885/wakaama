@@ -168,6 +168,8 @@ uint8_t observe_handleRequest(lwm2m_context_t * contextP,
     lwm2m_observed_t * observedP;
     lwm2m_watcher_t * watcherP;
     lwm2m_observe_value_t initialValue;
+    uint8_t *initialSnapshot = NULL;
+    size_t initialSnapshotLength = 0;
     uint32_t count;
 
     LOG_ARG_DBG("Code: %02X, server status: %s", message->code, STR_STATUS(serverP->status));
@@ -184,7 +186,8 @@ uint8_t observe_handleRequest(lwm2m_context_t * contextP,
         if (!observe_captureValue(uriP, size, dataP, &initialValue)) return COAP_500_INTERNAL_SERVER_ERROR;
 
         observedP = prv_findObserved(contextP, uriP);
-        if (observedP == NULL || prv_findWatcher(observedP, serverP, message) == NULL)
+        watcherP = observedP != NULL ? prv_findWatcher(observedP, serverP, message) : NULL;
+        if (watcherP == NULL)
         {
             size_t total = 0, perServer = 0;
             for (observedP = contextP->observedList; observedP != NULL; observedP = observedP->next)
@@ -197,8 +200,17 @@ uint8_t observe_handleRequest(lwm2m_context_t * contextP,
                 return COAP_503_SERVICE_UNAVAILABLE;
         }
 
+        if (!observe_numericValue(&initialValue))
+        {
+            uint8_t result = observe_prepareSnapshot(uriP, size, dataP,
+                (lwm2m_media_type_t)response->content_type, &initialSnapshot, &initialSnapshotLength);
+            if (result != COAP_NO_ERROR) return result;
+            if (!observe_snapshotFits(contextP, watcherP, initialSnapshotLength))
+            { lwm2m_free(initialSnapshot); return COAP_503_SERVICE_UNAVAILABLE; }
+        }
         watcherP = prv_getWatcher(contextP, uriP, serverP, message);
-        if (watcherP == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
+        if (watcherP == NULL) { lwm2m_free(initialSnapshot); return COAP_500_INTERNAL_SERVER_ERROR; }
+        observe_replaceSnapshot(contextP, watcherP, initialSnapshot, initialSnapshotLength);
 
         watcherP->tokenLen = message->token_len;
         memcpy(watcherP->token, message->token, message->token_len);
@@ -247,7 +259,7 @@ static void prv_removeWatcher(lwm2m_context_t *contextP, lwm2m_observed_t *obser
     lwm2m_watcher_t *watcher = *link;
     observe_changedLifetime(contextP);
     *link = watcher->next;
-    lwm2m_free(watcher);
+    observe_freeWatcher(contextP, watcher);
     if (observed->watcherList == NULL)
     {
         prv_unlinkObserved(contextP, observed);
@@ -291,7 +303,7 @@ void observe_forgetServer(lwm2m_context_t *contextP, lwm2m_server_t *serverP)
             if (watcher->server == serverP)
             {
                 *watcherLink = watcher->next;
-                lwm2m_free(watcher);
+                observe_freeWatcher(contextP, watcher);
             }
             else watcherLink = &watcher->next;
         }
@@ -322,7 +334,12 @@ void observe_clear(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
            )
         {
             *link = observed->next;
-            LWM2M_LIST_FREE(observed->watcherList);
+            while (observed->watcherList != NULL)
+            {
+                lwm2m_watcher_t *watcher = observed->watcherList;
+                observed->watcherList = watcher->next;
+                observe_freeWatcher(contextP, watcher);
+            }
             lwm2m_free(observed);
         }
         else link = &observed->next;

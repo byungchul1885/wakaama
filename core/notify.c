@@ -53,8 +53,131 @@
 #include "management.h"
 #include <limits.h>
 #include <math.h>
+#include <stdlib.h>
 
 #ifdef LWM2M_CLIENT_MODE
+typedef struct {
+    size_t nodes;
+    size_t bytes;
+    uint8_t error;
+} snapshot_budget_t;
+
+static int prv_dataOrder(const void *left, const void *right)
+{
+    const lwm2m_data_t *a = left, *b = right;
+    return a->id < b->id ? -1 : a->id > b->id ? 1 : 0;
+}
+
+static lwm2m_data_t *prv_cloneSorted(const lwm2m_data_t *input, size_t count,
+                                     unsigned depth, snapshot_budget_t *budget)
+{
+    lwm2m_data_t *copy;
+    size_t i;
+    if (count == 0) return NULL;
+    if (depth >= 4 || input == NULL) { budget->error = COAP_500_INTERNAL_SERVER_ERROR; return NULL; }
+    if (count > 4096U - budget->nodes) { budget->error = COAP_413_ENTITY_TOO_LARGE; return NULL; }
+    budget->nodes += count;
+    copy = lwm2m_data_new((int)count);
+    if (copy == NULL) { budget->error = COAP_500_INTERNAL_SERVER_ERROR; return NULL; }
+    for (i = 0; i < count; ++i)
+    {
+        const lwm2m_data_t *source = input + i;
+        lwm2m_data_t *target = copy + i;
+        target->id = source->id; target->type = source->type;
+        switch (source->type)
+        {
+        case LWM2M_TYPE_OBJECT: case LWM2M_TYPE_OBJECT_INSTANCE: case LWM2M_TYPE_MULTIPLE_RESOURCE:
+            target->value.asChildren.array = prv_cloneSorted(source->value.asChildren.array,
+                source->value.asChildren.count, depth + 1, budget);
+            if (budget->error != COAP_NO_ERROR) goto failed;
+            target->value.asChildren.count = source->value.asChildren.count;
+            break;
+        case LWM2M_TYPE_STRING: case LWM2M_TYPE_OPAQUE: case LWM2M_TYPE_CORE_LINK:
+            if (source->value.asBuffer.length > LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT - budget->bytes)
+            { budget->error = COAP_413_ENTITY_TOO_LARGE; goto failed; }
+            if (source->value.asBuffer.length != 0)
+            {
+                if (source->value.asBuffer.buffer == NULL) goto invalid;
+                target->value.asBuffer.buffer = lwm2m_malloc(source->value.asBuffer.length);
+                if (target->value.asBuffer.buffer == NULL) goto invalid;
+                target->value.asBuffer.length = source->value.asBuffer.length;
+                memcpy(target->value.asBuffer.buffer, source->value.asBuffer.buffer, source->value.asBuffer.length);
+                budget->bytes += source->value.asBuffer.length;
+            }
+            break;
+        case LWM2M_TYPE_FLOAT:
+            if (!isfinite(source->value.asFloat)) goto invalid;
+            target->value = source->value;
+            break;
+        case LWM2M_TYPE_INTEGER: case LWM2M_TYPE_UNSIGNED_INTEGER:
+        case LWM2M_TYPE_BOOLEAN: case LWM2M_TYPE_OBJECT_LINK:
+            target->value = source->value;
+            break;
+        default: goto invalid;
+        }
+    }
+    qsort(copy, count, sizeof(*copy), prv_dataOrder);
+    for (i = 1; i < count; ++i) if (copy[i - 1].id == copy[i].id) goto invalid;
+    return copy;
+invalid:
+    budget->error = COAP_500_INTERNAL_SERVER_ERROR;
+failed:
+    lwm2m_data_free((int)count, copy);
+    return NULL;
+}
+
+bool observe_numericValue(const lwm2m_observe_value_t *value)
+{
+    return value->type == LWM2M_TYPE_INTEGER || value->type == LWM2M_TYPE_UNSIGNED_INTEGER ||
+           value->type == LWM2M_TYPE_FLOAT;
+}
+
+uint8_t observe_prepareSnapshot(const lwm2m_uri_t *uriP, int count, const lwm2m_data_t *dataP,
+                                 lwm2m_media_type_t format, uint8_t **bufferP, size_t *lengthP)
+{
+    snapshot_budget_t budget = {0};
+    lwm2m_data_t *copy;
+    lwm2m_uri_t uri = *uriP;
+    lwm2m_media_type_t selected = format;
+    int length;
+    *bufferP = NULL; *lengthP = 0;
+    if (count < 0) return COAP_500_INTERNAL_SERVER_ERROR;
+    copy = prv_cloneSorted(dataP, (size_t)count, 0, &budget);
+    if (budget.error != COAP_NO_ERROR) return budget.error;
+    if (count == 0) return COAP_NO_ERROR;
+    length = lwm2m_data_serialize(&uri, count, copy, &selected, bufferP);
+    lwm2m_data_free(count, copy);
+    if (length < 0 || selected != format || (size_t)length > LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT)
+    {
+        lwm2m_free(*bufferP); *bufferP = NULL;
+        return length == -3 || length > (int)LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT
+            ? COAP_413_ENTITY_TOO_LARGE : COAP_500_INTERNAL_SERVER_ERROR;
+    }
+    *lengthP = (size_t)length;
+    return COAP_NO_ERROR;
+}
+
+bool observe_snapshotFits(const lwm2m_context_t *contextP, const lwm2m_watcher_t *watcher, size_t length)
+{
+    size_t old = watcher != NULL ? watcher->valueSnapshotLength : 0;
+    return old <= contextP->observeSnapshotBytes && length <= LWM2M_OBSERVE_SNAPSHOT_LIMIT &&
+           contextP->observeSnapshotBytes - old <= LWM2M_OBSERVE_SNAPSHOT_LIMIT - length;
+}
+
+void observe_replaceSnapshot(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher, uint8_t *buffer, size_t length)
+{
+    contextP->observeSnapshotBytes -= watcher->valueSnapshotLength;
+    lwm2m_free(watcher->valueSnapshot);
+    watcher->valueSnapshot = buffer; watcher->valueSnapshotLength = length;
+    contextP->observeSnapshotBytes += length;
+}
+
+void observe_freeWatcher(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher)
+{
+    observe_replaceSnapshot(contextP, watcher, NULL, 0);
+    lwm2m_free(watcher);
+}
+
 bool observe_captureValue(const lwm2m_uri_t *uriP, int count, const lwm2m_data_t *dataP,
                            lwm2m_observe_value_t *output)
 {
@@ -208,6 +331,8 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
             uint64_t sinceReport, sinceEvaluation;
             uint32_t pmin, pmax, epmin, epmax;
             bool maxDue, evaluate, sendPending, changed = watcher->update;
+            bool numeric, valueChanged;
+            size_t snapshotLength = 0;
             int count = 0, length;
             uint8_t result;
             if (!watcher->active || !prv_connected(watcher->server)) continue;
@@ -249,9 +374,25 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
                 prv_wait(timeoutP, 1);
                 continue;
             }
+            numeric = observe_numericValue(&current);
+            valueChanged = changed;
+            if (!numeric)
+            {
+                result = observe_prepareSnapshot(&uri, count, data, watcher->format, &buffer, &snapshotLength);
+                if (result != COAP_NO_ERROR || !observe_snapshotFits(contextP, watcher, snapshotLength))
+                {
+                    lwm2m_free(buffer); lwm2m_data_free(count, data);
+                    prv_wait(timeoutP, 1);
+                    LOG_ARG_WARN("Observe comparison unavailable /%u/%u/%u code=%u", uri.objectId,
+                                 uri.instanceId, uri.resourceId, result != COAP_NO_ERROR ? result : COAP_503_SERVICE_UNAVAILABLE);
+                    continue;
+                }
+                valueChanged = snapshotLength != watcher->valueSnapshotLength ||
+                    (snapshotLength != 0 && memcmp(buffer, watcher->valueSnapshot, snapshotLength) != 0);
+            }
             if (evaluate)
             {
-                if (prv_condition(&attr, &current, &watcher->evaluatedValue, &watcher->lastValue, changed))
+                if (prv_condition(&attr, &current, &watcher->evaluatedValue, &watcher->lastValue, valueChanged))
                     watcher->notifyPending = true;
                 watcher->evaluatedValue = current;
                 watcher->lastEvaluation = currentTime;
@@ -260,12 +401,13 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
             if (!maxDue && (!watcher->notifyPending || sinceReport < pmin))
             {
                 if (watcher->notifyPending) prv_wait(timeoutP, pmin - sinceReport);
+                lwm2m_free(buffer);
                 lwm2m_data_free(count, data);
                 continue;
             }
             /* 각 관계의 합의된 format으로 별도 직렬화한다. 다른 서버의 bytes를 재사용하지 않는다. */
             format = watcher->format;
-            length = lwm2m_data_serialize(&uri, count, data, &format, &buffer);
+            length = numeric ? lwm2m_data_serialize(&uri, count, data, &format, &buffer) : (int)snapshotLength;
             lwm2m_data_free(count, data);
             if (length < 0 || format != watcher->format)
             {
@@ -281,16 +423,18 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
             coap_set_header_observe(&message, watcher->counter & 0x00ffffffU);
             coap_set_payload(&message, buffer, (size_t)length);
             result = message_send(contextP, &message, watcher->server->sessionH);
-            lwm2m_free(buffer);
             coap_free_header(&message);
-            if (epoch != contextP->observeEpoch) { prv_wait(timeoutP, 1); return; }
+            if (epoch != contextP->observeEpoch) { lwm2m_free(buffer); prv_wait(timeoutP, 1); return; }
             if (result != COAP_NO_ERROR)
             {
+                lwm2m_free(buffer);
                 watcher->notifyPending = true;
                 prv_wait(timeoutP, 1);
                 LOG_ARG_WARN("Observe send failed /%u/%u/%u code=%u", uri.objectId, uri.instanceId, uri.resourceId, result);
                 continue;
             }
+            observe_replaceSnapshot(contextP, watcher, numeric ? NULL : buffer, numeric ? 0 : snapshotLength);
+            if (numeric) lwm2m_free(buffer);
             watcher->lastTime = currentTime;
             watcher->lastMid = message.mid;
             watcher->counter = (watcher->counter + 1U) & 0x00ffffffU;

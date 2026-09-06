@@ -768,6 +768,8 @@ typedef struct _lwm2m_attribute_entry_
 #define LWM2M_ATTRIBUTE_ENTRY_LIMIT 512U
 #define LWM2M_ATTRIBUTE_SERVER_LIMIT 256U
 #define LWM2M_OBSERVER_LIMIT 128U
+#define LWM2M_OBSERVE_SNAPSHOT_LIMIT (4U * 1024U * 1024U)
+#define LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT 65536U
 #define LWM2M_OBSERVER_SERVER_LIMIT 64U
 
 /*
@@ -869,6 +871,9 @@ typedef struct _lwm2m_watcher_
     uint64_t changeSequence;
     lwm2m_observe_value_t lastValue;
     lwm2m_observe_value_t evaluatedValue;
+    /* 마지막 성공 보고의 정규화 bytes를 소유한다. 관찰 owner만 교체/해제한다. */
+    uint8_t *valueSnapshot;
+    size_t valueSnapshotLength;
 } lwm2m_watcher_t;
 
 typedef struct _lwm2m_observed_
@@ -1064,6 +1069,7 @@ struct _lwm2m_context_
     uint64_t attributeEpoch;
     /* callback 후 transient 관찰 pointer 재사용을 차단한다. */
     uint64_t observeEpoch;
+    size_t observeSnapshotBytes;
     lwm2m_registration_object_filter_t registrationObjectFilter;
     void *               registrationObjectFilterUserData;
 #ifndef LWM2M_VERSION_1_0

@@ -198,7 +198,12 @@ static void prv_deleteObservedList(lwm2m_context_t * contextP)
         targetP = contextP->observedList;
         contextP->observedList = contextP->observedList->next;
 
-        LWM2M_LIST_FREE(targetP->watcherList);
+        while (targetP->watcherList != NULL)
+        {
+            lwm2m_watcher_t *watcher = targetP->watcherList;
+            targetP->watcherList = watcher->next;
+            observe_freeWatcher(contextP, watcher);
+        }
 
         lwm2m_free(targetP);
     }

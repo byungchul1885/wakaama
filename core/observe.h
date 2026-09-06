@@ -29,6 +29,17 @@ void observe_changedLifetime(lwm2m_context_t *contextP);
 /* 숫자형 단일 leaf의 값 사본이다. tree/buffer 소유권을 가져오지 않는다. */
 bool observe_captureValue(const lwm2m_uri_t *uriP, int count, const lwm2m_data_t *dataP,
                            lwm2m_observe_value_t *output);
+bool observe_numericValue(const lwm2m_observe_value_t *value);
+/* 입력 tree는 borrowed/불변이다. 정렬된 깊은 사본을 직렬화하며 성공 출력은 caller 소유다.
+ * uriP/bufferP/lengthP는 NULL이 아니어야 한다. 오류는 NULL/0 출력과 기존 관찰 불변을 보장한다.
+ * 4096노드/4계층·입력 값 bytes와 직렬화 결과 각각 64 KiB로 제한한다. */
+uint8_t observe_prepareSnapshot(const lwm2m_uri_t *uriP, int count, const lwm2m_data_t *dataP,
+                                 lwm2m_media_type_t format, uint8_t **bufferP, size_t *lengthP);
+bool observe_snapshotFits(const lwm2m_context_t *contextP, const lwm2m_watcher_t *watcher, size_t length);
+/* fits 성공 후 callback 없이 호출한다. 기존 사본을 해제하고 새 buffer 소유권을 인수한다. */
+void observe_replaceSnapshot(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher, uint8_t *buffer, size_t length);
+/* watcher와 사본을 해제한다. 호출자가 owner 목록에서 먼저 분리해야 한다. */
+void observe_freeWatcher(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher);
 /* uri가 NULL이면 모든 설정, 아니면 해당 경로와 자손을 해제한다. */
 void observe_clearParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP);
 /* 새 값이 있는 필드만 caller 소유 사본에 합친다. 입력/출력 주소는 같아도 된다. */

@@ -139,6 +139,8 @@ int main(int argc, char **argv) {
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
    if (CUE_SUCCESS != create_management_deferred_test_suit())
        goto exit;
+   if (CUE_SUCCESS != create_observe_test_suit())
+       goto exit;
 #if defined(LWM2M_SUPPORT_SENML_JSON) && defined(LWM2M_SUPPORT_SENML_CBOR)
    if (CUE_SUCCESS != create_composite_test_suit())
        goto exit;

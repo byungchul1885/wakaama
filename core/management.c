@@ -401,53 +401,68 @@ static void prv_endDmRequestScope(lwm2m_context_t *contextP,
 }
 #endif
 
+static int prv_readAttributePeriod(const uint8_t *data, size_t length, uint32_t *value)
+{
+    uint32_t result = 0;
+    size_t i;
+    if (length == 0) return -1;
+    for (i = 0; i < length; ++i)
+    {
+        uint8_t digit;
+        if (data[i] < '0' || data[i] > '9') return -1;
+        digit = data[i] - '0';
+        if (result > (UINT32_MAX - digit) / 10U) return -1;
+        result = result * 10U + digit;
+    }
+    *value = result;
+    return 0;
+}
+
 static int prv_readAttributes(multi_option_t * query,
                               lwm2m_attributes_t * attrP)
 {
-    int64_t intValue;
     double floatValue;
 
     memset(attrP, 0, sizeof(lwm2m_attributes_t));
 
     while (query != NULL)
     {
-        if (lwm2m_strncmp((char *)query->data, ATTR_MIN_PERIOD_STR, ATTR_MIN_PERIOD_LEN) == 0)
+        /* CoAP option은 NUL 종료 문자열이 아니다. 다음 option/이전 수신 bytes를 읽지 않는다. */
+        if (query->len >= ATTR_MIN_PERIOD_LEN && memcmp(query->data, ATTR_MIN_PERIOD_STR, ATTR_MIN_PERIOD_LEN) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_MIN_PERIOD)) return -1;
             if (query->len == ATTR_MIN_PERIOD_LEN) return -1;
 
-            if (1 != utils_textToInt(query->data + ATTR_MIN_PERIOD_LEN, query->len - ATTR_MIN_PERIOD_LEN, &intValue)) return -1;
-            if (intValue < 0) return -1;
+            if (0 != prv_readAttributePeriod(query->data + ATTR_MIN_PERIOD_LEN,
+                                            query->len - ATTR_MIN_PERIOD_LEN, &attrP->minPeriod)) return -1;
 
             attrP->toSet |= LWM2M_ATTR_FLAG_MIN_PERIOD;
-            attrP->minPeriod = intValue;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_MIN_PERIOD_STR, ATTR_MIN_PERIOD_LEN - 1) == 0)
+        else if (query->len == ATTR_MIN_PERIOD_LEN - 1 && memcmp(query->data, ATTR_MIN_PERIOD_STR, ATTR_MIN_PERIOD_LEN - 1) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_MIN_PERIOD)) return -1;
             if (query->len != ATTR_MIN_PERIOD_LEN - 1) return -1;
 
             attrP->toClear |= LWM2M_ATTR_FLAG_MIN_PERIOD;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_MAX_PERIOD_STR, ATTR_MAX_PERIOD_LEN) == 0)
+        else if (query->len >= ATTR_MAX_PERIOD_LEN && memcmp(query->data, ATTR_MAX_PERIOD_STR, ATTR_MAX_PERIOD_LEN) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_MAX_PERIOD)) return -1;
             if (query->len == ATTR_MAX_PERIOD_LEN) return -1;
 
-            if (1 != utils_textToInt(query->data + ATTR_MAX_PERIOD_LEN, query->len - ATTR_MAX_PERIOD_LEN, &intValue)) return -1;
-            if (intValue < 0) return -1;
+            if (0 != prv_readAttributePeriod(query->data + ATTR_MAX_PERIOD_LEN,
+                                            query->len - ATTR_MAX_PERIOD_LEN, &attrP->maxPeriod)) return -1;
 
             attrP->toSet |= LWM2M_ATTR_FLAG_MAX_PERIOD;
-            attrP->maxPeriod = intValue;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_MAX_PERIOD_STR, ATTR_MAX_PERIOD_LEN - 1) == 0)
+        else if (query->len == ATTR_MAX_PERIOD_LEN - 1 && memcmp(query->data, ATTR_MAX_PERIOD_STR, ATTR_MAX_PERIOD_LEN - 1) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_MAX_PERIOD)) return -1;
             if (query->len != ATTR_MAX_PERIOD_LEN - 1) return -1;
 
             attrP->toClear |= LWM2M_ATTR_FLAG_MAX_PERIOD;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_GREATER_THAN_STR, ATTR_GREATER_THAN_LEN) == 0)
+        else if (query->len >= ATTR_GREATER_THAN_LEN && memcmp(query->data, ATTR_GREATER_THAN_STR, ATTR_GREATER_THAN_LEN) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_GREATER_THAN)) return -1;
             if (query->len == ATTR_GREATER_THAN_LEN) return -1;
@@ -457,14 +472,14 @@ static int prv_readAttributes(multi_option_t * query,
             attrP->toSet |= LWM2M_ATTR_FLAG_GREATER_THAN;
             attrP->greaterThan = floatValue;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_GREATER_THAN_STR, ATTR_GREATER_THAN_LEN - 1) == 0)
+        else if (query->len == ATTR_GREATER_THAN_LEN - 1 && memcmp(query->data, ATTR_GREATER_THAN_STR, ATTR_GREATER_THAN_LEN - 1) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_GREATER_THAN)) return -1;
             if (query->len != ATTR_GREATER_THAN_LEN - 1) return -1;
 
             attrP->toClear |= LWM2M_ATTR_FLAG_GREATER_THAN;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_LESS_THAN_STR, ATTR_LESS_THAN_LEN) == 0)
+        else if (query->len >= ATTR_LESS_THAN_LEN && memcmp(query->data, ATTR_LESS_THAN_STR, ATTR_LESS_THAN_LEN) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_LESS_THAN)) return -1;
             if (query->len == ATTR_LESS_THAN_LEN) return -1;
@@ -474,14 +489,14 @@ static int prv_readAttributes(multi_option_t * query,
             attrP->toSet |= LWM2M_ATTR_FLAG_LESS_THAN;
             attrP->lessThan = floatValue;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_LESS_THAN_STR, ATTR_LESS_THAN_LEN - 1) == 0)
+        else if (query->len == ATTR_LESS_THAN_LEN - 1 && memcmp(query->data, ATTR_LESS_THAN_STR, ATTR_LESS_THAN_LEN - 1) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_LESS_THAN)) return -1;
             if (query->len != ATTR_LESS_THAN_LEN - 1) return -1;
 
             attrP->toClear |= LWM2M_ATTR_FLAG_LESS_THAN;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_STEP_STR, ATTR_STEP_LEN) == 0)
+        else if (query->len >= ATTR_STEP_LEN && memcmp(query->data, ATTR_STEP_STR, ATTR_STEP_LEN) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_STEP)) return -1;
             if (query->len == ATTR_STEP_LEN) return -1;
@@ -492,7 +507,7 @@ static int prv_readAttributes(multi_option_t * query,
             attrP->toSet |= LWM2M_ATTR_FLAG_STEP;
             attrP->step = floatValue;
         }
-        else if (lwm2m_strncmp((char *)query->data, ATTR_STEP_STR, ATTR_STEP_LEN - 1) == 0)
+        else if (query->len == ATTR_STEP_LEN - 1 && memcmp(query->data, ATTR_STEP_STR, ATTR_STEP_LEN - 1) == 0)
         {
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_STEP)) return -1;
             if (query->len != ATTR_STEP_LEN - 1) return -1;

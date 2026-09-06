@@ -22,6 +22,7 @@
 uint8_t observe_handleRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP, int size,
                               lwm2m_data_t *dataP, coap_packet_t *message, coap_packet_t *response);
 void observe_cancel(lwm2m_context_t *contextP, uint16_t mid, void *fromSessionH);
+/* 입력은 borrowed다. 검증/할당 성공 뒤 context 소유 사본만 공개하며 실패는 기존 상태를 보존한다. */
 uint8_t observe_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP,
                               lwm2m_attributes_t *attrP);
 void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeoutP);

@@ -51,6 +51,7 @@
 
 #include "internals.h"
 #include "management.h"
+#include <math.h>
 #include <stdio.h>
 
 
@@ -58,22 +59,8 @@
 static lwm2m_observed_t * prv_findObserved(lwm2m_context_t * contextP,
                                            lwm2m_uri_t * uriP)
 {
-    lwm2m_observed_t * targetP;
-
-    targetP = contextP->observedList;
-    while (targetP != NULL
-        && ((LWM2M_URI_IS_SET_OBJECT(uriP) && targetP->uri.objectId != uriP->objectId)
-         || (LWM2M_URI_IS_SET_INSTANCE(uriP) && targetP->uri.instanceId != uriP->instanceId)
-         || (LWM2M_URI_IS_SET_RESOURCE(uriP) && targetP->uri.resourceId != uriP->resourceId)
-#ifndef LWM2M_VERSION_1_0
-         || (LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP) && targetP->uri.resourceInstanceId != uriP->resourceInstanceId)
-#endif
-           ))
-    {
-        targetP = targetP->next;
-    }
-
-    return targetP;
+    /* 설정 수준과 관찰 경로는 정확히 일치해야 한다. 부모/자식 상속은 별도 계산한다. */
+    return observe_findByUri(contextP, uriP);
 }
 
 static void prv_unlinkObserved(lwm2m_context_t * contextP,
@@ -133,8 +120,6 @@ static lwm2m_watcher_t * prv_getWatcher(lwm2m_context_t * contextP,
         allocatedObserver = true;
         memset(observedP, 0, sizeof(lwm2m_observed_t));
         memcpy(&(observedP->uri), uriP, sizeof(lwm2m_uri_t));
-        observedP->next = contextP->observedList;
-        contextP->observedList = observedP;
     }
 
     watcherP = prv_findWatcher(observedP, serverP);
@@ -156,6 +141,12 @@ static lwm2m_watcher_t * prv_getWatcher(lwm2m_context_t * contextP,
         observedP->watcherList = watcherP;
     }
 
+    /* watcher 준비가 실패한 노드는 owner 목록에 공개하지 않는다. */
+    if (allocatedObserver)
+    {
+        observedP->next = contextP->observedList;
+        contextP->observedList = observedP;
+    }
     return watcherP;
 }
 
@@ -337,99 +328,79 @@ uint8_t observe_setParameters(lwm2m_context_t * contextP,
                               lwm2m_server_t * serverP,
                               lwm2m_attributes_t * attrP)
 {
+    const uint8_t supported = LWM2M_ATTR_FLAG_MIN_PERIOD | LWM2M_ATTR_FLAG_MAX_PERIOD | ATTR_FLAG_NUMERIC;
+    lwm2m_observed_t *observedP;
+    lwm2m_watcher_t *watcherP;
+    lwm2m_attributes_t candidate = {0}, *allocatedP = NULL;
     uint8_t result;
-    lwm2m_watcher_t * watcherP;
 
-    LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
-    LOG_ARG_DBG("toSet: %08X, toClear: %08X, minPeriod: %d, maxPeriod: %d, greaterThan: %f, lessThan: %f, step: %f",
-                attrP->toSet, attrP->toClear, attrP->minPeriod, attrP->maxPeriod, attrP->greaterThan, attrP->lessThan,
-                attrP->step);
+    if (contextP == NULL || uriP == NULL || serverP == NULL || attrP == NULL ||
+        !LWM2M_URI_IS_SET_OBJECT(uriP) ||
+        (!LWM2M_URI_IS_SET_INSTANCE(uriP) && LWM2M_URI_IS_SET_RESOURCE(uriP)) ||
+        ((attrP->toSet | attrP->toClear) & ~supported) != 0 ||
+        (attrP->toSet & attrP->toClear) != 0 ||
+        (((attrP->toSet | attrP->toClear) & ATTR_FLAG_NUMERIC) != 0 && !LWM2M_URI_IS_SET_RESOURCE(uriP)))
+        return COAP_400_BAD_REQUEST;
 
-    if (!LWM2M_URI_IS_SET_INSTANCE(uriP) && LWM2M_URI_IS_SET_RESOURCE(uriP)) return COAP_400_BAD_REQUEST;
-
-    result = object_checkReadable(contextP, uriP, attrP);
-    if (COAP_205_CONTENT != result) return result;
-
-    watcherP = prv_getWatcher(contextP, uriP, serverP);
-    if (watcherP == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
-
-    // Check rule “lt” value + 2*”stp” values < “gt” value
-    if ((((attrP->toSet | (watcherP->parameters?watcherP->parameters->toSet:0)) & ~attrP->toClear) & ATTR_FLAG_NUMERIC) == ATTR_FLAG_NUMERIC)
+    observedP = prv_findObserved(contextP, uriP);
+    watcherP = observedP ? prv_findWatcher(observedP, serverP) : NULL;
+    if (watcherP && watcherP->parameters) candidate = *watcherP->parameters;
+    candidate.toSet = (candidate.toSet & ~attrP->toClear) | attrP->toSet;
+    candidate.toClear = 0;
+    if (attrP->toSet & LWM2M_ATTR_FLAG_MIN_PERIOD) candidate.minPeriod = attrP->minPeriod;
+    if (attrP->toSet & LWM2M_ATTR_FLAG_MAX_PERIOD) candidate.maxPeriod = attrP->maxPeriod;
+    if (attrP->toSet & LWM2M_ATTR_FLAG_GREATER_THAN) candidate.greaterThan = attrP->greaterThan;
+    if (attrP->toSet & LWM2M_ATTR_FLAG_LESS_THAN) candidate.lessThan = attrP->lessThan;
+    if (attrP->toSet & LWM2M_ATTR_FLAG_STEP) candidate.step = attrP->step;
+    if (((candidate.toSet & LWM2M_ATTR_FLAG_GREATER_THAN) && !isfinite(candidate.greaterThan)) ||
+        ((candidate.toSet & LWM2M_ATTR_FLAG_LESS_THAN) && !isfinite(candidate.lessThan)) ||
+        ((candidate.toSet & LWM2M_ATTR_FLAG_STEP) && (!isfinite(candidate.step) || candidate.step < 0)))
+        return COAP_400_BAD_REQUEST;
+    if ((candidate.toSet & (LWM2M_ATTR_FLAG_LESS_THAN | LWM2M_ATTR_FLAG_GREATER_THAN)) ==
+        (LWM2M_ATTR_FLAG_LESS_THAN | LWM2M_ATTR_FLAG_GREATER_THAN))
     {
-        float gt;
-        float lt;
-        float stp;
-
-        if (0 != (attrP->toSet & LWM2M_ATTR_FLAG_GREATER_THAN))
-        {
-            gt = attrP->greaterThan;
-        }
-        else
-        {
-            gt = watcherP->parameters->greaterThan;
-        }
-        if (0 != (attrP->toSet & LWM2M_ATTR_FLAG_LESS_THAN))
-        {
-            lt = attrP->lessThan;
-        }
-        else
-        {
-            lt = watcherP->parameters->lessThan;
-        }
-        if (0 != (attrP->toSet & LWM2M_ATTR_FLAG_STEP))
-        {
-            stp = attrP->step;
-        }
-        else
-        {
-            stp = watcherP->parameters->step;
-        }
-
-        if (lt + (2 * stp) >= gt) return COAP_400_BAD_REQUEST;
+        long double gap = (long double)candidate.greaterThan - (long double)candidate.lessThan;
+        if (!(gap > 0) || ((candidate.toSet & LWM2M_ATTR_FLAG_STEP) && 2.0L * candidate.step >= gap))
+            return COAP_400_BAD_REQUEST;
     }
 
-    if (watcherP->parameters == NULL)
+    result = object_checkReadable(contextP, uriP, &candidate);
+    if (result != COAP_205_CONTENT) return result;
+    if (candidate.toSet == 0)
     {
-        if (attrP->toSet != 0)
+        if (watcherP != NULL)
         {
-            watcherP->parameters = (lwm2m_attributes_t *)lwm2m_malloc(sizeof(lwm2m_attributes_t));
-            if (watcherP->parameters == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
-            memcpy(watcherP->parameters, attrP, sizeof(lwm2m_attributes_t));
+            lwm2m_free(watcherP->parameters);
+            watcherP->parameters = NULL;
+            if (!watcherP->active)
+            {
+                lwm2m_watcher_t **link = &observedP->watcherList;
+                while (*link != watcherP) link = &(*link)->next;
+                *link = watcherP->next;
+                lwm2m_free(watcherP);
+                if (observedP->watcherList == NULL)
+                {
+                    prv_unlinkObserved(contextP, observedP);
+                    lwm2m_free(observedP);
+                }
+            }
         }
-        else
-        {
-            return COAP_204_CHANGED;
-        }
+        return COAP_204_CHANGED;
     }
-    else
+    /* 검증과 모든 할당이 끝난 뒤에만 기존 설정/관찰 목록에 공개한다. */
+    if (watcherP == NULL || watcherP->parameters == NULL)
     {
-        watcherP->parameters->toSet &= ~attrP->toClear;
-        if (attrP->toSet & LWM2M_ATTR_FLAG_MIN_PERIOD)
-        {
-            watcherP->parameters->minPeriod = attrP->minPeriod;
-        }
-        if (attrP->toSet & LWM2M_ATTR_FLAG_MAX_PERIOD)
-        {
-            watcherP->parameters->maxPeriod = attrP->maxPeriod;
-        }
-        if (attrP->toSet & LWM2M_ATTR_FLAG_GREATER_THAN)
-        {
-            watcherP->parameters->greaterThan = attrP->greaterThan;
-        }
-        if (attrP->toSet & LWM2M_ATTR_FLAG_LESS_THAN)
-        {
-            watcherP->parameters->lessThan = attrP->lessThan;
-        }
-        if (attrP->toSet & LWM2M_ATTR_FLAG_STEP)
-        {
-            watcherP->parameters->step = attrP->step;
-        }
+        allocatedP = lwm2m_malloc(sizeof(*allocatedP));
+        if (allocatedP == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
     }
-
-    LOG_ARG_DBG("Final toSet: %08X, minPeriod: %d, maxPeriod: %d, greaterThan: %f, lessThan: %f, step: %f",
-                watcherP->parameters->toSet, watcherP->parameters->minPeriod, watcherP->parameters->maxPeriod,
-                watcherP->parameters->greaterThan, watcherP->parameters->lessThan, watcherP->parameters->step);
-
+    if (watcherP == NULL) watcherP = prv_getWatcher(contextP, uriP, serverP);
+    if (watcherP == NULL)
+    {
+        lwm2m_free(allocatedP);
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+    if (allocatedP != NULL) watcherP->parameters = allocatedP;
+    *watcherP->parameters = candidate;
     return COAP_204_CHANGED;
 }
 

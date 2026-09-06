@@ -1298,6 +1298,7 @@ static void create_releases_serialized_source_after_queue(void)
 }
 #endif
 
+#ifdef LWM2M_SUPPORT_SENML_JSON
 static uint8_t prv_write_composite(lwm2m_context_t *contextP, size_t count,
                                     const lwm2m_data_t *instances, lwm2m_object_t *objectP)
 {
@@ -1354,9 +1355,66 @@ static void write_composite_dispatches_one_atomic_owner(void)
     ctx->objectList = NULL;
     lwm2m_close(ctx);
 }
+#endif
+
+static uint8_t prv_delete_owned_instance(lwm2m_context_t *ctx, uint16_t id, lwm2m_object_t *object)
+{
+    lwm2m_list_t *removed = NULL;
+    (void)ctx;
+    object->instanceList = lwm2m_list_remove(object->instanceList, id, &removed);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(removed);
+    /* 반환 뒤 이전 노드의 ID를 읽는 결함을 드러낸다. */
+    memset(removed, 0xDD, sizeof(*removed));
+    lwm2m_free(removed);
+    return COAP_202_DELETED;
+}
+
+static void delete_replay_preserves_new_instance_observation_and_owned_list_lifetime(void)
+{
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instance;
+    execute_state_t state = {0};
+    lwm2m_context_t *ctx = prv_context(&server, &object, &instance, &state);
+    lwm2m_observed_t *observed = lwm2m_malloc(sizeof(*observed));
+    lwm2m_uri_t uri;
+    lwm2m_list_t *owned;
+    CU_ASSERT_PTR_NOT_NULL_FATAL(observed);
+    memset(observed, 0, sizeof(*observed));
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    uri.instanceId = 0U;
+    observed->uri = uri;
+    observed->uri.resourceId = 0U;
+    ctx->observedList = observed;
+    object.flags |= LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION;
+    /* prv_delete는 이전 교환 응답만 돌려주며 현재 세대는 보존한다. */
+    CU_ASSERT_EQUAL(object_delete(ctx, &uri), COAP_202_DELETED);
+    CU_ASSERT_PTR_EQUAL(ctx->observedList, observed);
+    LWM2M_URI_RESET(&uri);
+    uri.objectId = object.objID;
+    CU_ASSERT_EQUAL(object_delete(ctx, &uri), COAP_405_METHOD_NOT_ALLOWED);
+    CU_ASSERT_PTR_EQUAL(ctx->observedList, observed);
+    CU_ASSERT_EQUAL(state.deleteCalls, 2U);
+
+    owned = lwm2m_malloc(sizeof(*owned));
+    CU_ASSERT_PTR_NOT_NULL_FATAL(owned);
+    memset(owned, 0, sizeof(*owned));
+    object.instanceList = owned;
+    object.deleteFunc = prv_delete_owned_instance;
+    CU_ASSERT_EQUAL(object_delete(ctx, &uri), COAP_202_DELETED);
+    CU_ASSERT_PTR_NULL(object.instanceList);
+    CU_ASSERT_PTR_NULL(ctx->observedList);
+    ctx->serverList = NULL;
+    ctx->objectList = NULL;
+    lwm2m_close(ctx);
+}
 
 static struct TestTable table[] = {
+#ifdef LWM2M_SUPPORT_SENML_JSON
     {"Write Composite atomic owner dispatch", write_composite_dispatches_one_atomic_owner},
+#endif
+    {"Delete replay and callback list ownership", delete_replay_preserves_new_instance_observation_and_owned_list_lifetime},
     {"filtered registration update after instance mutation",
      instance_mutations_update_only_servers_exposing_instance},
     {"DM mutation request metadata", mutation_callbacks_expose_borrowed_request_metadata},

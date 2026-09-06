@@ -748,7 +748,9 @@ uint8_t object_delete(lwm2m_context_t * contextP,
     if (LWM2M_URI_IS_SET_INSTANCE(uriP))
     {
         result = objectP->deleteFunc(contextP, uriP->instanceId, objectP);
-        if (result == COAP_202_DELETED)
+        if (result == COAP_202_DELETED &&
+            ((objectP->flags & LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION) == 0U ||
+             lwm2m_list_find(objectP->instanceList, uriP->instanceId) == NULL))
         {
             observe_clear(contextP, uriP);
         }
@@ -765,10 +767,19 @@ uint8_t object_delete(lwm2m_context_t * contextP,
         while (NULL != instanceP
             && result == COAP_202_DELETED)
         {
-            result = objectP->deleteFunc(contextP, instanceP->id, objectP);
+            /* callback은 목록 전체를 교체/해제할 수 있다. 이후에는 저장한 ID와 최신 head만 읽는다. */
+            uint16_t instanceId = instanceP->id;
+            result = objectP->deleteFunc(contextP, instanceId, objectP);
             if (result == COAP_202_DELETED)
             {
-                tempUri.instanceId = instanceP->id;
+                if (lwm2m_list_find(objectP->instanceList, instanceId) != NULL)
+                {
+                    /* replay로 현재 세대가 남은 경우 무한 순회하거나 그 Observe를 지우지 않는다. */
+                    result = (objectP->flags & LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION) != 0U
+                                 ? COAP_405_METHOD_NOT_ALLOWED : COAP_500_INTERNAL_SERVER_ERROR;
+                    break;
+                }
+                tempUri.instanceId = instanceId;
                 observe_clear(contextP, &tempUri);
             }
             instanceP = objectP->instanceList;

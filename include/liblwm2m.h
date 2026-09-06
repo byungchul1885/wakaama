@@ -531,6 +531,9 @@ typedef uint8_t (*lwm2m_delete_callback_t) (lwm2m_context_t * contextP, uint16_t
 /*
  * 명시된 Instance ID가 이미 존재하는 Create도 application callback이 최종 판정하게 한다.
  * Durable replay를 자체 판정할 수 있는 Object만 이 플래그를 opt-in해야 한다.
+ * Create/Delete callback은 반환 전에 Store의 현재 인스턴스 목록을 반영해야 한다.
+ * Delete replay 뒤 같은 ID가 남아 있으면 현재 세대의 Observe는 제거하지 않는다.
+ * callback은 기존 목록 노드를 교체/해제할 수 있으며 core는 반환 뒤 이전 노드를 빌리지 않는다.
  */
 #define LWM2M_OBJECT_FLAG_REPLAY_AWARE_INSTANCE_ADMISSION (1UL << 0)
 

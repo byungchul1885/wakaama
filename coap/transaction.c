@@ -180,6 +180,15 @@ static int prv_checkFinished(lwm2m_transaction_t * transacP,
     return 0;
 }
 
+static bool prv_addPathSegment(coap_packet_t *packet, const char *segment)
+{
+    multi_option_t **tail = &packet->uri_path;
+    while (*tail != NULL) tail = &(*tail)->next;
+    coap_set_header_uri_path_segment(packet, segment);
+    /* option 할당 실패로 잘린 URI를 외부로 보내지 않는다. */
+    return *tail != NULL;
+}
+
 lwm2m_transaction_t * transaction_new(void * sessionH,
                                       coap_method_t method,
                                       char * altPath,
@@ -214,7 +223,7 @@ lwm2m_transaction_t * transaction_new(void * sessionH,
     if (altPath != NULL)
     {
         // TODO: Support multi-segment alternative path
-        coap_set_header_uri_path_segment(transacP->message, altPath + 1);
+        if (!prv_addPathSegment(transacP->message, altPath + 1)) goto error;
     }
     if (NULL != uriP && LWM2M_URI_IS_SET_OBJECT(uriP))
     {
@@ -223,27 +232,27 @@ lwm2m_transaction_t * transaction_new(void * sessionH,
         result = utils_intToText(uriP->objectId, (uint8_t*)stringID, LWM2M_STRING_ID_MAX_LEN);
         if (result == 0) goto error;
         stringID[result] = 0;
-        coap_set_header_uri_path_segment(transacP->message, stringID);
+        if (!prv_addPathSegment(transacP->message, stringID)) goto error;
 
         if (LWM2M_URI_IS_SET_INSTANCE(uriP))
         {
             result = utils_intToText(uriP->instanceId, (uint8_t*)stringID, LWM2M_STRING_ID_MAX_LEN);
             if (result == 0) goto error;
             stringID[result] = 0;
-            coap_set_header_uri_path_segment(transacP->message, stringID);
+            if (!prv_addPathSegment(transacP->message, stringID)) goto error;
             if (LWM2M_URI_IS_SET_RESOURCE(uriP))
             {
                 result = utils_intToText(uriP->resourceId, (uint8_t*)stringID, LWM2M_STRING_ID_MAX_LEN);
                 if (result == 0) goto error;
                 stringID[result] = 0;
-                coap_set_header_uri_path_segment(transacP->message, stringID);
+                if (!prv_addPathSegment(transacP->message, stringID)) goto error;
 #ifndef LWM2M_VERSION_1_0
                 if (LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP))
                 {
                     result = utils_intToText(uriP->resourceInstanceId, (uint8_t*)stringID, LWM2M_STRING_ID_MAX_LEN);
                     if (result == 0) goto error;
                     stringID[result] = 0;
-                    coap_set_header_uri_path_segment(transacP->message, stringID);
+                    if (!prv_addPathSegment(transacP->message, stringID)) goto error;
                 }
 #endif
             }

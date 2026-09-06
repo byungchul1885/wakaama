@@ -51,6 +51,9 @@
 
 #include "internals.h"
 #include <stdio.h>
+#include <errno.h>
+#include <math.h>
+#include <stdlib.h>
 
 
 #ifdef LWM2M_CLIENT_MODE
@@ -418,6 +421,36 @@ static int prv_readAttributePeriod(const uint8_t *data, size_t length, uint32_t 
     return 0;
 }
 
+static int prv_readAttributeNumber(const uint8_t *data, size_t length, double *value)
+{
+    char text[256], *end;
+    size_t i = 0, digits;
+    if (length == 0 || length >= sizeof(text)) return -1;
+    if (data[i] == '-') ++i;
+    digits = i;
+    while (i < length && data[i] >= '0' && data[i] <= '9') ++i;
+    if (i == digits) return -1;
+    if (i < length && data[i] == '.')
+    {
+        digits = ++i;
+        while (i < length && data[i] >= '0' && data[i] <= '9') ++i;
+        if (i == digits) return -1;
+    }
+    if (i < length && (data[i] == 'e' || data[i] == 'E'))
+    {
+        ++i;
+        if (i < length && (data[i] == '+' || data[i] == '-')) ++i;
+        digits = i;
+        while (i < length && data[i] >= '0' && data[i] <= '9') ++i;
+        if (i == digits) return -1;
+    }
+    if (i != length) return -1;
+    memcpy(text, data, length); text[length] = '\0';
+    errno = 0;
+    *value = strtod(text, &end);
+    return end == text + length && isfinite(*value) && !(errno == ERANGE && fpclassify(*value) == FP_ZERO) ? 0 : -1;
+}
+
 static int prv_readAttributes(multi_option_t * query,
                               lwm2m_attributes_t * attrP)
 {
@@ -467,7 +500,7 @@ static int prv_readAttributes(multi_option_t * query,
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_GREATER_THAN)) return -1;
             if (query->len == ATTR_GREATER_THAN_LEN) return -1;
 
-            if (1 != utils_textToFloat(query->data + ATTR_GREATER_THAN_LEN, query->len - ATTR_GREATER_THAN_LEN, &floatValue, false)) return -1;
+            if (0 != prv_readAttributeNumber(query->data + ATTR_GREATER_THAN_LEN, query->len - ATTR_GREATER_THAN_LEN, &floatValue)) return -1;
 
             attrP->toSet |= LWM2M_ATTR_FLAG_GREATER_THAN;
             attrP->greaterThan = floatValue;
@@ -484,7 +517,7 @@ static int prv_readAttributes(multi_option_t * query,
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_LESS_THAN)) return -1;
             if (query->len == ATTR_LESS_THAN_LEN) return -1;
 
-            if (1 != utils_textToFloat(query->data + ATTR_LESS_THAN_LEN, query->len - ATTR_LESS_THAN_LEN, &floatValue, false)) return -1;
+            if (0 != prv_readAttributeNumber(query->data + ATTR_LESS_THAN_LEN, query->len - ATTR_LESS_THAN_LEN, &floatValue)) return -1;
 
             attrP->toSet |= LWM2M_ATTR_FLAG_LESS_THAN;
             attrP->lessThan = floatValue;
@@ -501,7 +534,7 @@ static int prv_readAttributes(multi_option_t * query,
             if (0 != ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_STEP)) return -1;
             if (query->len == ATTR_STEP_LEN) return -1;
 
-            if (1 != utils_textToFloat(query->data + ATTR_STEP_LEN, query->len - ATTR_STEP_LEN, &floatValue, false)) return -1;
+            if (0 != prv_readAttributeNumber(query->data + ATTR_STEP_LEN, query->len - ATTR_STEP_LEN, &floatValue)) return -1;
             if (floatValue < 0) return -1;
 
             attrP->toSet |= LWM2M_ATTR_FLAG_STEP;
@@ -514,6 +547,36 @@ static int prv_readAttributes(multi_option_t * query,
 
             attrP->toClear |= LWM2M_ATTR_FLAG_STEP;
         }
+        #ifndef LWM2M_VERSION_1_0
+        else if (query->len >= ATTR_MIN_EVAL_PERIOD_LEN &&
+                 memcmp(query->data, ATTR_MIN_EVAL_PERIOD_STR, ATTR_MIN_EVAL_PERIOD_LEN) == 0)
+        {
+            if ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD) return -1;
+            if (prv_readAttributePeriod(query->data + ATTR_MIN_EVAL_PERIOD_LEN,
+                                       query->len - ATTR_MIN_EVAL_PERIOD_LEN, &attrP->minEvalPeriod) != 0) return -1;
+            attrP->toSet |= LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD;
+        }
+        else if (query->len == ATTR_MIN_EVAL_PERIOD_LEN - 1 &&
+                 memcmp(query->data, ATTR_MIN_EVAL_PERIOD_STR, ATTR_MIN_EVAL_PERIOD_LEN - 1) == 0)
+        {
+            if ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD) return -1;
+            attrP->toClear |= LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD;
+        }
+        else if (query->len >= ATTR_MAX_EVAL_PERIOD_LEN &&
+                 memcmp(query->data, ATTR_MAX_EVAL_PERIOD_STR, ATTR_MAX_EVAL_PERIOD_LEN) == 0)
+        {
+            if ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD) return -1;
+            if (prv_readAttributePeriod(query->data + ATTR_MAX_EVAL_PERIOD_LEN,
+                                       query->len - ATTR_MAX_EVAL_PERIOD_LEN, &attrP->maxEvalPeriod) != 0) return -1;
+            attrP->toSet |= LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD;
+        }
+        else if (query->len == ATTR_MAX_EVAL_PERIOD_LEN - 1 &&
+                 memcmp(query->data, ATTR_MAX_EVAL_PERIOD_STR, ATTR_MAX_EVAL_PERIOD_LEN - 1) == 0)
+        {
+            if ((attrP->toSet | attrP->toClear) & LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD) return -1;
+            attrP->toClear |= LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD;
+        }
+        #endif
         else return -1;
 
         query = query->next;
@@ -1802,145 +1865,95 @@ int lwm2m_dm_get_block1_progress(lwm2m_context_t *contextP,
     return 0;
 }
 
-int lwm2m_dm_write_attributes(lwm2m_context_t * contextP,
-                              uint16_t clientID,
-                              lwm2m_uri_t * uriP,
-                              lwm2m_attributes_t * attrP,
-                              lwm2m_result_callback_t callback,
-                              void * userData)
+int lwm2m_dm_write_attributes(lwm2m_context_t *contextP, uint16_t clientID, lwm2m_uri_t *uriP,
+                              lwm2m_attributes_t *attrP, lwm2m_result_callback_t callback, void *userData)
 {
-#define _PRV_BUFFER_SIZE 32
-    lwm2m_client_t * clientP;
-    lwm2m_transaction_t * transaction;
-    coap_packet_t * coap_pkt;
-    uint8_t buffer[_PRV_BUFFER_SIZE];
-    size_t length;
-
-    LOG_ARG_DBG("clientID: %d", clientID);
-    LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
-    if (attrP == NULL) return COAP_400_BAD_REQUEST;
-
-    if (0 != (attrP->toSet & attrP->toClear)) return COAP_400_BAD_REQUEST;
-    if (0 != (attrP->toSet & ATTR_FLAG_NUMERIC) && !LWM2M_URI_IS_SET_RESOURCE(uriP)) return COAP_400_BAD_REQUEST;
-    if (ATTR_FLAG_NUMERIC == (attrP->toSet & ATTR_FLAG_NUMERIC)
-     && (attrP->lessThan + 2 * attrP->step >= attrP->greaterThan)) return COAP_400_BAD_REQUEST;
-
+    /* 같은 필드 정의로 설정/해제 query를 만들며, 일부 option 할당 실패를 성공으로 보내지 않는다. */
+    static const struct {
+        const char *name;
+        uint8_t flag;
+        size_t offset;
+        bool numeric;
+    } fields[] = {
+        {ATTR_MIN_PERIOD_STR, LWM2M_ATTR_FLAG_MIN_PERIOD, offsetof(lwm2m_attributes_t, minPeriod), false},
+        {ATTR_MAX_PERIOD_STR, LWM2M_ATTR_FLAG_MAX_PERIOD, offsetof(lwm2m_attributes_t, maxPeriod), false},
+        {ATTR_GREATER_THAN_STR, LWM2M_ATTR_FLAG_GREATER_THAN, offsetof(lwm2m_attributes_t, greaterThan), true},
+        {ATTR_LESS_THAN_STR, LWM2M_ATTR_FLAG_LESS_THAN, offsetof(lwm2m_attributes_t, lessThan), true},
+        {ATTR_STEP_STR, LWM2M_ATTR_FLAG_STEP, offsetof(lwm2m_attributes_t, step), true},
+#ifndef LWM2M_VERSION_1_0
+        {ATTR_MIN_EVAL_PERIOD_STR, LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD, offsetof(lwm2m_attributes_t, minEvalPeriod), false},
+        {ATTR_MAX_EVAL_PERIOD_STR, LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD, offsetof(lwm2m_attributes_t, maxEvalPeriod), false},
+#endif
+    };
+    lwm2m_client_t *clientP;
+    lwm2m_transaction_t *transaction;
+    coap_packet_t *packet;
+    size_t i;
+    uint8_t supported = 0;
+    if (contextP == NULL || uriP == NULL || attrP == NULL || !LWM2M_URI_IS_SET_OBJECT(uriP))
+        return COAP_400_BAD_REQUEST;
+    if (!LWM2M_URI_IS_SET_INSTANCE(uriP) && LWM2M_URI_IS_SET_RESOURCE(uriP)) return COAP_400_BAD_REQUEST;
+#ifndef LWM2M_VERSION_1_0
+    if (!LWM2M_URI_IS_SET_RESOURCE(uriP) && LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP)) return COAP_400_BAD_REQUEST;
+#endif
+    for (i = 0; i < sizeof(fields)/sizeof(fields[0]); ++i) supported |= fields[i].flag;
+    if (((attrP->toSet | attrP->toClear) & ~supported) != 0 ||
+        (attrP->toSet | attrP->toClear) == 0 || (attrP->toSet & attrP->toClear) != 0 ||
+        (((attrP->toSet | attrP->toClear) & ATTR_FLAG_NUMERIC) && !LWM2M_URI_IS_SET_RESOURCE(uriP)) ||
+        !observe_attributesCoherent(attrP)) return COAP_400_BAD_REQUEST;
     clientP = (lwm2m_client_t *)lwm2m_list_find((lwm2m_list_t *)contextP->clientList, clientID);
     if (clientP == NULL) return COAP_404_NOT_FOUND;
-
-    transaction = transaction_new(clientP->sessionH, COAP_PUT, clientP->altPath, uriP, contextP->nextMID++, 4, NULL);
+    transaction = transaction_new(clientP->sessionH, COAP_PUT, clientP->altPath, uriP,
+                                  contextP->nextMID++, 4, NULL);
     if (transaction == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
-
+    packet = (coap_packet_t *)transaction->message;
+    for (i = 0; i < sizeof(fields)/sizeof(fields[0]); ++i)
+    {
+        uint8_t buffer[64];
+        size_t length = strlen(fields[i].name);
+        multi_option_t **tail = &packet->uri_query;
+        if (!((attrP->toSet | attrP->toClear) & fields[i].flag)) continue;
+        memcpy(buffer, fields[i].name, length);
+        if (attrP->toClear & fields[i].flag) --length;
+        else
+        {
+            int size;
+            if (fields[i].numeric)
+            {
+                double value;
+                memcpy(&value, (uint8_t *)attrP + fields[i].offset, sizeof(value));
+                size = observe_attributeNumberToText(value, buffer + length, sizeof(buffer) - length);
+            }
+            else
+            {
+                uint32_t value;
+                memcpy(&value, (uint8_t *)attrP + fields[i].offset, sizeof(value));
+                size = (int)utils_uintToText(value, buffer + length, sizeof(buffer) - length);
+            }
+            if (size <= 0 || (size_t)size >= sizeof(buffer) - length) goto error;
+            length += (size_t)size;
+        }
+        while (*tail != NULL) tail = &(*tail)->next;
+        coap_add_multi_option(&packet->uri_query, buffer, length, 0);
+        if (*tail == NULL) goto error;
+        SET_OPTION(packet, COAP_OPTION_URI_QUERY);
+    }
     if (callback != NULL)
     {
-        dm_data_t * dataP;
-
-        dataP = (dm_data_t *)lwm2m_malloc(sizeof(dm_data_t));
-        if (dataP == NULL)
-        {
-            transaction_free(transaction);
-            return COAP_500_INTERNAL_SERVER_ERROR;
-        }
-        memcpy(&dataP->uri, uriP, sizeof(lwm2m_uri_t));
+        dm_data_t *dataP = lwm2m_malloc(sizeof(*dataP));
+        if (dataP == NULL) goto error;
+        dataP->uri = *uriP;
         dataP->clientID = clientP->internalID;
         dataP->callback = callback;
         dataP->userData = userData;
-
         transaction->callback = prv_resultCallback;
-        transaction->userData = (void *)dataP;
+        transaction->userData = dataP;
     }
-
-    coap_pkt = (coap_packet_t *)transaction->message;
-    free_multi_option(coap_pkt->uri_query);
-    if (attrP->toSet & LWM2M_ATTR_FLAG_MIN_PERIOD)
-    {
-        memcpy(buffer, ATTR_MIN_PERIOD_STR, ATTR_MIN_PERIOD_LEN);
-        length = utils_intToText(attrP->minPeriod, buffer + ATTR_MIN_PERIOD_LEN, _PRV_BUFFER_SIZE - ATTR_MIN_PERIOD_LEN);
-        if (length == 0)
-        {
-            transaction_free(transaction);
-            return COAP_500_INTERNAL_SERVER_ERROR;
-        }
-        coap_add_multi_option(&(coap_pkt->uri_query), buffer, ATTR_MIN_PERIOD_LEN + length, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toSet & LWM2M_ATTR_FLAG_MAX_PERIOD)
-    {
-        memcpy(buffer, ATTR_MAX_PERIOD_STR, ATTR_MAX_PERIOD_LEN);
-        length = utils_intToText(attrP->maxPeriod, buffer + ATTR_MAX_PERIOD_LEN, _PRV_BUFFER_SIZE - ATTR_MAX_PERIOD_LEN);
-        if (length == 0)
-        {
-            transaction_free(transaction);
-            return COAP_500_INTERNAL_SERVER_ERROR;
-        }
-        coap_add_multi_option(&(coap_pkt->uri_query), buffer, ATTR_MAX_PERIOD_LEN + length, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toSet & LWM2M_ATTR_FLAG_GREATER_THAN)
-    {
-        memcpy(buffer, ATTR_GREATER_THAN_STR, ATTR_GREATER_THAN_LEN);
-        length = utils_floatToText(attrP->greaterThan, buffer + ATTR_GREATER_THAN_LEN, _PRV_BUFFER_SIZE - ATTR_GREATER_THAN_LEN, false);
-        if (length == 0)
-        {
-            transaction_free(transaction);
-            return COAP_500_INTERNAL_SERVER_ERROR;
-        }
-        coap_add_multi_option(&(coap_pkt->uri_query), buffer, ATTR_GREATER_THAN_LEN + length, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toSet & LWM2M_ATTR_FLAG_LESS_THAN)
-    {
-        memcpy(buffer, ATTR_LESS_THAN_STR, ATTR_LESS_THAN_LEN);
-        length = utils_floatToText(attrP->lessThan, buffer + ATTR_LESS_THAN_LEN, _PRV_BUFFER_SIZE - ATTR_LESS_THAN_LEN, false);
-        if (length == 0)
-        {
-            transaction_free(transaction);
-            return COAP_500_INTERNAL_SERVER_ERROR;
-        }
-        coap_add_multi_option(&(coap_pkt->uri_query), buffer, ATTR_LESS_THAN_LEN + length, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toSet & LWM2M_ATTR_FLAG_STEP)
-    {
-        memcpy(buffer, ATTR_STEP_STR, ATTR_STEP_LEN);
-        length = utils_floatToText(attrP->step, buffer + ATTR_STEP_LEN, _PRV_BUFFER_SIZE - ATTR_STEP_LEN, false);
-        if (length == 0)
-        {
-            transaction_free(transaction);
-            return COAP_500_INTERNAL_SERVER_ERROR;
-        }
-        coap_add_multi_option(&(coap_pkt->uri_query), buffer, ATTR_STEP_LEN + length, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toClear & LWM2M_ATTR_FLAG_MIN_PERIOD)
-    {
-        coap_add_multi_option(&(coap_pkt->uri_query), (uint8_t*)ATTR_MIN_PERIOD_STR, ATTR_MIN_PERIOD_LEN -1, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toClear & LWM2M_ATTR_FLAG_MAX_PERIOD)
-    {
-        coap_add_multi_option(&(coap_pkt->uri_query), (uint8_t*)ATTR_MAX_PERIOD_STR, ATTR_MAX_PERIOD_LEN - 1, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toClear & LWM2M_ATTR_FLAG_GREATER_THAN)
-    {
-        coap_add_multi_option(&(coap_pkt->uri_query), (uint8_t*)ATTR_GREATER_THAN_STR, ATTR_GREATER_THAN_LEN - 1, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toClear & LWM2M_ATTR_FLAG_LESS_THAN)
-    {
-        coap_add_multi_option(&(coap_pkt->uri_query), (uint8_t*)ATTR_LESS_THAN_STR, ATTR_LESS_THAN_LEN - 1, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-    if (attrP->toClear & LWM2M_ATTR_FLAG_STEP)
-    {
-        coap_add_multi_option(&(coap_pkt->uri_query), (uint8_t*)ATTR_STEP_STR, ATTR_STEP_LEN - 1, 0);
-        SET_OPTION(coap_pkt, COAP_OPTION_URI_QUERY);
-    }
-
     contextP->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transaction);
-
     return transaction_send(contextP, transaction);
+error:
+    transaction_free(transaction);
+    return COAP_500_INTERNAL_SERVER_ERROR;
 }
 
 int lwm2m_dm_discover(lwm2m_context_t * contextP,

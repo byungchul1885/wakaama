@@ -740,6 +740,8 @@ typedef struct _lwm2m_observation_
 #define LWM2M_ATTR_FLAG_GREATER_THAN    (uint8_t)0x04
 #define LWM2M_ATTR_FLAG_LESS_THAN       (uint8_t)0x08
 #define LWM2M_ATTR_FLAG_STEP            (uint8_t)0x10
+#define LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD (uint8_t)0x20
+#define LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD (uint8_t)0x40
 
 typedef struct
 {
@@ -750,6 +752,8 @@ typedef struct
     double      greaterThan;
     double      lessThan;
     double      step;
+    uint32_t    minEvalPeriod;
+    uint32_t    maxEvalPeriod;
 } lwm2m_attributes_t;
 
 /*

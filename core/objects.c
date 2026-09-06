@@ -116,6 +116,7 @@ uint8_t object_checkReadable(lwm2m_context_t * contextP,
     lwm2m_object_t * targetP;
     lwm2m_data_t * dataP = NULL;
     lwm2m_data_t * valueP = NULL;
+    lwm2m_uri_t readUri = *uriP;
     int size;
 
     LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
@@ -129,45 +130,51 @@ uint8_t object_checkReadable(lwm2m_context_t * contextP,
 
     if (!LWM2M_URI_IS_SET_RESOURCE(uriP)) return COAP_205_CONTENT;
 
-    size = 1;
-    dataP = lwm2m_data_new(1);
-    if (dataP == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
-
-    dataP->id = uriP->resourceId;
-    valueP = dataP;
-
+    /* Read callback은 tree를 교체할 수 있다. 반환된 최신 tree에서만 타입/RIID를 검사한다. */
+    size = 0;
 #ifndef LWM2M_VERSION_1_0
-    if (LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP))
-    {
-        lwm2m_data_t *subDataP = lwm2m_data_new(1);
-        if (subDataP == NULL)
-        {
-            lwm2m_data_free(1, dataP);
-            return COAP_500_INTERNAL_SERVER_ERROR;
-        }
-        subDataP->id = uriP->resourceInstanceId;
-        lwm2m_data_encode_instances(subDataP, 1, dataP);
-        valueP = subDataP;
-    }
+    /* scalar callback에 가짜 MR 입력을 넘기지 않고 실제 MR 자식에서 RIID를 찾는다. */
+    readUri.resourceInstanceId = LWM2M_MAX_ID;
 #endif
-
-    result = targetP->readFunc(contextP, uriP->instanceId, &size, &dataP, targetP);
+    result = object_readData(contextP, &readUri, &size, &dataP);
     if (result == COAP_205_CONTENT)
     {
-        if (attrP->toSet & ATTR_FLAG_NUMERIC)
+        if (size != 1 || dataP == NULL || dataP->id != uriP->resourceId)
+            result = COAP_500_INTERNAL_SERVER_ERROR;
+        else valueP = dataP;
+#ifndef LWM2M_VERSION_1_0
+        if (result == COAP_205_CONTENT && LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP))
         {
-            switch (valueP->type)
+            if (valueP->type != LWM2M_TYPE_MULTIPLE_RESOURCE) result = COAP_400_BAD_REQUEST;
+            else
             {
-                case LWM2M_TYPE_INTEGER:
-                case LWM2M_TYPE_UNSIGNED_INTEGER:
-                case LWM2M_TYPE_FLOAT:
-                    break;
-                default:
-                    result = COAP_405_METHOD_NOT_ALLOWED;
+                size_t i, count = valueP->value.asChildren.count;
+                valueP = valueP->value.asChildren.array;
+                if (valueP == NULL) result = COAP_404_NOT_FOUND;
+                else
+                {
+                    for (i = 0; i < count && valueP[i].id != uriP->resourceInstanceId; ++i) {}
+                    if (i == count) result = COAP_404_NOT_FOUND;
+                    else valueP += i;
+                }
             }
         }
+#endif
+        if (result == COAP_205_CONTENT && (attrP->toSet & ATTR_FLAG_NUMERIC))
+        {
+            size_t i, count = 1;
+            if (valueP->type == LWM2M_TYPE_MULTIPLE_RESOURCE)
+            {
+                count = valueP->value.asChildren.count;
+                valueP = valueP->value.asChildren.array;
+                if (count == 0 || valueP == NULL) result = COAP_405_METHOD_NOT_ALLOWED;
+            }
+            for (i = 0; result == COAP_205_CONTENT && i < count; ++i)
+                if (valueP[i].type != LWM2M_TYPE_INTEGER && valueP[i].type != LWM2M_TYPE_UNSIGNED_INTEGER &&
+                    valueP[i].type != LWM2M_TYPE_FLOAT) result = COAP_405_METHOD_NOT_ALLOWED;
+        }
     }
-    lwm2m_data_free(1, dataP);
+    lwm2m_data_free(size, dataP);
     return result;
 }
 

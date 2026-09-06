@@ -171,6 +171,10 @@
 #define ATTR_LESS_THAN_LEN       3
 #define ATTR_STEP_STR            "st="
 #define ATTR_STEP_LEN            3
+#define ATTR_MIN_EVAL_PERIOD_STR "epmin="
+#define ATTR_MIN_EVAL_PERIOD_LEN 6
+#define ATTR_MAX_EVAL_PERIOD_STR "epmax="
+#define ATTR_MAX_EVAL_PERIOD_LEN 6
 #define ATTR_DIMENSION_STR       "dim="
 #define ATTR_DIMENSION_LEN       4
 #define ATTR_VERSION_STR         "ver="

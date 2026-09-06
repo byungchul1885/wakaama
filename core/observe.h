@@ -22,6 +22,15 @@
 uint8_t observe_handleRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP, int size,
                               lwm2m_data_t *dataP, coap_packet_t *message, coap_packet_t *response);
 void observe_cancel(lwm2m_context_t *contextP, uint16_t mid, void *fromSessionH);
+/* 새 값이 있는 필드만 caller 소유 사본에 합친다. 입력/출력 주소는 같아도 된다. */
+void observe_mergeParameters(lwm2m_attributes_t *target, const lwm2m_attributes_t *source);
+bool observe_attributesCoherent(const lwm2m_attributes_t *attributes);
+/* 유한 double을 재파싱 가능한 십진수로 쓴다. caller 버퍼에 NUL 종료하며 실패는 0이다. */
+int observe_attributeNumberToText(double value, uint8_t *buffer, size_t length);
+/* 할당 없이 명시값 또는 Object→IID→RID→RIID 상속값을 caller 버퍼에 복사한다.
+ * Server Account 기본값과 pmax 무시 규칙은 reporting 평가 단계에서 적용한다. */
+void observe_getParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP,
+                           lwm2m_server_t *serverP, bool inherited, lwm2m_attributes_t *output);
 /* 입력은 borrowed다. 검증/할당 성공 뒤 context 소유 사본만 공개하며 실패는 기존 상태를 보존한다. */
 uint8_t observe_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP,
                               lwm2m_attributes_t *attrP);

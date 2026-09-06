@@ -98,33 +98,6 @@ static void prv_linkBufferFree(prv_link_buffer_t * bufferP)
     bufferP->capacity = 0;
 }
 
-static lwm2m_attributes_t * prv_findAttributes(lwm2m_context_t * contextP,
-                                               lwm2m_uri_t * uriP,
-                                               lwm2m_server_t * serverP)
-{
-    lwm2m_observed_t * observedP;
-    lwm2m_watcher_t * watcherP;
-    lwm2m_attributes_t * paramP;
-
-    paramP = NULL;
-
-    if (contextP == NULL) return NULL;
-    if (serverP == NULL) return NULL;
-
-    observedP = observe_findByUri(contextP, uriP);
-    if (observedP == NULL || observedP->watcherList == NULL) return NULL;
-
-    for (watcherP = observedP->watcherList; watcherP != NULL; watcherP = watcherP->next)
-    {
-        if (watcherP->server == serverP)
-        {
-            paramP = watcherP->parameters;
-        }
-    }
-
-    return paramP;
-}
-
 static int prv_serializeAttributes(lwm2m_context_t * contextP,
                                    lwm2m_uri_t * uriP,
                                    lwm2m_server_t * serverP,
@@ -136,11 +109,14 @@ static int prv_serializeAttributes(lwm2m_context_t * contextP,
     int head;
     int res;
     lwm2m_attributes_t * paramP;
+    lwm2m_attributes_t explicitParam, mergedParam = {0};
 
     head = 0;
 
-    paramP = prv_findAttributes(contextP, uriP, serverP);
-    if (paramP == NULL) paramP = objectParamP;
+    if (objectParamP != NULL) mergedParam = *objectParamP;
+    observe_getParameters(contextP, uriP, serverP, false, &explicitParam);
+    observe_mergeParameters(&mergedParam, &explicitParam);
+    paramP = mergedParam.toSet ? &mergedParam : NULL;
 
     if (paramP != NULL)
     {
@@ -155,18 +131,6 @@ static int prv_serializeAttributes(lwm2m_context_t * contextP,
             if (res <= 0) return -1;
             head += res;
         }
-        else if (objectParamP != NULL)
-        {
-            if (objectParamP->toSet & LWM2M_ATTR_FLAG_MIN_PERIOD)
-            {
-                PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ATTR_SEPARATOR, LINK_ATTR_SEPARATOR_SIZE);
-                PRV_CONCAT_STR(buffer, bufferLen, head, ATTR_MIN_PERIOD_STR, ATTR_MIN_PERIOD_LEN);
-
-                res = utils_intToText(objectParamP->minPeriod, buffer + head, bufferLen - head);
-                if (res <= 0) return -1;
-                head += res;
-            }
-        }
         if (paramP->toSet & LWM2M_ATTR_FLAG_MAX_PERIOD)
         {
             PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ATTR_SEPARATOR, LINK_ATTR_SEPARATOR_SIZE);
@@ -176,24 +140,12 @@ static int prv_serializeAttributes(lwm2m_context_t * contextP,
             if (res <= 0) return -1;
             head += res;
         }
-        else if (objectParamP != NULL)
-        {
-            if (objectParamP->toSet & LWM2M_ATTR_FLAG_MAX_PERIOD)
-            {
-                PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ATTR_SEPARATOR, LINK_ATTR_SEPARATOR_SIZE);
-                PRV_CONCAT_STR(buffer, bufferLen, head, ATTR_MAX_PERIOD_STR, ATTR_MAX_PERIOD_LEN);
-
-                res = utils_intToText(objectParamP->maxPeriod, buffer + head, bufferLen - head);
-                if (res <= 0) return -1;
-                head += res;
-            }
-        }
         if (paramP->toSet & LWM2M_ATTR_FLAG_GREATER_THAN)
         {
             PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ATTR_SEPARATOR, LINK_ATTR_SEPARATOR_SIZE);
             PRV_CONCAT_STR(buffer, bufferLen, head, ATTR_GREATER_THAN_STR, ATTR_GREATER_THAN_LEN);
 
-            res = utils_floatToText(paramP->greaterThan, buffer + head, bufferLen - head, false);
+            res = observe_attributeNumberToText(paramP->greaterThan, buffer + head, bufferLen - head);
             if (res <= 0) return -1;
             head += res;
         }
@@ -202,7 +154,7 @@ static int prv_serializeAttributes(lwm2m_context_t * contextP,
             PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ATTR_SEPARATOR, LINK_ATTR_SEPARATOR_SIZE);
             PRV_CONCAT_STR(buffer, bufferLen, head, ATTR_LESS_THAN_STR, ATTR_LESS_THAN_LEN);
 
-            res = utils_floatToText(paramP->lessThan, buffer + head, bufferLen - head, false);
+            res = observe_attributeNumberToText(paramP->lessThan, buffer + head, bufferLen - head);
             if (res <= 0) return -1;
             head += res;
         }
@@ -211,7 +163,23 @@ static int prv_serializeAttributes(lwm2m_context_t * contextP,
             PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ATTR_SEPARATOR, LINK_ATTR_SEPARATOR_SIZE);
             PRV_CONCAT_STR(buffer, bufferLen, head, ATTR_STEP_STR, ATTR_STEP_LEN);
 
-            res = utils_floatToText(paramP->step, buffer + head, bufferLen - head, false);
+            res = observe_attributeNumberToText(paramP->step, buffer + head, bufferLen - head);
+            if (res <= 0) return -1;
+            head += res;
+        }
+        if (paramP->toSet & LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD)
+        {
+            PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ATTR_SEPARATOR, LINK_ATTR_SEPARATOR_SIZE);
+            PRV_CONCAT_STR(buffer, bufferLen, head, ATTR_MIN_EVAL_PERIOD_STR, ATTR_MIN_EVAL_PERIOD_LEN);
+            res = utils_intToText(paramP->minEvalPeriod, buffer + head, bufferLen - head);
+            if (res <= 0) return -1;
+            head += res;
+        }
+        if (paramP->toSet & LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD)
+        {
+            PRV_CONCAT_STR(buffer, bufferLen, head, LINK_ATTR_SEPARATOR, LINK_ATTR_SEPARATOR_SIZE);
+            PRV_CONCAT_STR(buffer, bufferLen, head, ATTR_MAX_EVAL_PERIOD_STR, ATTR_MAX_EVAL_PERIOD_LEN);
+            res = utils_intToText(paramP->maxEvalPeriod, buffer + head, bufferLen - head);
             if (res <= 0) return -1;
             head += res;
         }
@@ -395,59 +363,13 @@ int discover_serialize(lwm2m_context_t * contextP,
     if (LWM2M_URI_IS_SET_RESOURCE(uriP))
     {
         lwm2m_uri_t tempUri;
-        lwm2m_attributes_t * objParamP;
-        lwm2m_attributes_t * instParamP;
 
         LWM2M_URI_RESET(&parentUri);
         LWM2M_URI_RESET(&tempUri);
         tempUri.objectId = uriP->objectId;
-
-        // get object level attributes
-        objParamP = prv_findAttributes(contextP, &tempUri, serverP);
-
-        // get object instance level attributes
         tempUri.instanceId = uriP->instanceId;
-        instParamP = prv_findAttributes(contextP, &tempUri, serverP);
-
-        if (objParamP != NULL)
-        {
-            if (instParamP != NULL)
-            {
-                memset(&mergedParam, 0, sizeof(lwm2m_attributes_t));
-                mergedParam.toSet = objParamP->toSet | instParamP->toSet;
-                if (mergedParam.toSet & LWM2M_ATTR_FLAG_MIN_PERIOD)
-                {
-                    if (instParamP->toSet & LWM2M_ATTR_FLAG_MIN_PERIOD)
-                    {
-                        mergedParam.minPeriod = instParamP->minPeriod;
-                    }
-                    else
-                    {
-                        mergedParam.minPeriod = objParamP->minPeriod;
-                    }
-                }
-                if (mergedParam.toSet & LWM2M_ATTR_FLAG_MAX_PERIOD)
-                {
-                    if (instParamP->toSet & LWM2M_ATTR_FLAG_MAX_PERIOD)
-                    {
-                        mergedParam.maxPeriod = instParamP->maxPeriod;
-                    }
-                    else
-                    {
-                        mergedParam.maxPeriod = objParamP->maxPeriod;
-                    }
-                }
-                paramP = &mergedParam;
-            }
-            else
-            {
-                paramP = objParamP;
-            }
-        }
-        else
-        {
-            paramP = instParamP;
-        }
+        observe_getParameters(contextP, &tempUri, serverP, true, &mergedParam);
+        paramP = &mergedParam;
         memcpy(&baseUri, uriP, sizeof(baseUri));
         baseUri.resourceId = LWM2M_MAX_ID;
         uriP = &baseUri;

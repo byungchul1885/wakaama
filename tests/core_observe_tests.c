@@ -2,6 +2,8 @@
 #include "management.h"
 #include "tests.h"
 #include "CUnit/Basic.h"
+#include "connection.h"
+#include <float.h>
 #include <math.h>
 #include <string.h>
 #ifdef WAKAAMA_TEST_FAULTS
@@ -21,9 +23,30 @@ static uint8_t read_value(lwm2m_context_t *context, uint16_t iid, int *count,
     (void)context; (void)object;
     if (iid != 0) return COAP_404_NOT_FOUND;
     if (*count != 1 || *data == NULL) return COAP_400_BAD_REQUEST;
+    if ((*data)->type == LWM2M_TYPE_MULTIPLE_RESOURCE) return COAP_400_BAD_REQUEST;
     if ((*data)->id == 0) lwm2m_data_encode_int(42, *data);
     else if ((*data)->id == 1) lwm2m_data_encode_string("text", *data);
     else return COAP_404_NOT_FOUND;
+    return COAP_205_CONTENT;
+}
+
+static uint8_t read_replaced_multiple(lwm2m_context_t *context, uint16_t iid, int *count,
+                                      lwm2m_data_t **data, lwm2m_object_t *object) {
+    lwm2m_data_t *children;
+    (void)context;
+    if (iid != 0 || *count != 1 || *data == NULL || (*data)->id != 2) return COAP_404_NOT_FOUND;
+    /* 기존 입력 tree를 해제하고 다른 소유 tree를 돌려주는 정상 callback이다. */
+    lwm2m_data_free(*count, *data);
+    *data = lwm2m_data_new(1);
+    if (*data == NULL) { *count = 0; return COAP_500_INTERNAL_SERVER_ERROR; }
+    (*data)->id = 2;
+    children = lwm2m_data_new(2);
+    if (children == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
+    children[0].id = 7; children[1].id = 9;
+    lwm2m_data_encode_int(42, children);
+    if (object->userData != NULL) lwm2m_data_encode_string("text", children + 1);
+    else lwm2m_data_encode_int(43, children + 1);
+    lwm2m_data_encode_instances(children, 2, *data);
     return COAP_205_CONTENT;
 }
 
@@ -193,7 +216,196 @@ static void clearing_attributes_preserves_active_observation(void) {
     clear(&f);
 }
 
+static void seven_fields_inherit_and_parent_conflicts_are_atomic(void) {
+    fixture_t f;
+    lwm2m_uri_t root, iid, resource, riid;
+    lwm2m_attributes_t attr = {0}, effective, before;
+    init(&f); f.object.readFunc = read_replaced_multiple;
+    uri("/3303", &root); uri("/3303/0", &iid); uri("/3303/0/2", &resource); uri("/3303/0/2/7", &riid);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD | LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD | LWM2M_ATTR_FLAG_MIN_PERIOD;
+    attr.minEvalPeriod = 2; attr.maxEvalPeriod = 100; attr.minPeriod = 1;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &root, f.servers, &attr), COAP_204_CHANGED);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD | LWM2M_ATTR_FLAG_MAX_PERIOD;
+    attr.minEvalPeriod = 3; attr.maxPeriod = 50;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &iid, f.servers, &attr), COAP_204_CHANGED);
+    attr.toSet = LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD | ATTR_FLAG_NUMERIC;
+    attr.maxEvalPeriod = 20; attr.lessThan = 0; attr.greaterThan = 10; attr.step = 2;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &resource, f.servers, &attr), COAP_204_CHANGED);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD | LWM2M_ATTR_FLAG_STEP;
+    attr.minEvalPeriod = 4; attr.step = 3;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &riid, f.servers, &attr), COAP_204_CHANGED);
+    observe_getParameters(&f.context, &riid, f.servers, true, &effective);
+    CU_ASSERT_EQUAL(effective.toSet, 0x7f);
+    CU_ASSERT_EQUAL(effective.minPeriod, 1); CU_ASSERT_EQUAL(effective.maxPeriod, 50);
+    CU_ASSERT_EQUAL(effective.minEvalPeriod, 4); CU_ASSERT_EQUAL(effective.maxEvalPeriod, 20);
+    CU_ASSERT_EQUAL(effective.lessThan, 0); CU_ASSERT_EQUAL(effective.greaterThan, 10);
+    CU_ASSERT_EQUAL(effective.step, 3);
+    before = effective;
+    attr.toSet = LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD; attr.maxEvalPeriod = 4;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &resource, f.servers, &attr), COAP_400_BAD_REQUEST);
+    observe_getParameters(&f.context, &riid, f.servers, true, &effective);
+    CU_ASSERT_EQUAL(memcmp(&before, &effective, sizeof(before)), 0);
+    memset(&attr, 0, sizeof(attr)); attr.toClear = LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD | LWM2M_ATTR_FLAG_STEP;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &riid, f.servers, &attr), COAP_204_CHANGED);
+    observe_getParameters(&f.context, &riid, f.servers, true, &effective);
+    CU_ASSERT_EQUAL(effective.minEvalPeriod, 3); CU_ASSERT_EQUAL(effective.step, 2);
+    observe_getParameters(&f.context, &riid, f.servers + 1, true, &effective);
+    CU_ASSERT_EQUAL(effective.toSet, 0);
+    clear(&f);
+}
+
+static void replaced_read_tree_and_riid_types(void) {
+    fixture_t f;
+    lwm2m_uri_t path;
+    lwm2m_attributes_t attr = {0};
+    init(&f); f.object.readFunc = read_replaced_multiple; f.object.userData = &f;
+    attr.toSet = LWM2M_ATTR_FLAG_STEP; attr.step = 1;
+    uri("/3303/0/2/7", &path);
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    uri("/3303/0/2/9", &path);
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_405_METHOD_NOT_ALLOWED);
+    uri("/3303/0/2/8", &path);
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_404_NOT_FOUND);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD;
+    uri("/3303/0/2/9", &path);
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    f.object.readFunc = read_value;
+    uri("/3303/0/0/7", &path);
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_400_BAD_REQUEST);
+    clear(&f);
+}
+
+static void numeric_query_full_consumption_and_evaluation_periods(void) {
+    fixture_t f;
+    const char *bad[] = {"lt=1x", "gt=1\n", "st=0x1", "lt= 1", "gt=1e", "gt=1e+", "gt=1e999",
+                         "gt=1e-999", "epmin=-1", "epmax=4294967296", "epmax="};
+    size_t i;
+    lwm2m_attributes_t attr = {0};
+    init(&f);
+    for (i = 0; i < sizeof(bad)/sizeof(bad[0]); ++i)
+        CU_ASSERT_EQUAL(query_request(&f, (const uint8_t *)bad[i], strlen(bad[i])), COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL(query_request(&f, (const uint8_t *)"epmin=0", 7), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(query_request(&f, (const uint8_t *)"epmax=0", 7), COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL(query_request(&f, (const uint8_t *)"epmax=1", 7), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(query_request(&f, (const uint8_t *)"epmin=1", 7), COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL(query_request(&f, (const uint8_t *)"lt=-1.5e2", 9), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->lessThan, -150);
+    CU_ASSERT_EQUAL(query_request(&f, (const uint8_t *)"epmin", 5), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->toSet & LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD, 0);
+    attr.toSet = ATTR_FLAG_NUMERIC; attr.lessThan = -DBL_MAX; attr.greaterThan = DBL_MAX;
+    attr.step = DBL_MAX / 2;
+    CU_ASSERT_TRUE(observe_attributesCoherent(&attr));
+    attr.step = DBL_MAX;
+    CU_ASSERT_FALSE(observe_attributesCoherent(&attr));
+    attr.lessThan = 0; attr.greaterThan = DBL_MIN * DBL_EPSILON; attr.step = 0;
+    CU_ASSERT_TRUE(observe_attributesCoherent(&attr));
+    clear(&f);
+}
+
+static void numeric_text_preserves_extremes_and_subnormal(void) {
+    const double values[] = {0, -0.0, 1, -1, 1e-20, 1e20, DBL_MAX, -DBL_MAX, DBL_MIN, DBL_MIN * DBL_EPSILON};
+    size_t i;
+    for (i = 0; i < sizeof(values)/sizeof(values[0]); ++i) {
+        uint8_t text[64];
+        char *end;
+        int length = observe_attributeNumberToText(values[i], text, sizeof(text));
+        CU_ASSERT_TRUE(length > 0 && length < (int)sizeof(text));
+        CU_ASSERT_EQUAL(strlen((char *)text), (size_t)length);
+        CU_ASSERT_EQUAL(strtod((char *)text, &end), values[i]);
+        CU_ASSERT_PTR_EQUAL(end, (char *)text + length);
+        CU_ASSERT_EQUAL(observe_attributeNumberToText(values[i], text, (size_t)length), 0);
+    }
+}
+
+static uint8_t read_removes_observation(lwm2m_context_t *context, uint16_t iid, int *count,
+                                       lwm2m_data_t **data, lwm2m_object_t *object) {
+    lwm2m_uri_t path;
+    uri("/3303", &path);
+    observe_clear(context, &path);
+    return read_value(context, iid, count, data, object);
+}
+
+static void callback_removal_does_not_reuse_borrowed_watcher(void) {
+    fixture_t f;
+    lwm2m_uri_t path;
+    lwm2m_attributes_t attr = {0};
+    init(&f); uri("/3303/0/0", &path);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD; attr.minPeriod = 1;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    f.object.readFunc = read_removes_observation;
+    attr.minPeriod = 2;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_PTR_NULL(f.context.observedList);
+    f.object.readFunc = read_value;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    clear(&f);
+}
+
 #ifdef WAKAAMA_TEST_FAULTS
+static void server_queries_round_trip_and_never_send_partial_options(void) {
+    fixture_t f;
+    lwm2m_client_t client = {0};
+    lwm2m_attributes_t attr = {0};
+    lwm2m_uri_t path;
+    coap_packet_t request, response;
+    multi_option_t *option;
+    size_t length, fields = 0, calls, fail, baseline = test_malloc_live_allocations();
+    init(&f); uri("/3303/0/0", &path);
+    client.internalID = 7; client.sessionH = (void *)(uintptr_t)1;
+    f.context.clientList = &client; f.servers[0].status = STATE_REGISTERED;
+    attr.toSet = 0x7f; attr.minPeriod = 2; attr.maxPeriod = 0;
+    attr.lessThan = -15; attr.greaterThan = 10; attr.step = 1;
+    attr.minEvalPeriod = 1; attr.maxEvalPeriod = 3;
+    test_malloc_fail_after((size_t)-1);
+    CU_ASSERT_EQUAL(lwm2m_dm_write_attributes(&f.context, 7, &path, &attr, NULL, NULL), 0);
+    calls = test_malloc_observed_calls(); test_malloc_fault_disable();
+    memset(&request, 0, sizeof(request)); memset(&response, 0, sizeof(response));
+    uint8_t *bytes = test_get_response_buffer(&length);
+    CU_ASSERT_EQUAL(coap_parse_message(&request, bytes, (uint16_t)length), NO_ERROR);
+    for (option = request.uri_query; option; option = option->next) ++fields;
+    CU_ASSERT_EQUAL(fields, 7); CU_ASSERT_EQUAL(request.code, COAP_PUT);
+    option = request.uri_path;
+    CU_ASSERT_PTR_NOT_NULL_FATAL(option);
+    CU_ASSERT_EQUAL(option->len, 4); CU_ASSERT_NSTRING_EQUAL(option->data, "3303", 4);
+    option = option->next;
+    CU_ASSERT_PTR_NOT_NULL_FATAL(option);
+    CU_ASSERT_EQUAL(option->len, 1); CU_ASSERT_EQUAL(option->data[0], '0');
+    option = option->next;
+    CU_ASSERT_PTR_NOT_NULL_FATAL(option);
+    CU_ASSERT_EQUAL(option->len, 1); CU_ASSERT_EQUAL(option->data[0], '0'); CU_ASSERT_PTR_NULL(option->next);
+    CU_ASSERT_EQUAL(dm_handleRequest(&f.context, &path, f.servers, &request, &response), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->toSet, attr.toSet);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->minEvalPeriod, 1);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->maxEvalPeriod, 3);
+    coap_free_header(&request); coap_free_header(&response);
+    transaction_remove(&f.context, f.context.transactionList);
+    clear(&f);
+    CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    for (fail = 0; fail < calls; ++fail) {
+        int code;
+        test_reset_response_buffer();
+        test_malloc_fail_after(fail);
+        code = lwm2m_dm_write_attributes(&f.context, 7, &path, &attr, NULL, NULL);
+        test_malloc_fault_disable();
+        CU_ASSERT_EQUAL(code, COAP_500_INTERNAL_SERVER_ERROR);
+        CU_ASSERT_PTR_NULL(f.context.transactionList);
+        (void)test_get_response_buffer(&length);
+        CU_ASSERT_EQUAL(length, 0);
+        CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    }
+    /* 동일 API의 값 없는 일곱 query도 client에서 모두 해제로 복원한다. */
+    attr.toClear = attr.toSet; attr.toSet = 0;
+    CU_ASSERT_EQUAL(lwm2m_dm_write_attributes(&f.context, 7, &path, &attr, NULL, NULL), 0);
+    bytes = test_get_response_buffer(&length);
+    memset(&request, 0, sizeof(request)); memset(&response, 0, sizeof(response));
+    CU_ASSERT_EQUAL(coap_parse_message(&request, bytes, (uint16_t)length), NO_ERROR);
+    CU_ASSERT_EQUAL(dm_handleRequest(&f.context, &path, f.servers, &request, &response), COAP_204_CHANGED);
+    CU_ASSERT_PTR_NULL(f.context.observedList);
+    coap_free_header(&request); coap_free_header(&response);
+    transaction_remove(&f.context, f.context.transactionList);
+    CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
 static void allocation_failure_never_publishes_freed_or_partial_nodes(void) {
     size_t fail, calls, baseline = test_malloc_live_allocations();
     lwm2m_attributes_t attr = {0};
@@ -231,7 +443,13 @@ CU_ErrorCode create_observe_test_suit(void) {
         {"Q09 numeric type and coherence", numeric_type_and_incoherent_request_never_allocate_watcher},
         {"Q09 bounded query and period overflow", query_lengths_and_period_overflow},
         {"Q09 unset preserves active observation", clearing_attributes_preserves_active_observation},
+        {"Q09 seven fields and inherited conflicts", seven_fields_inherit_and_parent_conflicts_are_atomic},
+        {"Q09 replaced Read tree and RIID types", replaced_read_tree_and_riid_types},
+        {"Q09 complete numeric query and evaluation periods", numeric_query_full_consumption_and_evaluation_periods},
+        {"Q09 numeric text extremes and subnormal", numeric_text_preserves_extremes_and_subnormal},
+        {"Q12 callback removes borrowed watcher", callback_removal_does_not_reuse_borrowed_watcher},
 #ifdef WAKAAMA_TEST_FAULTS
+        {"Q09 Q12 seven server queries and all allocation failures", server_queries_round_trip_and_never_send_partial_options},
         {"Q12 allocation failure and same-context retry", allocation_failure_never_publishes_freed_or_partial_nodes},
 #endif
         {NULL, NULL}

@@ -55,6 +55,57 @@
 #include <stdio.h>
 
 
+void observe_mergeParameters(lwm2m_attributes_t *target, const lwm2m_attributes_t *source)
+{
+    target->toSet = (target->toSet & ~source->toClear) | source->toSet;
+    target->toClear = 0;
+    if (source->toSet & LWM2M_ATTR_FLAG_MIN_PERIOD) target->minPeriod = source->minPeriod;
+    if (source->toSet & LWM2M_ATTR_FLAG_MAX_PERIOD) target->maxPeriod = source->maxPeriod;
+    if (source->toSet & LWM2M_ATTR_FLAG_GREATER_THAN) target->greaterThan = source->greaterThan;
+    if (source->toSet & LWM2M_ATTR_FLAG_LESS_THAN) target->lessThan = source->lessThan;
+    if (source->toSet & LWM2M_ATTR_FLAG_STEP) target->step = source->step;
+    if (source->toSet & LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD) target->minEvalPeriod = source->minEvalPeriod;
+    if (source->toSet & LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD) target->maxEvalPeriod = source->maxEvalPeriod;
+}
+
+bool observe_attributesCoherent(const lwm2m_attributes_t *attributes)
+{
+    const uint8_t thresholds = LWM2M_ATTR_FLAG_LESS_THAN | LWM2M_ATTR_FLAG_GREATER_THAN;
+    const uint8_t evaluation = LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD | LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD;
+    if (((attributes->toSet & LWM2M_ATTR_FLAG_GREATER_THAN) && !isfinite(attributes->greaterThan)) ||
+        ((attributes->toSet & LWM2M_ATTR_FLAG_LESS_THAN) && !isfinite(attributes->lessThan)) ||
+        ((attributes->toSet & LWM2M_ATTR_FLAG_STEP) && (!isfinite(attributes->step) || attributes->step < 0)))
+        return false;
+    if ((attributes->toSet & thresholds) == thresholds)
+    {
+        /* half-gap 비교는 double 범위의 양/음 최댓값에서도 덧셈·두 배 overflow를 피한다. */
+        if (!(attributes->lessThan < attributes->greaterThan)) return false;
+        if ((attributes->toSet & LWM2M_ATTR_FLAG_STEP) && attributes->step > 0 &&
+            (long double)attributes->step >= (long double)attributes->greaterThan / 2.0L -
+                                              (long double)attributes->lessThan / 2.0L) return false;
+    }
+    if ((attributes->toSet & evaluation) == evaluation &&
+        attributes->minEvalPeriod >= attributes->maxEvalPeriod) return false;
+    return true;
+}
+
+int observe_attributeNumberToText(double value, uint8_t *buffer, size_t length)
+{
+    int result;
+    if (buffer == NULL || length == 0 || !isfinite(value)) return 0;
+    /* DBL_MIN보다 작은 유효 subnormal도 0으로 바꾸지 않는다. */
+    result = snprintf((char *)buffer, length, "%.17g", value);
+    if (result <= 0 || (size_t)result >= length) return 0;
+    if (strchr((char *)buffer, '.') == NULL && strchr((char *)buffer, 'e') == NULL &&
+        strchr((char *)buffer, 'E') == NULL)
+    {
+        if ((size_t)result + 3 > length) return 0;
+        memcpy(buffer + result, ".0", 3);
+        result += 2;
+    }
+    return result;
+}
+
 #ifdef LWM2M_CLIENT_MODE
 static lwm2m_observed_t * prv_findObserved(lwm2m_context_t * contextP,
                                            lwm2m_uri_t * uriP)
@@ -323,17 +374,78 @@ void observe_clear(lwm2m_context_t * contextP,
     }
 }
 
+static bool prv_uriEqual(const lwm2m_uri_t *left, const lwm2m_uri_t *right)
+{
+    return left->objectId == right->objectId && left->instanceId == right->instanceId &&
+           left->resourceId == right->resourceId
+#ifndef LWM2M_VERSION_1_0
+           && left->resourceInstanceId == right->resourceInstanceId
+#endif
+           ;
+}
+
+static void prv_resolveParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP,
+                                  lwm2m_server_t *serverP, bool inherited,
+                                  const lwm2m_uri_t *replacementUri, const lwm2m_attributes_t *replacement,
+                                  lwm2m_attributes_t *output)
+{
+    lwm2m_uri_t level;
+    memset(output, 0, sizeof(*output));
+    if (contextP == NULL || uriP == NULL || serverP == NULL) return;
+    if (!LWM2M_URI_IS_SET_OBJECT(uriP) ||
+        (!LWM2M_URI_IS_SET_INSTANCE(uriP) && LWM2M_URI_IS_SET_RESOURCE(uriP))) return;
+#ifndef LWM2M_VERSION_1_0
+    if (!LWM2M_URI_IS_SET_RESOURCE(uriP) && LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP)) return;
+#endif
+    LWM2M_URI_RESET(&level);
+    level.objectId = uriP->objectId;
+    if (!inherited) level = *uriP;
+    for (;;)
+    {
+        lwm2m_observed_t *observed;
+        lwm2m_watcher_t *watcher;
+        if (replacementUri != NULL && prv_uriEqual(&level, replacementUri))
+            observe_mergeParameters(output, replacement);
+        else
+        {
+            observed = prv_findObserved(contextP, &level);
+            watcher = observed ? prv_findWatcher(observed, serverP) : NULL;
+            if (watcher && watcher->parameters) observe_mergeParameters(output, watcher->parameters);
+        }
+        if (prv_uriEqual(&level, uriP) || !inherited) break;
+        if (!LWM2M_URI_IS_SET_INSTANCE(&level)) level.instanceId = uriP->instanceId;
+        else if (!LWM2M_URI_IS_SET_RESOURCE(&level)) level.resourceId = uriP->resourceId;
+#ifndef LWM2M_VERSION_1_0
+        else level.resourceInstanceId = uriP->resourceInstanceId;
+#endif
+    }
+}
+
+void observe_getParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP,
+                           lwm2m_server_t *serverP, bool inherited, lwm2m_attributes_t *output)
+{
+    prv_resolveParameters(contextP, uriP, serverP, inherited, NULL, NULL, output);
+}
+
 uint8_t observe_setParameters(lwm2m_context_t * contextP,
                               lwm2m_uri_t * uriP,
                               lwm2m_server_t * serverP,
                               lwm2m_attributes_t * attrP)
 {
-    const uint8_t supported = LWM2M_ATTR_FLAG_MIN_PERIOD | LWM2M_ATTR_FLAG_MAX_PERIOD | ATTR_FLAG_NUMERIC;
+    const uint8_t supported = LWM2M_ATTR_FLAG_MIN_PERIOD | LWM2M_ATTR_FLAG_MAX_PERIOD | ATTR_FLAG_NUMERIC
+#ifndef LWM2M_VERSION_1_0
+        | LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD | LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD
+#endif
+        ;
     lwm2m_observed_t *observedP;
     lwm2m_watcher_t *watcherP;
-    lwm2m_attributes_t candidate = {0}, *allocatedP = NULL;
+    lwm2m_attributes_t candidate = {0}, before, after, *allocatedP = NULL;
     uint8_t result;
 
+#ifndef LWM2M_VERSION_1_0
+    if (uriP != NULL && !LWM2M_URI_IS_SET_RESOURCE(uriP) && LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP))
+        return COAP_400_BAD_REQUEST;
+#endif
     if (contextP == NULL || uriP == NULL || serverP == NULL || attrP == NULL ||
         !LWM2M_URI_IS_SET_OBJECT(uriP) ||
         (!LWM2M_URI_IS_SET_INSTANCE(uriP) && LWM2M_URI_IS_SET_RESOURCE(uriP)) ||
@@ -345,27 +457,35 @@ uint8_t observe_setParameters(lwm2m_context_t * contextP,
     observedP = prv_findObserved(contextP, uriP);
     watcherP = observedP ? prv_findWatcher(observedP, serverP) : NULL;
     if (watcherP && watcherP->parameters) candidate = *watcherP->parameters;
-    candidate.toSet = (candidate.toSet & ~attrP->toClear) | attrP->toSet;
-    candidate.toClear = 0;
-    if (attrP->toSet & LWM2M_ATTR_FLAG_MIN_PERIOD) candidate.minPeriod = attrP->minPeriod;
-    if (attrP->toSet & LWM2M_ATTR_FLAG_MAX_PERIOD) candidate.maxPeriod = attrP->maxPeriod;
-    if (attrP->toSet & LWM2M_ATTR_FLAG_GREATER_THAN) candidate.greaterThan = attrP->greaterThan;
-    if (attrP->toSet & LWM2M_ATTR_FLAG_LESS_THAN) candidate.lessThan = attrP->lessThan;
-    if (attrP->toSet & LWM2M_ATTR_FLAG_STEP) candidate.step = attrP->step;
-    if (((candidate.toSet & LWM2M_ATTR_FLAG_GREATER_THAN) && !isfinite(candidate.greaterThan)) ||
-        ((candidate.toSet & LWM2M_ATTR_FLAG_LESS_THAN) && !isfinite(candidate.lessThan)) ||
-        ((candidate.toSet & LWM2M_ATTR_FLAG_STEP) && (!isfinite(candidate.step) || candidate.step < 0)))
-        return COAP_400_BAD_REQUEST;
-    if ((candidate.toSet & (LWM2M_ATTR_FLAG_LESS_THAN | LWM2M_ATTR_FLAG_GREATER_THAN)) ==
-        (LWM2M_ATTR_FLAG_LESS_THAN | LWM2M_ATTR_FLAG_GREATER_THAN))
+    observe_getParameters(contextP, uriP, serverP, false, &before);
+    observe_mergeParameters(&candidate, attrP);
+    if (!observe_attributesCoherent(&candidate)) return COAP_400_BAD_REQUEST;
     {
-        long double gap = (long double)candidate.greaterThan - (long double)candidate.lessThan;
-        if (!(gap > 0) || ((candidate.toSet & LWM2M_ATTR_FLAG_STEP) && 2.0L * candidate.step >= gap))
-            return COAP_400_BAD_REQUEST;
+        lwm2m_attributes_t effective;
+        lwm2m_observed_t *child;
+        prv_resolveParameters(contextP, uriP, serverP, true, uriP, &candidate, &effective);
+        if (!observe_attributesCoherent(&effective)) return COAP_400_BAD_REQUEST;
+        /* 부모 변경/해제가 기존 자식의 유효 조건을 모순되게 만들면 전체 요청을 거절한다. */
+        for (child = contextP->observedList; child != NULL; child = child->next)
+        {
+            if (child->uri.objectId != uriP->objectId) continue;
+            if (LWM2M_URI_IS_SET_INSTANCE(uriP) && uriP->instanceId != child->uri.instanceId) continue;
+            if (LWM2M_URI_IS_SET_RESOURCE(uriP) && uriP->resourceId != child->uri.resourceId) continue;
+#ifndef LWM2M_VERSION_1_0
+            if (LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP) && uriP->resourceInstanceId != child->uri.resourceInstanceId) continue;
+#endif
+            prv_resolveParameters(contextP, &child->uri, serverP, true, uriP, &candidate, &effective);
+            if (!observe_attributesCoherent(&effective)) return COAP_400_BAD_REQUEST;
+        }
     }
 
     result = object_checkReadable(contextP, uriP, &candidate);
     if (result != COAP_205_CONTENT) return result;
+    /* Read callback 후에는 앞서 빌린 관찰 목록 pointer를 다시 쓰지 않는다. */
+    observe_getParameters(contextP, uriP, serverP, false, &after);
+    if (memcmp(&before, &after, sizeof(before)) != 0) return COAP_503_SERVICE_UNAVAILABLE;
+    observedP = prv_findObserved(contextP, uriP);
+    watcherP = observedP ? prv_findWatcher(observedP, serverP) : NULL;
     if (candidate.toSet == 0)
     {
         if (watcherP != NULL)

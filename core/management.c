@@ -1065,22 +1065,7 @@ static uint8_t prv_readSnapshot(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
         if (result != COAP_205_CONTENT) goto cleanup;
     }
     /* 값 없는 경로 목록은 Composite 요청용이며 Read 응답 값으로 재사용하지 않는다. */
-    switch (format)
-    {
-#ifdef LWM2M_SUPPORT_SENML_JSON
-    case LWM2M_CONTENT_SENML_JSON:
-        length = senml_json_serialize_read(composite ? NULL : uriP, size, data, &buffer);
-        break;
-#endif
-#ifdef LWM2M_SUPPORT_SENML_CBOR
-    case LWM2M_CONTENT_SENML_CBOR:
-        length = senml_cbor_serialize_read(composite ? NULL : uriP, size, data, &buffer);
-        break;
-#endif
-    default:
-        length = lwm2m_data_serialize(composite ? NULL : uriP, size, data, &format, &buffer);
-        break;
-    }
+    length = data_serialize_values(composite ? NULL : uriP, size, data, &format, &buffer);
     if (length <= 0)
     { result = length == -3 ? COAP_413_ENTITY_TOO_LARGE : COAP_500_INTERNAL_SERVER_ERROR; goto cleanup; }
     if ((size_t)length > COMPOSITE_SNAPSHOT_BYTES_MAX || message->payload_len > LWM2M_COMPOSITE_MAX_REQUEST_SIZE)
@@ -1207,7 +1192,7 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
                     if (COAP_205_CONTENT == result)
                     {
                         /* 응답 직렬화가 실패한 신규/재Observe는 기존 관계를 변경하지 않는다. */
-                        res = lwm2m_data_serialize(uriP, size, dataP, &format, &buffer);
+                        res = data_serialize_values(uriP, size, dataP, &format, &buffer);
                         if (res < 0)
                         {
                             result = COAP_500_INTERNAL_SERVER_ERROR;

@@ -144,8 +144,7 @@ uint8_t observe_prepareSnapshot(const lwm2m_uri_t *uriP, int count, const lwm2m_
     if (count < 0) return COAP_500_INTERNAL_SERVER_ERROR;
     copy = prv_cloneSorted(dataP, (size_t)count, 0, &budget);
     if (budget.error != COAP_NO_ERROR) return budget.error;
-    if (count == 0) return COAP_NO_ERROR;
-    length = lwm2m_data_serialize(&uri, count, copy, &selected, bufferP);
+    length = data_serialize_values(&uri, count, copy, &selected, bufferP);
     lwm2m_data_free(count, copy);
     if (length < 0 || selected != format || (size_t)length > LWM2M_OBSERVE_SNAPSHOT_VALUE_LIMIT)
     {
@@ -517,7 +516,7 @@ restart:
             }
             /* 각 관계의 합의된 format으로 별도 직렬화한다. 다른 서버의 bytes를 재사용하지 않는다. */
             format = watcher->format;
-            length = numeric ? lwm2m_data_serialize(&uri, count, data, &format, &buffer) : (int)snapshotLength;
+            length = numeric ? data_serialize_values(&uri, count, data, &format, &buffer) : (int)snapshotLength;
             lwm2m_data_free(count, data);
             if (length < 0 || format != watcher->format)
             {

@@ -680,7 +680,7 @@ static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
             uri.instanceId = dataP->value.asChildren.array->id;
         }
     }
-    ret = lwm2m_data_serialize(&uri, size, dataP, &format, &buffer);
+    ret = data_serialize_values(&uri, size, dataP, &format, &buffer);
     lwm2m_data_free(size, dataP);
     if (ret < 0) {
         return COAP_500_INTERNAL_SERVER_ERROR;

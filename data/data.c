@@ -725,14 +725,16 @@ int lwm2m_data_parse(lwm2m_uri_t * uriP,
     }
 }
 
-int lwm2m_data_serialize(lwm2m_uri_t * uriP,
+static int prv_dataSerialize(lwm2m_uri_t * uriP,
                          int size,
                          lwm2m_data_t * dataP,
                          lwm2m_media_type_t * formatP,
-                         uint8_t ** bufferP)
+                         uint8_t ** bufferP,
+                         bool valuesOnly)
 {
     LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
     LOG_ARG_DBG("size: %d, formatP: %s", size, STR_MEDIA_TYPE(*formatP));
+    (void)valuesOnly; /* SenML을 빌드하지 않는 구성에서도 같은 내부 진입점을 유지한다. */
 
     // Check format
     if (*formatP == LWM2M_CONTENT_TEXT || *formatP == LWM2M_CONTENT_OPAQUE || *formatP == LWM2M_CONTENT_CBOR) {
@@ -819,7 +821,8 @@ int lwm2m_data_serialize(lwm2m_uri_t * uriP,
 
 #ifdef LWM2M_SUPPORT_SENML_JSON
     case LWM2M_CONTENT_SENML_JSON:
-        return senml_json_serialize(uriP, size, dataP, bufferP);
+        return valuesOnly ? senml_json_serialize_read(uriP, size, dataP, bufferP)
+                          : senml_json_serialize(uriP, size, dataP, bufferP);
 #endif
 
 #ifdef LWM2M_SUPPORT_SENML_CBOR
@@ -828,12 +831,31 @@ int lwm2m_data_serialize(lwm2m_uri_t * uriP,
         return cbor_serialize(uriP, size, dataP, bufferP);
 #endif
     case LWM2M_CONTENT_SENML_CBOR:
-        return senml_cbor_serialize(uriP, size, dataP, bufferP);
+        return valuesOnly ? senml_cbor_serialize_read(uriP, size, dataP, bufferP)
+                          : senml_cbor_serialize(uriP, size, dataP, bufferP);
 #endif
 
     default:
         return -1;
     }
+}
+
+int lwm2m_data_serialize(lwm2m_uri_t *uriP, int size, lwm2m_data_t *dataP,
+                         lwm2m_media_type_t *formatP, uint8_t **bufferP)
+{
+    return prv_dataSerialize(uriP, size, dataP, formatP, bufferP, false);
+}
+
+int data_serialize_values(lwm2m_uri_t *uriP, int size, lwm2m_data_t *dataP,
+                            lwm2m_media_type_t *formatP, uint8_t **bufferP)
+{
+    int result;
+    if (bufferP == NULL) return -1;
+    *bufferP = NULL;
+    if (formatP == NULL || size < 0 || (size > 0 && dataP == NULL)) return -1;
+    result = prv_dataSerialize(uriP, size, dataP, formatP, bufferP, true);
+    if (result < 0) { lwm2m_free(*bufferP); *bufferP = NULL; }
+    return result;
 }
 
 int lwm2m_data_append(int *sizeP, lwm2m_data_t **dataP, int addDataSize, lwm2m_data_t *addDataP) {

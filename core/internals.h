@@ -287,13 +287,20 @@ int json_parse(lwm2m_uri_t * uriP, const uint8_t * buffer, size_t bufferLen, lwm
 int json_serialize(lwm2m_uri_t * uriP, int size, lwm2m_data_t * tlvP, uint8_t ** bufferP);
 #endif
 
+/* Read/Observe/Notify/Send 값 payload 공통 직렬화. 입력 URI/tree는 borrowed이며 불변이다.
+ * SenML의 빈 컨테이너는 생략하고 미정의 leaf는 거절하되 실제 빈 문자열/Opaque는 보존한다.
+ * 기존 format 선택/비-SenML 표현은 유지한다. 성공 출력은 caller가 lwm2m_free하며 실패는 NULL.
+ * 값 없는 경로/Write/Create 표현이 필요한 caller는 기존 lwm2m_data_serialize를 사용한다. */
+int data_serialize_values(lwm2m_uri_t *uriP, int size, lwm2m_data_t *dataP,
+                            lwm2m_media_type_t *formatP, uint8_t **bufferP);
+
 // defined in senml_json.c
 #ifdef LWM2M_SUPPORT_SENML_JSON
 int senml_json_parse(const lwm2m_uri_t * uriP, const uint8_t * buffer, size_t bufferLen, lwm2m_data_t ** dataP);
 int senml_json_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP);
 int senml_json_parse_paths(const uint8_t *buffer, size_t length, lwm2m_uri_t **urisP);
 int senml_json_serialize(const lwm2m_uri_t * uriP, int size, const lwm2m_data_t * tlvP, uint8_t ** bufferP);
-/* Read 응답 전용: 빈 컨테이너는 생략하고 미정의 leaf는 거절한다.
+/* 값 payload 전용: 빈 컨테이너는 생략하고 미정의 leaf는 거절한다.
  * 입력은 borrowed/불변이며 성공 출력은 caller가 lwm2m_free한다. 실패 출력은 NULL이다. */
 int senml_json_serialize_read(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP);
 #endif

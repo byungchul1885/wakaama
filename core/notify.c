@@ -311,6 +311,72 @@ static bool prv_connected(const lwm2m_server_t *server)
             server->status == STATE_REG_FULL_UPDATE_NEEDED || server->status == STATE_REG_UPDATE_PENDING);
 }
 
+static uint8_t prv_reportingParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP,
+                                        lwm2m_server_t *serverP, lwm2m_attributes_t *output)
+{
+    observe_getParameters(contextP, uriP, serverP, true, output);
+#ifndef LWM2M_VERSION_1_0
+    {
+        const uint8_t periods = LWM2M_ATTR_FLAG_MIN_PERIOD | LWM2M_ATTR_FLAG_MAX_PERIOD;
+        const uint16_t resources[] = {LWM2M_SERVER_SHORT_ID_ID, LWM2M_SERVER_MIN_PERIOD_ID,
+                                      LWM2M_SERVER_MAX_PERIOD_ID};
+        uint16_t shortID = serverP->shortID, instanceID = serverP->servObjInstID;
+        uint64_t epoch = contextP->observeEpoch, attributeEpoch = contextP->attributeEpoch;
+        uint64_t sessionGeneration = serverP->sessionGeneration;
+        lwm2m_attributes_t candidate = *output;
+        lwm2m_uri_t path;
+        size_t index;
+        if ((output->toSet & periods) == periods) return COAP_NO_ERROR;
+        /* Server Object/선택 리소스가 없으면 기본 주기는 0이다. 다른 계정의 IID를 추정하지 않는다. */
+        if (LWM2M_LIST_FIND(contextP->objectList, LWM2M_SERVER_OBJECT_ID) == NULL) return COAP_NO_ERROR;
+        if (instanceID == LWM2M_MAX_ID) return COAP_503_SERVICE_UNAVAILABLE;
+        LWM2M_URI_RESET(&path);
+        path.objectId = LWM2M_SERVER_OBJECT_ID; path.instanceId = instanceID;
+        for (index = 0; index < sizeof(resources) / sizeof(resources[0]); ++index)
+        {
+            lwm2m_data_t *data = NULL;
+            uint64_t value = 0;
+            uint8_t result, flag = index == 1 ? LWM2M_ATTR_FLAG_MIN_PERIOD : LWM2M_ATTR_FLAG_MAX_PERIOD;
+            int count = 0;
+            if (index != 0 && (candidate.toSet & flag) != 0) continue;
+            path.resourceId = resources[index];
+            /* 내부 설정 조회도 순수 Notify 목적이다. Read 완료 증거나 다른 서버 권한을 빌리지 않는다. */
+            result = dm_readNotification(contextP, serverP, &path, &count, &data);
+            if (epoch != contextP->observeEpoch || attributeEpoch != contextP->attributeEpoch)
+            {
+                lwm2m_data_free(count, data);
+                return COAP_503_SERVICE_UNAVAILABLE;
+            }
+            if (!prv_connected(serverP) || serverP->sessionGeneration != sessionGeneration ||
+                serverP->shortID != shortID || serverP->servObjInstID != instanceID)
+            {
+                lwm2m_data_free(count, data);
+                return COAP_503_SERVICE_UNAVAILABLE;
+            }
+            if (result == COAP_205_CONTENT)
+            {
+                if (count != 1 || data == NULL || data[0].id != path.resourceId ||
+                    (data[0].type != LWM2M_TYPE_INTEGER && data[0].type != LWM2M_TYPE_UNSIGNED_INTEGER) ||
+                    lwm2m_data_decode_uint(data, &value) != 1 || value > UINT32_MAX)
+                    result = COAP_500_INTERNAL_SERVER_ERROR;
+                else if (index == 0 && value != shortID) result = COAP_503_SERVICE_UNAVAILABLE;
+            }
+            lwm2m_data_free(count, data);
+            if (result == COAP_404_NOT_FOUND && index != 0) continue;
+            if (result != COAP_205_CONTENT) return result;
+            if (index != 0)
+            {
+                candidate.toSet |= flag;
+                if (index == 1) candidate.minPeriod = (uint32_t)value;
+                else candidate.maxPeriod = (uint32_t)value;
+            }
+        }
+        *output = candidate;
+    }
+#endif
+    return COAP_NO_ERROR;
+}
+
 static void prv_evaluateObservers(lwm2m_context_t *contextP, time_t currentTime, time_t *timeoutP)
 {
     lwm2m_observed_t *observed;
@@ -345,7 +411,22 @@ restart:
                 if (++ended < LWM2M_OBSERVER_LIMIT) goto restart;
                 prv_wait(timeoutP, 1); return;
             }
-            observe_getParameters(contextP, &uri, watcher->server, true, &attr);
+            result = prv_reportingParameters(contextP, &uri, watcher->server, &attr);
+            /* 기본값 조회 콜백에서 취소/계정 종료가 일어나면 이전 watcher를 다시 참조하지 않는다. */
+            if (epoch != contextP->observeEpoch || attributeEpoch != contextP->attributeEpoch)
+            {
+                prv_wait(timeoutP, 1); return;
+            }
+            if (result != COAP_NO_ERROR)
+            {
+                if (watcher->defaultsError != result)
+                {
+                    LOG_ARG_WARN("Observe defaults unavailable sid=%u code=%u", watcher->server->shortID, result);
+                }
+                watcher->defaultsError = result;
+                prv_wait(timeoutP, 1); continue;
+            }
+            watcher->defaultsError = 0;
             pmin = attr.toSet & LWM2M_ATTR_FLAG_MIN_PERIOD ? attr.minPeriod : 0;
             pmax = attr.toSet & LWM2M_ATTR_FLAG_MAX_PERIOD ? attr.maxPeriod : 0;
             epmin = attr.toSet & LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD ? attr.minEvalPeriod : 0;

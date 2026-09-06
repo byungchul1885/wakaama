@@ -869,6 +869,7 @@ typedef struct _lwm2m_watcher_
     time_t lastEvaluation;
     bool notifyPending;
     uint8_t terminalCode;
+    uint8_t defaultsError; /* 같은 기본 주기 조회 실패의 반복 로그를 억제한다. */
     uint64_t changeSequence;
     lwm2m_observe_value_t lastValue;
     lwm2m_observe_value_t evaluatedValue;

@@ -149,6 +149,8 @@ int main(int argc, char **argv) {
 #ifdef WAKAAMA_TEST_FAULTS
    if (CUE_SUCCESS != create_notify_test_suit())
        goto exit;
+   if (CUE_SUCCESS != create_notify_defaults_test_suit())
+       goto exit;
    if (CUE_SUCCESS != create_notify_values_test_suit())
        goto exit;
 #endif

@@ -869,6 +869,10 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     uint16_t block1_size;
                     uint8_t * complete_buffer = NULL;
                     size_t complete_buffer_size;
+                    size_t requestLimit = 0;
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+                    if (message->code == COAP_FETCH) requestLimit = LWM2M_COMPOSITE_MAX_REQUEST_SIZE;
+#endif
                     // parse block1 header
                     coap_get_header_block1(message, &block1_num, &block1_more, &block1_size, NULL);
                     LOG_ARG_DBG("Blockwise: block1 request NUM %u (SZX %u/ SZX Max%u) MORE %u", block1_num, block1_size,
@@ -883,15 +887,15 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 #ifdef LWM2M_CLIENT_MODE
                         rawBlock1 = prv_uses_raw_block1(contextP, fromSessionH, message);
 #endif
-                        coap_error_code = coap_block1_handler(&peerP->blockData, block1Uri, message->token,
+                        coap_error_code = coap_block1_handler_with_limit(&peerP->blockData, block1Uri, message->token,
                                                              message->token_len, message->mid, message->payload,
                                                              message->payload_len, block1_size, block1_num, block1_more,
-                                                             rawBlock1, &complete_buffer, &complete_buffer_size);
+                                                             rawBlock1, requestLimit, &complete_buffer, &complete_buffer_size);
 #else
-                        coap_error_code = coap_block1_handler(&peerP->blockData, block1Uri, message->token,
+                        coap_error_code = coap_block1_handler_with_limit(&peerP->blockData, block1Uri, message->token,
                                                              message->token_len, message->mid, message->payload,
                                                              message->payload_len, block1_size, block1_num, block1_more,
-                                                             &complete_buffer, &complete_buffer_size);
+                                                             false, requestLimit, &complete_buffer, &complete_buffer_size);
 #endif
                     }
                     /* FETCH는 상태 코드뿐 아니라 고정 응답 bytes를 replay해야 한다. */

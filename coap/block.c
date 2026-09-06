@@ -351,6 +351,7 @@ static uint8_t prv_block1_accept(lwm2m_block_data_t **blockDataHeadP,
                                  bool blockMore,
                                  bool rawBlock1,
                                  uint16_t mid,
+                                 size_t limit,
                                  uint8_t **outputBuffer,
                                  size_t *outputLength)
 {
@@ -366,9 +367,8 @@ static uint8_t prv_block1_accept(lwm2m_block_data_t **blockDataHeadP,
         return prv_block1_reject(blockDataHeadP, blockData, COAP_413_ENTITY_TOO_LARGE);
     }
     offset = (size_t)blockNum * blockSize;
-    if (!rawBlock1 && (offset > (size_t)LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE
-                       || prv_block_transfer_exceeds_limit(
-                           offset, length, (size_t)LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE)))
+    if (limit == 0) limit = LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE;
+    if (!rawBlock1 && (offset > limit || prv_block_transfer_exceeds_limit(offset, length, limit)))
     {
         return prv_block1_reject(blockDataHeadP, blockData, COAP_413_ENTITY_TOO_LARGE);
     }
@@ -475,14 +475,29 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockDataHeadP,
                             uint8_t **outputBuffer,
                             size_t *outputLength)
 {
+    return coap_block1_handler_with_limit(blockDataHeadP, uri, token, tokenLength, mid, buffer, length,
+        blockSize, blockNum, blockMore,
+#ifdef LWM2M_RAW_BLOCK1_REQUESTS
+        rawBlock1,
+#else
+        false,
+#endif
+        0, outputBuffer, outputLength);
+}
+
+uint8_t coap_block1_handler_with_limit(lwm2m_block_data_t **blockDataHeadP,
+    const char *uri, const uint8_t *token, size_t tokenLength, uint16_t mid, const uint8_t *buffer,
+    size_t length, uint16_t blockSize, uint32_t blockNum, bool blockMore, bool rawBlock1, size_t limit,
+    uint8_t **outputBuffer, size_t *outputLength)
+{
     block_data_identifier_t identifier = {0};
     lwm2m_block_data_t *blockData;
-#ifndef LWM2M_RAW_BLOCK1_REQUESTS
-    const bool rawBlock1 = false;
-#endif
 
     if (outputBuffer != NULL) *outputBuffer = NULL;
     if (outputLength != NULL) *outputLength = 0;
+#ifndef LWM2M_RAW_BLOCK1_REQUESTS
+    if (rawBlock1) return COAP_400_BAD_REQUEST;
+#endif
     if (blockDataHeadP == NULL || uri == NULL || (tokenLength > 0 && token == NULL)
         || tokenLength > LWM2M_COAP_TOKEN_MAX_LEN || outputBuffer == NULL || outputLength == NULL)
     {
@@ -562,6 +577,7 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockDataHeadP,
                              blockMore,
                              rawBlock1,
                              mid,
+                             limit,
                              outputBuffer,
                              outputLength);
 }

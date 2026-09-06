@@ -361,6 +361,7 @@ int json_findAndCheckData(const lwm2m_uri_t * uriP, uri_depth_t baseLevel, size_
 #endif
 
 // defined in block.c
+#define LWM2M_COMPOSITE_MAX_REQUEST_SIZE (64U * 1024U)
 /* 입력 buffer는 호출 동안만 빌린다. outputBuffer는 blockData 소유이며 다음 상태 변경까지 유효하다.
  * 영속 교환 처리를 선언한 객체는 완료 응답 제출 성공 뒤 동일 Token/새 첫 MID의 Block 0에서
  * 이전 blockData를 해제하고 새 교환을 만든다. 그 밖의 객체의 Token replay는 유지한다.
@@ -376,6 +377,13 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockData, const char *uri, con
                             uint16_t blockSize, uint32_t blockNum, bool blockMore,
                             uint8_t **outputBuffer, size_t *outputLength);
 #endif
+/* limit은 로컬 Operation owner가 정하며 wire의 Size1을 신뢰하지 않는다. 0은 기존
+ * non-raw 기본 한도다. raw 수신은 기존 streaming 경계를 유지한다. 소유권은 위와 같다.
+ * 같은 교환의 모든 block에는 같은 로컬 한도를 전달해야 한다. */
+uint8_t coap_block1_handler_with_limit(lwm2m_block_data_t **blockData, const char *uri, const uint8_t *token,
+    size_t tokenLength, uint16_t mid, const uint8_t *buffer, size_t length, uint16_t blockSize,
+    uint32_t blockNum, bool blockMore, bool rawBlock1, size_t limit,
+    uint8_t **outputBuffer, size_t *outputLength);
 /* locationPath는 호출 중 복사되므로 caller가 계속 소유한다. */
 int coap_block1_cache_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
                                size_t tokenLength, uint8_t responseCode, const char *locationPath);

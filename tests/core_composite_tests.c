@@ -849,7 +849,48 @@ static void codec_aggregate_and_empty_resources(void)
     }
 }
 
+static void read_block1_operation_limit(void)
+{
+    static uint8_t bytes[65537];
+    char path[] = "FETCH";
+    size_t limitIndex, offset;
+    const size_t limits[] = {8192, 65536};
+    memset(bytes, 'x', sizeof(bytes));
+    for (limitIndex = 0; limitIndex < 2; limitIndex++)
+    {
+        lwm2m_block_data_t *list = NULL;
+        uint8_t *output = NULL;
+        size_t length = 0;
+        uint8_t token = (uint8_t)limitIndex;
+        size_t limit = limits[limitIndex];
+        for (offset = 0; offset < limit; offset += 1024)
+        {
+            uint8_t result = coap_block1_handler_with_limit(&list, "FETCH", &token, 1,
+                (uint16_t)offset, bytes + offset, 1024, 1024, (uint32_t)(offset / 1024),
+                offset + 1024 < limit, false, limit, &output, &length);
+            CU_ASSERT_EQUAL(result, offset + 1024 < limit ? COAP_231_CONTINUE : COAP_NO_ERROR);
+            if (offset + 1024 < limit) CU_ASSERT_PTR_NULL(output);
+        }
+        CU_ASSERT_EQUAL_FATAL(length, limit);
+        CU_ASSERT_EQUAL(memcmp(output, bytes, length), 0);
+        block1_delete(&list, path);
+        CU_ASSERT_PTR_NULL(list);
+        /* 마지막 block이 상한 + 1이면 수신 목록까지 회수하고 부분 body를 내놓지 않는다. */
+        for (offset = 0; offset < limit; offset += 1024)
+            CU_ASSERT_EQUAL(coap_block1_handler_with_limit(&list, "FETCH", &token, 1,
+                (uint16_t)offset, bytes + offset, 1024, 1024, (uint32_t)(offset / 1024),
+                true, false, limit, &output, &length), COAP_231_CONTINUE);
+        CU_ASSERT_EQUAL(coap_block1_handler_with_limit(&list, "FETCH", &token, 1,
+            1, bytes + limit, 1, 1024, (uint32_t)(limit / 1024), false, false, limit, &output, &length),
+            COAP_413_ENTITY_TOO_LARGE);
+        CU_ASSERT_PTR_NULL(output);
+        CU_ASSERT_EQUAL(length, 0);
+        CU_ASSERT_PTR_NULL(list);
+    }
+}
+
 static struct TestTable table[] = {
+    {"Q11 Block1 operation size limit", read_block1_operation_limit},
     {"Q03 aggregate limit and empty resource", codec_aggregate_and_empty_resources},
     {"Q03 large codec and exact limit", codec_large_and_exact_limit},
     {"Q03 CBOR tiny object link buffer", codec_cbor_tiny_object_link_buffer},

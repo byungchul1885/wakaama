@@ -783,7 +783,7 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     if (!IS_OPTION(message, COAP_OPTION_CONTENT_TYPE)) return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
     if (message->token_len > LWM2M_COAP_TOKEN_MAX_LEN || message->accept_num > 1)
         return COAP_400_BAD_REQUEST;
-    if (message->payload_len > COMPOSITE_SNAPSHOT_BYTES_MAX) return COAP_413_ENTITY_TOO_LARGE;
+    if (message->payload_len > LWM2M_COMPOSITE_MAX_REQUEST_SIZE) return COAP_413_ENTITY_TOO_LARGE;
     now = lwm2m_gettime();
     if (now < 0) return COAP_500_INTERNAL_SERVER_ERROR;
     dm_expireCompositeSnapshots(contextP, now);
@@ -875,7 +875,7 @@ static uint8_t prv_readComposite(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     length = lwm2m_data_serialize(NULL, size, data, &format, &buffer);
     if (length <= 0)
     { result = length == -3 ? COAP_413_ENTITY_TOO_LARGE : COAP_500_INTERNAL_SERVER_ERROR; goto cleanup; }
-    if ((size_t)length > COMPOSITE_SNAPSHOT_BYTES_MAX || message->payload_len > COMPOSITE_SNAPSHOT_BYTES_MAX)
+    if ((size_t)length > COMPOSITE_SNAPSHOT_BYTES_MAX || message->payload_len > LWM2M_COMPOSITE_MAX_REQUEST_SIZE)
     { result = COAP_413_ENTITY_TOO_LARGE; goto cleanup; }
     {
         snapshot = prv_newCompositeSnapshot(contextP, serverId, generation, message, format,

@@ -33,6 +33,8 @@ void dm_clearDeferredRequests(lwm2m_context_t *contextP);
 /* serverShortId=0이면 전체 해제. 그 외에는 해당 세션 세대만 제거한다. */
 void dm_clearCompositeSnapshots(lwm2m_context_t *contextP, uint16_t serverShortId, uint64_t generation);
 void dm_expireCompositeSnapshots(lwm2m_context_t *contextP, time_t now);
+void dm_compositeResponseSubmitted(lwm2m_context_t *contextP, uint16_t serverId,
+    uint64_t generation, const coap_packet_t *request, const coap_packet_t *response, uint8_t sendResult);
 size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
                                          uint16_t shortServerId,
                                          uint64_t generation);

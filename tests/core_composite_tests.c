@@ -221,6 +221,8 @@ static uint8_t fetch(lwm2m_context_t *context, const char *json, uint16_t accept
     LWM2M_URI_RESET(&uri);
     result = dm_handleRequest(context, &uri, context->serverList, &request, response);
     coap_free_header(&request);
+    /* 이 helper는 독립된 단일 응답 시험이다. Block2 수명 시험은 fetch_block을 사용한다. */
+    dm_clearCompositeSnapshots(context, 0, 0);
     return result;
 }
 
@@ -340,6 +342,7 @@ static void read_packet_fetch_method(void)
     CU_ASSERT_EQUAL(response[3], 0x34);
     CU_ASSERT_EQUAL(response[4], 0xaa);
     CU_ASSERT_EQUAL(state.calls, 1);
+    dm_clearCompositeSnapshots(&context, 0, 0);
 }
 
 static uint8_t fetch_block(lwm2m_context_t *context, const char *json, uint8_t token,
@@ -357,6 +360,7 @@ static uint8_t fetch_block(lwm2m_context_t *context, const char *json, uint8_t t
     if (json != NULL) coap_set_payload(&request, (uint8_t *)json, strlen(json));
     LWM2M_URI_RESET(&uri);
     result = dm_handleRequest(context, &uri, context->serverList, &request, response);
+    coap_set_status_code(response, result);
     coap_free_header(&request);
     return result;
 }
@@ -575,6 +579,73 @@ static void send_uses_merged_data_without_read_evidence(void)
         transaction_remove(&context, context.transactionList);
 }
 
+typedef struct { unsigned submitted; unsigned released; uint64_t submittedId; } read_events_t;
+
+static void composite_read_event(lwm2m_context_t *context, uint64_t id,
+                                 lwm2m_composite_read_event_t event, void *userData)
+{
+    read_events_t *events = userData;
+    (void)context;
+    CU_ASSERT(id > 0);
+    if (event == LWM2M_COMPOSITE_READ_SUBMITTED) { events->submitted++; events->submittedId = id; }
+    else events->released++;
+}
+
+static void read_submission_evidence_requires_every_byte(void)
+{
+    lwm2m_context_t context;
+    lwm2m_server_t server;
+    lwm2m_object_t object;
+    lwm2m_list_t instances[2];
+    read_state_t state;
+    coap_packet_t full, part, request = {0};
+    read_events_t events = {0};
+    uint8_t token = 0x70;
+    size_t blocks, block;
+    read_fixture(&context, &server, &object, instances, &state);
+    CU_ASSERT_EQUAL_FATAL(fetch(&context, "[{\"n\":\"/27343\"}]", 0, &full), COAP_205_CONTENT);
+    blocks = (full.payload_len + 15U) / 16U;
+    lwm2m_free(full.payload);
+    coap_free_header(&full);
+    lwm2m_set_composite_read_event_callback(&context, composite_read_event, &events);
+    CU_ASSERT_EQUAL_FATAL(fetch_block(&context, "[{\"n\":\"/27343\"}]", token, 50, 0, &part), COAP_205_CONTENT);
+    coap_init_message(&request, COAP_TYPE_CON, COAP_FETCH, 50);
+    coap_set_header_token(&request, &token, 1);
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_500_INTERNAL_SERVER_ERROR);
+    CU_ASSERT_EQUAL(events.submitted, 0);
+    lwm2m_free(part.payload);
+    coap_free_header(&part);
+    for (block = blocks - 1; block > 0; --block) {
+        CU_ASSERT_EQUAL_FATAL(fetch_block(&context, NULL, token, (uint16_t)(50 + block), (uint32_t)block, &part), COAP_205_CONTENT);
+        dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+        CU_ASSERT_EQUAL(events.submitted, 0);
+        lwm2m_free(part.payload);
+        coap_free_header(&part);
+    }
+    CU_ASSERT_EQUAL_FATAL(fetch_block(&context, "[{\"n\":\"/27343\"}]", token, 50, 0, &part), COAP_205_CONTENT);
+    request.code = COAP_GET;
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    request.code = COAP_POST;
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    request.code = COAP_FETCH;
+    dm_compositeResponseSubmitted(&context, 2, 1, &request, &part, COAP_NO_ERROR);
+    dm_compositeResponseSubmitted(&context, 1, 2, &request, &part, COAP_NO_ERROR);
+    part.payload[0] ^= 1;
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    part.payload[0] ^= 1;
+    CU_ASSERT_EQUAL(events.submitted, 0);
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    CU_ASSERT_EQUAL(events.submitted, 1);
+    CU_ASSERT(events.submittedId > 0);
+    dm_compositeResponseSubmitted(&context, 1, 1, &request, &part, COAP_NO_ERROR);
+    CU_ASSERT_EQUAL(events.submitted, 1);
+    lwm2m_free(part.payload);
+    coap_free_header(&part);
+    coap_free_header(&request);
+    dm_clearCompositeSnapshots(&context, 0, 0);
+    CU_ASSERT_EQUAL(events.released, 1);
+}
+
 static struct TestTable table[] = {
     {"Q02 JSON path scope", paths_json_preserve_scope},
     {"Q03 CBOR golden and truncation", paths_cbor_golden_and_every_truncation},
@@ -590,6 +661,7 @@ static struct TestTable table[] = {
     {"Q12 snapshot quota and close", read_snapshot_quota_and_session_cleanup},
     {"Q12 callback lifecycle and registration", read_lifecycle_and_unregistered},
     {"Q14 outbound Send merged RIID", send_uses_merged_data_without_read_evidence},
+    {"Q05 complete byte submission evidence", read_submission_evidence_requires_every_byte},
 #ifdef WAKAAMA_TEST_FAULTS
     {"Q11 fake clock expiration boundary", read_snapshot_clock_boundary},
     {"Q12 every allocation failure", read_every_allocation_failure_is_clean},

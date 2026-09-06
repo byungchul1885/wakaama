@@ -200,7 +200,6 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
     lwm2m_server_t *serverP;
 
     if (contextP == NULL || requestP == NULL || responseP == NULL ||
-        contextP->dmResponseSubmittedCallback == NULL ||
         requestP->token_len > LWM2M_COAP_TOKEN_MAX_LEN)
     {
         return;
@@ -208,6 +207,10 @@ static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
     memset(&submission, 0, sizeof(submission));
     LWM2M_URI_RESET(&submission.createdUri);
     serverP = utils_findServer(contextP, fromSessionH);
+    if (serverP != NULL)
+        dm_compositeResponseSubmitted(contextP, serverP->shortID, serverP->sessionGeneration,
+                                      requestP, responseP, sendResult);
+    if (contextP->dmResponseSubmittedCallback == NULL) return;
     if (serverP == NULL ||
         uri_decode(contextP->altPath,
                    requestP->uri_path,
@@ -891,6 +894,11 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                                                              &complete_buffer, &complete_buffer_size);
 #endif
                     }
+                    /* FETCH는 상태 코드뿐 아니라 고정 응답 bytes를 replay해야 한다. */
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+                    if (message->code == COAP_FETCH && coap_error_code == COAP_RETRANSMISSION && !block1_more)
+                        coap_error_code = NO_ERROR;
+#endif
                     // if payload is complete, replace it in the coap message.
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
                     if (!rawBlock1 && coap_error_code == NO_ERROR)

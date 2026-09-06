@@ -978,6 +978,20 @@ typedef bool (*lwm2m_composite_access_callback_t)(lwm2m_context_t *contextP, uin
     const lwm2m_uri_t *uriP, bool writing, void *userData);
 void lwm2m_set_composite_access_callback(lwm2m_context_t *contextP,
     lwm2m_composite_access_callback_t callback, void *userData);
+typedef enum {
+    LWM2M_COMPOSITE_READ_SUBMITTED,
+    LWM2M_COMPOSITE_READ_RELEASED
+} lwm2m_composite_read_event_t;
+/* snapshotId는 context 수명 안에서 재사용하지 않는다. SUBMITTED는 모든 응답 bytes의
+ * transport 제출 성공이며 ACK/서버 처리 완료를 뜻하지 않는다. 중복 통지는 하지 않는다.
+ * RELEASED는 protocol snapshot 해제다. SUBMITTED 뒤의 제품 IPC retry는 제품 owner가
+ * 독립적으로 보관한다. callback은 context/session/snapshot을 변경하거나 닫지 않는다. */
+typedef void (*lwm2m_composite_read_event_callback_t)(lwm2m_context_t *contextP,
+    uint64_t snapshotId, lwm2m_composite_read_event_t event, void *userData);
+void lwm2m_set_composite_read_event_callback(lwm2m_context_t *contextP,
+    lwm2m_composite_read_event_callback_t callback, void *userData);
+/* 실제 FETCH의 read callback 동안만 nonzero. Send/Notify/일반 Read는 0이다. */
+uint64_t lwm2m_get_current_composite_read_id(const lwm2m_context_t *contextP);
 #endif
 
 struct _lwm2m_context_
@@ -1012,6 +1026,10 @@ struct _lwm2m_context_
     lwm2m_composite_snapshot_t *compositeSnapshots;
     lwm2m_composite_access_callback_t compositeAccessCallback;
     void *compositeAccessUserData;
+    lwm2m_composite_read_event_callback_t compositeReadEventCallback;
+    void *compositeReadEventUserData;
+    uint64_t nextCompositeReadId;
+    uint64_t currentCompositeReadId;
     lwm2m_deferred_request_id_t nextDeferredRequestId;
     lwm2m_random_callback_t randomCallback;
     void *               randomCallbackUserData;

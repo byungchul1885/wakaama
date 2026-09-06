@@ -129,7 +129,7 @@ void lwm2m_deregister(lwm2m_context_t * context)
 
 static void prv_deleteServer(lwm2m_context_t *contextP, lwm2m_server_t *serverP)
 {
-    // TODO parse transaction and observation to remove the ones related to this server
+    observe_forgetServer(contextP, serverP);
     lwm2m_close_server_session(contextP, serverP);
     if (NULL != serverP->location)
     {
@@ -162,7 +162,7 @@ static void prv_deleteBootstrapServer(lwm2m_context_t *contextP,
                                       lwm2m_server_t *serverP)
 {
     LOG_DBG("Entering");
-    // TODO should we parse transaction and observation to remove the ones related to this server ?
+    observe_forgetServer(contextP, serverP);
     lwm2m_close_server_session(contextP, serverP);
 
     lwm2m_free(serverP->location);
@@ -193,15 +193,10 @@ static void prv_deleteObservedList(lwm2m_context_t * contextP)
     while (NULL != contextP->observedList)
     {
         lwm2m_observed_t * targetP;
-        lwm2m_watcher_t * watcherP;
 
         targetP = contextP->observedList;
         contextP->observedList = contextP->observedList->next;
 
-        for (watcherP = targetP->watcherList ; watcherP != NULL ; watcherP = watcherP->next)
-        {
-            if (watcherP->parameters != NULL) lwm2m_free(watcherP->parameters);
-        }
         LWM2M_LIST_FREE(targetP->watcherList);
 
         lwm2m_free(targetP);
@@ -237,6 +232,7 @@ void lwm2m_close(lwm2m_context_t * contextP)
     prv_deleteServerList(contextP);
     prv_deleteBootstrapServerList(contextP);
     prv_deleteObservedList(contextP);
+    observe_clearParameters(contextP, NULL);
     lwm2m_free(contextP->endpointName);
     if (contextP->msisdn != NULL)
     {

@@ -69,17 +69,36 @@ static void clear(fixture_t *f) {
     uri("/3303", &root);
     observe_clear(&f->context, &root);
     CU_ASSERT_PTR_NULL(f->context.observedList);
+    CU_ASSERT_PTR_NULL(f->context.attributeList);
 }
 
 static lwm2m_attributes_t *params(fixture_t *f, const char *path, unsigned server) {
     lwm2m_uri_t pathUri;
     uri(path, &pathUri);
-    lwm2m_observed_t *observed = observe_findByUri(&f->context, &pathUri);
-    lwm2m_watcher_t *watcher;
-    if (!observed) return NULL;
-    for (watcher = observed->watcherList; watcher; watcher = watcher->next)
-        if (watcher->server == f->servers + server) return watcher->parameters;
+    lwm2m_attribute_entry_t *entry;
+    for (entry = f->context.attributeList; entry; entry = entry->next)
+        if (entry->shortServerID == f->servers[server].shortID &&
+            entry->uri.objectId == pathUri.objectId && entry->uri.instanceId == pathUri.instanceId &&
+            entry->uri.resourceId == pathUri.resourceId && entry->uri.resourceInstanceId == pathUri.resourceInstanceId)
+            return &entry->values;
     return NULL;
+}
+
+static uint8_t observation(fixture_t *f, const char *path, unsigned server, uint8_t token, uint32_t count) {
+    lwm2m_uri_t pathUri;
+    lwm2m_data_t value = {0};
+    coap_packet_t request, response;
+    uint8_t result;
+    uri(path, &pathUri);
+    lwm2m_data_encode_int(42, &value);
+    coap_init_message(&request, COAP_TYPE_CON, COAP_GET, 8);
+    coap_init_message(&response, COAP_TYPE_ACK, COAP_205_CONTENT, 8);
+    coap_set_header_token(&request, &token, token == 0 ? 0 : 1);
+    coap_set_header_observe(&request, count);
+    result = observe_handleRequest(&f->context, &pathUri, &f->servers[server], 1, &value, &request, &response);
+    if (result == COAP_205_CONTENT) CU_ASSERT_EQUAL(IS_OPTION(&response, COAP_OPTION_OBSERVE) != 0, count == 0);
+    coap_free_header(&request); coap_free_header(&response);
+    return result;
 }
 
 static void exact_levels_and_server_isolation(void) {
@@ -203,13 +222,15 @@ static void clearing_attributes_preserves_active_observation(void) {
     init(&f); uri("/3303/0/0", &path);
     attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD; attr.minPeriod = 3;
     CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    CU_ASSERT_PTR_NULL(f.context.observedList);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 7, 0), COAP_205_CONTENT);
     watcher = f.context.observedList->watcherList;
     watcher->active = true; watcher->update = true;
     watcher->tokenLen = 1; watcher->token[0] = 7; watcher->counter = 29;
     attr.toSet = 0; attr.toClear = LWM2M_ATTR_FLAG_MIN_PERIOD;
     CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
     CU_ASSERT_PTR_EQUAL(f.context.observedList->watcherList, watcher);
-    CU_ASSERT_PTR_NULL(watcher->parameters);
+    CU_ASSERT_PTR_NULL(params(&f, "/3303/0/0", 0));
     CU_ASSERT_TRUE(watcher->active); CU_ASSERT_TRUE(watcher->update);
     CU_ASSERT_EQUAL(watcher->tokenLen, 1); CU_ASSERT_EQUAL(watcher->token[0], 7);
     CU_ASSERT_EQUAL(watcher->counter, 29);
@@ -341,6 +362,142 @@ static void callback_removal_does_not_reuse_borrowed_watcher(void) {
     clear(&f);
 }
 
+static void cancel_and_server_replacement_preserve_attributes(void) {
+    fixture_t f;
+    lwm2m_uri_t path;
+    lwm2m_attributes_t attr = {0}, effective;
+    lwm2m_server_t replacement = {0};
+    lwm2m_watcher_t *second;
+    init(&f); uri("/3303/0/0", &path);
+    f.servers[0].sessionH = (void *)(uintptr_t)1; f.servers[1].sessionH = (void *)(uintptr_t)2;
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD; attr.minPeriod = 7;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 0, 0), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 1, 0), COAP_205_CONTENT);
+    second = f.context.observedList->watcherList;
+    CU_ASSERT_PTR_NOT_NULL(second->next);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 1, 0), COAP_205_CONTENT);
+    CU_ASSERT_PTR_EQUAL(f.context.observedList->watcherList, second);
+    CU_ASSERT_PTR_NULL(second->next->next);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 9, 1), COAP_205_CONTENT);
+    CU_ASSERT_PTR_EQUAL(f.context.observedList->watcherList, second);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 1, 1, 1), COAP_205_CONTENT);
+    CU_ASSERT_PTR_EQUAL(f.context.observedList->watcherList, second);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 0, 1), COAP_205_CONTENT);
+    CU_ASSERT_PTR_EQUAL(f.context.observedList->watcherList, second);
+    CU_ASSERT_PTR_NULL(second->next);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->minPeriod, 7);
+    observe_cancel(&f.context, 8, f.servers[1].sessionH);
+    CU_ASSERT_PTR_EQUAL(f.context.observedList->watcherList, second);
+    observe_cancel(&f.context, 8, f.servers[0].sessionH);
+    CU_ASSERT_PTR_NULL(f.context.observedList);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->minPeriod, 7);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 2, 0), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 1, 3, 0), COAP_205_CONTENT);
+    observe_forgetServer(&f.context, f.servers);
+    CU_ASSERT_PTR_EQUAL(f.context.observedList->watcherList->server, f.servers + 1);
+    CU_ASSERT_PTR_NULL(f.context.observedList->watcherList->next);
+    replacement.shortID = 1;
+    observe_getParameters(&f.context, &path, &replacement, true, &effective);
+    CU_ASSERT_EQUAL(effective.minPeriod, 7);
+    CU_ASSERT_EQUAL(effective.toSet, LWM2M_ATTR_FLAG_MIN_PERIOD);
+    clear(&f);
+}
+
+static void iid_delete_preserves_parent_and_removes_children(void) {
+    fixture_t f;
+    lwm2m_uri_t root, iid, leaf;
+    lwm2m_attributes_t attr = {0}, effective;
+    init(&f); uri("/3303", &root); uri("/3303/0", &iid); uri("/3303/0/0", &leaf);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD; attr.minPeriod = 1;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &root, f.servers, &attr), COAP_204_CHANGED);
+    attr.minPeriod = 2;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &leaf, f.servers, &attr), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 1, 0), COAP_205_CONTENT);
+    observe_clear(&f.context, &iid);
+    CU_ASSERT_PTR_NULL(f.context.observedList);
+    CU_ASSERT_PTR_NULL(params(&f, "/3303/0/0", 0));
+    observe_getParameters(&f.context, &leaf, f.servers, true, &effective);
+    CU_ASSERT_EQUAL(effective.minPeriod, 1);
+    clear(&f);
+}
+
+static uint8_t read_any_resource(lwm2m_context_t *context, uint16_t iid, int *count,
+                                lwm2m_data_t **data, lwm2m_object_t *object) {
+    (void)context; (void)iid; (void)object;
+    if (*count != 1 || *data == NULL) return COAP_400_BAD_REQUEST;
+    lwm2m_data_encode_int(42, *data);
+    return COAP_205_CONTENT;
+}
+
+static void attribute_and_observer_quotas_are_independent_and_recoverable(void) {
+    fixture_t f;
+    lwm2m_uri_t path;
+    lwm2m_attributes_t attr = {0};
+    lwm2m_server_t third = {0};
+    unsigned server, index;
+    init(&f); f.object.readFunc = read_any_resource; third.shortID = 3;
+    uri("/3303/0/0", &path);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD; attr.minPeriod = 1;
+    for (server = 0; server < 2; ++server) {
+        for (index = 0; index < LWM2M_ATTRIBUTE_SERVER_LIMIT; ++index) {
+            path.resourceId = (uint16_t)index;
+            CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers + server, &attr), COAP_204_CHANGED);
+        }
+        path.resourceId = LWM2M_ATTRIBUTE_SERVER_LIMIT;
+        CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers + server, &attr), COAP_503_SERVICE_UNAVAILABLE);
+    }
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, &third, &attr), COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_PTR_NULL(f.context.observedList);
+    for (server = 0; server < 2; ++server) {
+        for (index = 0; index < LWM2M_OBSERVER_SERVER_LIMIT; ++index)
+            CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", server, (uint8_t)index, 0), COAP_205_CONTENT);
+        CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", server, LWM2M_OBSERVER_SERVER_LIMIT, 0), COAP_503_SERVICE_UNAVAILABLE);
+        CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", server, 0, 0), COAP_205_CONTENT);
+    }
+    path.resourceId = 0; attr.minPeriod = 2;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->minPeriod, 2);
+    attr.toSet = 0; attr.toClear = LWM2M_ATTR_FLAG_MIN_PERIOD;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    attr.toClear = 0; attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD;
+    path.resourceId = LWM2M_ATTRIBUTE_SERVER_LIMIT;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 0, 1), COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, LWM2M_OBSERVER_SERVER_LIMIT, 0), COAP_205_CONTENT);
+    clear(&f);
+}
+
+static uint8_t read_changes_parent(lwm2m_context_t *context, uint16_t iid, int *count,
+                                   lwm2m_data_t **data, lwm2m_object_t *object) {
+    fixture_t *f = object->userData;
+    lwm2m_uri_t root;
+    lwm2m_attributes_t attr = {0};
+    uri("/3303", &root);
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD; attr.minPeriod = 3;
+    CU_ASSERT_EQUAL(observe_setParameters(context, &root, f->servers, &attr), COAP_204_CHANGED);
+    return read_value(context, iid, count, data, object);
+}
+
+static void callback_parent_change_invalidates_prepared_child(void) {
+    fixture_t f;
+    lwm2m_uri_t path;
+    lwm2m_attributes_t attr = {0};
+    init(&f); uri("/3303/0/0", &path);
+    f.object.userData = &f; f.object.readFunc = read_changes_parent;
+    attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD; attr.minPeriod = 1;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_PTR_NULL(params(&f, "/3303/0/0", 0));
+    CU_ASSERT_EQUAL(params(&f, "/3303", 0)->minPeriod, 3);
+    f.object.readFunc = read_value;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+    f.context.attributeEpoch = UINT64_MAX;
+    attr.minPeriod = 2;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_EQUAL(params(&f, "/3303/0/0", 0)->minPeriod, 1);
+    clear(&f);
+}
+
 #ifdef WAKAAMA_TEST_FAULTS
 static void server_queries_round_trip_and_never_send_partial_options(void) {
     fixture_t f;
@@ -428,9 +585,22 @@ static void allocation_failure_never_publishes_freed_or_partial_nodes(void) {
         test_malloc_fault_disable();
         CU_ASSERT_EQUAL(code, COAP_500_INTERNAL_SERVER_ERROR);
         CU_ASSERT_PTR_NULL(f.context.observedList);
+        CU_ASSERT_PTR_NULL(f.context.attributeList);
         CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
         /* 실패 직후 같은 context로 재시도하고 순회/해제해야 한다. */
         CU_ASSERT_EQUAL(observe_setParameters(&f.context, &path, f.servers, &attr), COAP_204_CHANGED);
+        clear(&f);
+    }
+    /* Attribute owner 분리 뒤에도 실제 Observe의 두 노드 할당 실패를 계속 검사한다. */
+    for (fail = 0; fail < 2; ++fail) {
+        init(&f);
+        test_malloc_fail_after(fail);
+        CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 1, 0), COAP_500_INTERNAL_SERVER_ERROR);
+        test_malloc_fault_disable();
+        CU_ASSERT_PTR_NULL(f.context.observedList);
+        CU_ASSERT_PTR_NULL(f.context.attributeList);
+        CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+        CU_ASSERT_EQUAL(observation(&f, "/3303/0/0", 0, 1, 0), COAP_205_CONTENT);
         clear(&f);
     }
 }
@@ -448,6 +618,10 @@ CU_ErrorCode create_observe_test_suit(void) {
         {"Q09 complete numeric query and evaluation periods", numeric_query_full_consumption_and_evaluation_periods},
         {"Q09 numeric text extremes and subnormal", numeric_text_preserves_extremes_and_subnormal},
         {"Q12 callback removes borrowed watcher", callback_removal_does_not_reuse_borrowed_watcher},
+        {"Q09 Q10 cancel and server replacement preserve attributes", cancel_and_server_replacement_preserve_attributes},
+        {"Q09 IID deletion retains parent only", iid_delete_preserves_parent_and_removes_children},
+        {"Q09 Q10 independent quotas and recovery", attribute_and_observer_quotas_are_independent_and_recoverable},
+        {"Q12 callback parent mutation invalidates child", callback_parent_change_invalidates_prepared_child},
 #ifdef WAKAAMA_TEST_FAULTS
         {"Q09 Q12 seven server queries and all allocation failures", server_queries_round_trip_and_never_send_partial_options},
         {"Q12 allocation failure and same-context retry", allocation_failure_never_publishes_freed_or_partial_nodes},

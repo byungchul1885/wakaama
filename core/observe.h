@@ -22,6 +22,10 @@
 uint8_t observe_handleRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP, int size,
                               lwm2m_data_t *dataP, coap_packet_t *message, coap_packet_t *response);
 void observe_cancel(lwm2m_context_t *contextP, uint16_t mid, void *fromSessionH);
+/* server 해제 전에 borrowed watcher를 제거한다. SSID 설정은 보존한다. */
+void observe_forgetServer(lwm2m_context_t *contextP, lwm2m_server_t *serverP);
+/* uri가 NULL이면 모든 설정, 아니면 해당 경로와 자손을 해제한다. */
+void observe_clearParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP);
 /* 새 값이 있는 필드만 caller 소유 사본에 합친다. 입력/출력 주소는 같아도 된다. */
 void observe_mergeParameters(lwm2m_attributes_t *target, const lwm2m_attributes_t *source);
 bool observe_attributesCoherent(const lwm2m_attributes_t *attributes);

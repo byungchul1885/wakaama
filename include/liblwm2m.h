@@ -756,6 +756,20 @@ typedef struct
     uint32_t    maxEvalPeriod;
 } lwm2m_attributes_t;
 
+/* context 소유 설정 사본이다. 일시적인 server/session/Observe pointer를 보관하지 않는다. */
+typedef struct _lwm2m_attribute_entry_
+{
+    struct _lwm2m_attribute_entry_ *next;
+    uint16_t shortServerID;
+    lwm2m_uri_t uri;
+    lwm2m_attributes_t values;
+} lwm2m_attribute_entry_t;
+
+#define LWM2M_ATTRIBUTE_ENTRY_LIMIT 512U
+#define LWM2M_ATTRIBUTE_SERVER_LIMIT 256U
+#define LWM2M_OBSERVER_LIMIT 128U
+#define LWM2M_OBSERVER_SERVER_LIMIT 64U
+
 /*
  * LwM2M Clients
  *
@@ -833,7 +847,6 @@ typedef struct _lwm2m_watcher_
     bool active;
     bool update;
     lwm2m_server_t * server;
-    lwm2m_attributes_t * parameters;
     lwm2m_media_type_t format;
     uint8_t token[8];
     size_t tokenLen;
@@ -1033,6 +1046,9 @@ struct _lwm2m_context_
     lwm2m_server_t *     serverList;
     lwm2m_object_t *     objectList;
     lwm2m_observed_t *   observedList;
+    lwm2m_attribute_entry_t *attributeList;
+    /* 설정/대상 수명 변경을 Read callback 전후에 검출한다. wrap하지 않는다. */
+    uint64_t attributeEpoch;
     lwm2m_registration_object_filter_t registrationObjectFilter;
     void *               registrationObjectFilterUserData;
 #ifndef LWM2M_VERSION_1_0

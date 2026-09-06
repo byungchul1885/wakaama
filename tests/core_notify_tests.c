@@ -384,6 +384,72 @@ static void read_purpose_isolation_and_role_recheck(void) {
     clear(&f);
 }
 
+static void registration_reply(fixture_t *f, uint8_t code) {
+    coap_packet_t ack;
+    uint8_t bytes[128];
+    size_t length;
+    lwm2m_transaction_t *pending = f->context.transactionList;
+    const coap_packet_t *request;
+    CU_ASSERT_PTR_NOT_NULL_FATAL(pending);
+    request = pending->message;
+    coap_init_message(&ack, COAP_TYPE_ACK, code, pending->mID);
+    coap_set_header_token(&ack, request->token, request->token_len);
+    if (code == COAP_201_CREATED) coap_set_header_location_path(&ack, "/rd/notify");
+    length = coap_serialize_message(&ack, bytes);
+    CU_ASSERT_TRUE_FATAL(length > 0);
+    lwm2m_handle_packet(&f->context, bytes, length, f->servers[0].sessionH);
+    coap_free_header(&ack);
+    CU_ASSERT_PTR_NULL(f->context.transactionList);
+}
+
+static void new_registration_clears_only_target_observers(void) {
+    fixture_t f;
+    lwm2m_attributes_t attr = {0};
+    time_t timeout = 100;
+    size_t baseline = test_malloc_live_allocations();
+    init(&f);
+    f.context.endpointName = lwm2m_strdup("notify-registration");
+    f.context.serverList = f.servers; f.servers[0].next = f.servers + 1;
+    f.servers[0].binding = f.servers[1].binding = BINDING_U;
+    f.servers[0].lifetime = f.servers[1].lifetime = 10000;
+    f.servers[0].registration = f.servers[1].registration = 100;
+    observe(&f, 0, LWM2M_CONTENT_SENML_CBOR); observe(&f, 1, LWM2M_CONTENT_SENML_CBOR);
+    attr.toSet = LWM2M_ATTR_FLAG_MAX_PERIOD; attr.maxPeriod = 10;
+    parameters(&f, 0, &attr); parameters(&f, 1, &attr);
+    lwm2m_close_server_session(&f.context, f.servers);
+    CU_ASSERT_PTR_NOT_NULL(f.context.observedList->watcherList->next);
+    (void)tick(&f, 110, 1); response_value(0, LWM2M_CONTENT_SENML_CBOR, 42, 2);
+    // 세션만 재연결한 경우 기존 관계를 보존한다. 새 Register 대기 중에는 알리지 않는다.
+    f.servers[0].sessionH = f.servers;
+    f.servers[0].status = STATE_REG_HOLD_OFF;
+    registration_step(&f.context, 110, &timeout);
+    CU_ASSERT_EQUAL(f.servers[0].status, STATE_REG_PENDING);
+    CU_ASSERT_PTR_NOT_NULL(f.context.observedList->watcherList->next);
+    (void)tick(&f, 111, 0);
+    registration_reply(&f, COAP_400_BAD_REQUEST);
+    CU_ASSERT_PTR_NOT_NULL(f.context.observedList->watcherList->next);
+    (void)tick(&f, 111, 0);
+    f.servers[0].registration = 111; f.servers[0].status = STATE_REG_HOLD_OFF;
+    registration_step(&f.context, 111, &timeout);
+    registration_reply(&f, COAP_201_CREATED);
+    CU_ASSERT_EQUAL(f.servers[0].status, STATE_REGISTERED);
+    CU_ASSERT_PTR_NULL(f.context.observedList->watcherList->next);
+    CU_ASSERT_PTR_EQUAL(f.context.observedList->watcherList->server, f.servers + 1);
+    observe_getParameters(&f.context, &f.path, f.servers, true, &attr);
+    CU_ASSERT_EQUAL(attr.toSet, LWM2M_ATTR_FLAG_MAX_PERIOD); CU_ASSERT_EQUAL(attr.maxPeriod, 10);
+    change(&f, 43); (void)tick(&f, 112, 1); response_value(0, LWM2M_CONTENT_SENML_CBOR, 43, 2);
+    observe(&f, 0, LWM2M_CONTENT_SENML_CBOR);
+    // Registration Update의 성공은 새 Register가 아니다.
+    f.servers[0].status = STATE_REG_FULL_UPDATE_NEEDED;
+    registration_step(&f.context, 112, &timeout);
+    CU_ASSERT_EQUAL(f.servers[0].status, STATE_REG_UPDATE_PENDING);
+    registration_reply(&f, COAP_204_CHANGED);
+    CU_ASSERT_PTR_NOT_NULL(f.context.observedList->watcherList->next);
+    change(&f, 44); (void)tick(&f, 113, 2);
+    lwm2m_free(f.servers[0].location); lwm2m_free(f.context.endpointName);
+    clear(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
 CU_ErrorCode create_notify_test_suit(void) {
     struct TestTable table[] = {
         {"Q09 pmin AND and pending latest value", pmin_and_pending},
@@ -397,6 +463,7 @@ CU_ErrorCode create_notify_test_suit(void) {
         {"Q09 Q10 unsigned float and sequence boundaries", unsigned_float_and_sequence_boundaries},
         {"Q12 every Notify allocation failure retains retry", all_notify_allocation_failures_keep_retry},
         {"Q05 Q01 pure read purpose and current role", read_purpose_isolation_and_role_recheck},
+        {"Q13 new Register versus reconnect and Update", new_registration_clears_only_target_observers},
         {NULL, NULL}
     };
     CU_pSuite suite = CU_add_suite("notify timing", NULL, NULL);

@@ -629,6 +629,9 @@ static void prv_handleRegistrationReply(lwm2m_context_t * contextP,
         }
         if (packet != NULL && packet->code == COAP_201_CREATED)
         {
+            /* 새 Register가 완료되면 서버가 다시 Observe한다. 단순 재연결/Update는
+             * 이 경계를 통과하지 않으며, 별도 owner의 Attribute 설정도 지우지 않는다. */
+            observe_forgetServer(contextP, dataP->server);
             dataP->server->status = STATE_REGISTERED;
             if (NULL != dataP->server->location)
             {

@@ -114,8 +114,11 @@ int json_split(const uint8_t * buffer,
             break;
 
         case _STEP_TOKEN:
-            if (buffer[index] == ',') goto loop_exit;
-            if (buffer[index] == '"')
+            if (buffer[index] == '\\')
+            {
+                if (++index == bufferLen) return -1;
+            }
+            else if (buffer[index] == '"')
             {
                 *tokenLenP = index - *tokenStartP;
                 step = _STEP_ANY_SEPARATOR;
@@ -145,7 +148,12 @@ int json_split(const uint8_t * buffer,
             break;
 
         case _STEP_QUOTED_VALUE:
-            if (buffer[index] == '"' && buffer[index-1] != '\\' )
+            /* escape를 한 쌍으로 소비해야 끝의 \\\\ 뒤 따옴표도 정상 종료한다. */
+            if (buffer[index] == '\\')
+            {
+                if (++index == bufferLen) return -1;
+            }
+            else if (buffer[index] == '"')
             {
                 *valueLenP = index - *valueStartP + 1;
                 step = _STEP_DONE;
@@ -349,6 +357,19 @@ static uint8_t prv_hexValue(uint8_t digit)
     return 0xFF;
 }
 
+static bool prv_codeUnit(const uint8_t *src, uint32_t *value)
+{
+    size_t i;
+    *value = 0;
+    for (i = 0; i < 4; ++i)
+    {
+        uint8_t digit = prv_hexValue(src[i]);
+        if (digit > 15) return false;
+        *value = (*value << 4) | digit;
+    }
+    return true;
+}
+
 size_t json_unescapeString(uint8_t *dst, const uint8_t *src, size_t len)
 {
     size_t i;
@@ -385,17 +406,33 @@ size_t json_unescapeString(uint8_t *dst, const uint8_t *src, size_t len)
                 break;
             case 'u':
             {
-                uint8_t v1, v2;
+                uint32_t value;
                 i++;
-                /* 끝의 정확한 4자리도 유효하다. 뺄셈 underflow 없이 남은 길이를 검사한다. */
-                if (len - i < 4) return 0;
-                if (src[i++] != '0') return 0;
-                if (src[i++] != '0') return 0;
-                v1 = prv_hexValue(src[i++]);
-                if (v1 > 15) return 0;
-                v2 = prv_hexValue(src[i]);
-                if (v2 > 15) return 0;
-                dst[result++] = (char)((v1 << 4) + v2);
+                if (len - i < 4 || !prv_codeUnit(src + i, &value)) return 0;
+                i += 3;
+                if (value >= 0xD800 && value <= 0xDBFF)
+                {
+                    uint32_t low;
+                    if (len - i - 1 < 6 || src[i+1] != '\\' || src[i+2] != 'u' ||
+                        !prv_codeUnit(src + i + 3, &low) || low < 0xDC00 || low > 0xDFFF) return 0;
+                    value = 0x10000 + ((value - 0xD800) << 10) + low - 0xDC00;
+                    i += 6;
+                }
+                else if (value >= 0xDC00 && value <= 0xDFFF) return 0;
+                /* UTF-8 결과는 원래 escape보다 길지 않으므로 같은 버퍼에서도 안전하다. */
+                if (value <= 0x7F) dst[result++] = (uint8_t)value;
+                else
+                {
+                    if (value > 0xFFFF)
+                    {
+                        dst[result++] = (uint8_t)(0xF0 | (value >> 18));
+                        dst[result++] = (uint8_t)(0x80 | ((value >> 12) & 0x3F));
+                    }
+                    else if (value > 0x7FF) dst[result++] = (uint8_t)(0xE0 | (value >> 12));
+                    else dst[result++] = (uint8_t)(0xC0 | (value >> 6));
+                    if (value > 0x7FF) dst[result++] = (uint8_t)(0x80 | ((value >> 6) & 0x3F));
+                    dst[result++] = (uint8_t)(0x80 | (value & 0x3F));
+                }
                 break;
             }
             default:
@@ -405,7 +442,26 @@ size_t json_unescapeString(uint8_t *dst, const uint8_t *src, size_t len)
         }
         else
         {
-            dst[result++] = (char)c;
+            size_t extra = 0, j;
+            uint32_t value = c;
+            if (c < 0x20 || c == '"') return 0;
+            if (c >= 0x80)
+            {
+                if (c >= 0xC2 && c <= 0xDF) { extra = 1; value = c & 0x1F; }
+                else if (c >= 0xE0 && c <= 0xEF) { extra = 2; value = c & 0x0F; }
+                else if (c >= 0xF0 && c <= 0xF4) { extra = 3; value = c & 0x07; }
+                else return 0;
+                if (len - i - 1 < extra) return 0;
+                for (j = 1; j <= extra; ++j)
+                {
+                    if ((src[i+j] & 0xC0) != 0x80) return 0;
+                    value = (value << 6) | (src[i+j] & 0x3F);
+                }
+                if ((extra == 2 && value < 0x800) || (extra == 3 && value < 0x10000) ||
+                    value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) return 0;
+            }
+            for (j = 0; j <= extra; ++j) dst[result++] = src[i+j];
+            i += extra;
         }
     }
     return result;

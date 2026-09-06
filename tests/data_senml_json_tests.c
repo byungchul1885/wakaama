@@ -30,6 +30,9 @@
 
 #include "CUnit/Basic.h"
 #include "tests.h"
+#ifdef WAKAAMA_TEST_FAULTS
+#include "helper/faults.h"
+#endif
 
 #if defined(LWM2M_SUPPORT_JSON) && defined(LWM2M_SUPPORT_SENML_JSON)
 
@@ -714,7 +717,155 @@ static void senml_json_read_values_only(void) {
     lwm2m_free(wire);
 }
 
+static void json_unicode_scalar_boundaries(void) {
+    static const struct { const char *escape; const char *utf8; size_t size; } fixtures[] = {
+        {"\\u0000", "\0", 1}, {"\\u007f", "\x7f", 1}, {"\\u0080", "\xc2\x80", 2},
+        {"\\u00ff", "\xc3\xbf", 2}, {"\\u07ff", "\xdf\xbf", 2}, {"\\u0800", "\xe0\xa0\x80", 3},
+        {"\\ud7ff", "\xed\x9f\xbf", 3}, {"\\ue000", "\xee\x80\x80", 3}, {"\\uffff", "\xef\xbf\xbf", 3},
+        {"\\uD800\\uDC00", "\xf0\x90\x80\x80", 4}, {"\\ud834\\udd1e", "\xf0\x9d\x84\x9e", 4},
+        {"\\uD800\\uDFFF", "\xf0\x90\x8f\xbf", 4}, {"\\uDBFF\\uDC00", "\xf4\x8f\xb0\x80", 4},
+        {"\\udbff\\udfff", "\xf4\x8f\xbf\xbf", 4}, {"\\uD55C\\uAE00", "\xed\x95\x9c\xea\xb8\x80", 6}
+    };
+    uint32_t cp;
+    size_t i;
+    for (i = 0; i < sizeof(fixtures)/sizeof(fixtures[0]); ++i) {
+        uint8_t output[64];
+        size_t length = strlen(fixtures[i].escape);
+        memset(output, 0xA5, sizeof(output));
+        CU_ASSERT_EQUAL(json_unescapeString(output + 1, (const uint8_t *)fixtures[i].escape, length), fixtures[i].size);
+        CU_ASSERT_EQUAL(memcmp(output + 1, fixtures[i].utf8, fixtures[i].size), 0);
+        CU_ASSERT_EQUAL(output[0], 0xA5);
+        CU_ASSERT_EQUAL(output[1 + fixtures[i].size], 0xA5);
+        memcpy(output, fixtures[i].escape, length);
+        CU_ASSERT_EQUAL(json_unescapeString(output, output, length), fixtures[i].size);
+        CU_ASSERT_EQUAL(memcmp(output, fixtures[i].utf8, fixtures[i].size), 0);
+        if (i != 0) {
+            CU_ASSERT_EQUAL(json_unescapeString(output, (const uint8_t *)fixtures[i].utf8, fixtures[i].size), fixtures[i].size);
+            CU_ASSERT_EQUAL(memcmp(output, fixtures[i].utf8, fixtures[i].size), 0);
+        }
+    }
+    /* BMP의 모든 code unit을 검사한다. surrogate 단독은 UTF-8 scalar가 아니다. */
+    for (cp = 0; cp <= 0xFFFF; ++cp) {
+        char escaped[7];
+        uint8_t output[8];
+        uint32_t decoded;
+        size_t count;
+        snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned)cp);
+        memset(output, 0xA5, sizeof(output));
+        count = json_unescapeString(output + 1, (uint8_t *)escaped, 6);
+        if (cp >= 0xD800 && cp <= 0xDFFF) { CU_ASSERT_EQUAL(count, 0); continue; }
+        CU_ASSERT_EQUAL(count, cp < 0x80 ? 1 : cp < 0x800 ? 2 : 3);
+        decoded = count == 1 ? output[1] : count == 2 ?
+            ((output[1] & 0x1F) << 6) | (output[2] & 0x3F) :
+            ((output[1] & 0x0F) << 12) | ((output[2] & 0x3F) << 6) | (output[3] & 0x3F);
+        CU_ASSERT_EQUAL(decoded, cp);
+        CU_ASSERT_EQUAL(output[0], 0xA5);
+        CU_ASSERT_EQUAL(output[1 + count], 0xA5);
+    }
+}
+
+static void json_unicode_invalid_and_every_truncation(void) {
+    static const char *invalid[] = {
+        "\\", "\\u", "\\u123", "\\uX234", "\\u12x4", "\\ud800", "\\udc00", "\\udfff",
+        "\\ud800x", "\\ud800\\u0000", "\\ud800\\ud800", "\\udc00\\ud800", "\\udfff\\udfff",
+        "\x80", "\xc0\xaf", "\xc1\xbf", "\xc2", "\xe0\x9f\xbf", "\xe2\x82", "\xed\xa0\x80",
+        "\xf0\x8f\xbf\xbf", "\xf4\x90\x80\x80", "\xf5\x80\x80\x80", "\xff", "\xe1 A", "\n", "\""
+    };
+    uint8_t output[64];
+    size_t i;
+    for (i = 0; i < sizeof(invalid)/sizeof(invalid[0]); ++i) {
+        memset(output, 0xA5, sizeof(output));
+        CU_ASSERT_EQUAL(json_unescapeString(output + 1, (const uint8_t *)invalid[i], strlen(invalid[i])), 0);
+        CU_ASSERT_EQUAL(output[0], 0xA5);
+        CU_ASSERT_EQUAL(output[63], 0xA5);
+    }
+    for (i = 1; i < 12; ++i)
+        CU_ASSERT_EQUAL(json_unescapeString(output, (const uint8_t *)"\\ud834\\udd1e", i), 0);
+    for (i = 1; i < 4; ++i)
+        CU_ASSERT_EQUAL(json_unescapeString(output, (const uint8_t *)"\xf0\x9d\x84\x9e", i), 0);
+}
+
+static void senml_json_unicode_names_values_roundtrip(void) {
+    static const char *inputs[] = {
+        "[{\"bn\":\"/34/0/2\",\"vs\":\"\\uD55C\\uAE00\\ud834\\udd1e\\\\\"}]",
+        "[{\"\\u0062n\":\"\\u002f34\\/0/\",\"\\u006e\":\"\\u0032\",\"\\u0076s\":\"\\uD55C\\uAE00\\ud834\\udd1e\\\\\"}]",
+        "[{\"bn\":\"/34/0/2\",\"vs\":\"\xed\x95\x9c\xea\xb8\x80\xf0\x9d\x84\x9e\\\\\"}]",
+        "[{\"bn\":\"/34/0/2\",\"\uD55C\uAE00\":0,\"vs\":\"\\uD55C\\uAE00\\ud834\\udd1e\\\\\"}]"
+    };
+    static const char *invalid[] = {
+        "[{\"n\":\"/34/0/2\",\"\\u006e\":\"/34/0/3\",\"vs\":\"x\"}]",
+        "[{\"n\":\"/34/0/2\",\"vs\":\"x\",\"\\u0078\\u005f\":0}]",
+        "[{\"n\":\"/34/0/2\",\"vs\":\"x\",\"long-unknown-label-needing-private-decoding-\\u005f\":0}]",
+        "[{\"n\":\"/34/0/2\\u0000\",\"vs\":\"x\"}]",
+        "[{\"n\":\"/34/0/2\",\"vs\":\"\\ud800\"}]",
+        "[{\"n\":\"/34/0/2\",\"vs\":\"\xed\xa0\x80\"}]"
+    };
+    const uint8_t expected[] = {0xED,0x95,0x9C,0xEA,0xB8,0x80,0xF0,0x9D,0x84,0x9E,0x5C};
+    lwm2m_uri_t uri;
+    size_t i;
+    CU_ASSERT_TRUE_FATAL(lwm2m_stringToUri("/34/0/2", 7, &uri));
+    for (i = 0; i < sizeof(inputs)/sizeof(inputs[0]); ++i) {
+        lwm2m_data_t *data = NULL;
+        int count = lwm2m_data_parse(&uri, (const uint8_t *)inputs[i], strlen(inputs[i]), LWM2M_CONTENT_SENML_JSON, &data);
+        int format;
+        CU_ASSERT_EQUAL_FATAL(count, 1);
+        CU_ASSERT_EQUAL(data[0].type, LWM2M_TYPE_STRING);
+        CU_ASSERT_EQUAL_FATAL(data[0].value.asBuffer.length, sizeof(expected));
+        CU_ASSERT_EQUAL(memcmp(data[0].value.asBuffer.buffer, expected, sizeof(expected)), 0);
+        for (format = 0; format < 2; ++format) {
+            lwm2m_media_type_t media = format ? LWM2M_CONTENT_SENML_CBOR : LWM2M_CONTENT_SENML_JSON;
+            lwm2m_data_t *again = NULL;
+            uint8_t *wire = NULL;
+            int length = lwm2m_data_serialize(&uri, count, data, &media, &wire);
+            CU_ASSERT_TRUE_FATAL(length > 0);
+            CU_ASSERT_EQUAL_FATAL(lwm2m_data_parse(&uri, wire, length, media, &again), 1);
+            CU_ASSERT_EQUAL_FATAL(again[0].value.asBuffer.length, sizeof(expected));
+            CU_ASSERT_EQUAL(memcmp(again[0].value.asBuffer.buffer, expected, sizeof(expected)), 0);
+            lwm2m_free(wire); lwm2m_data_free(1, again);
+        }
+        lwm2m_data_free(count, data);
+    }
+    for (i = 0; i < sizeof(invalid)/sizeof(invalid[0]); ++i) {
+        lwm2m_data_t *data = NULL;
+        int count = senml_json_parse_composite((const uint8_t *)invalid[i], strlen(invalid[i]), &data);
+        CU_ASSERT_TRUE(count <= 0); CU_ASSERT_PTR_NULL(data);
+        if (count > 0) lwm2m_data_free(count, data);
+    }
+}
+
+#ifdef WAKAAMA_TEST_FAULTS
+static void senml_json_unicode_allocation_failure(void) {
+    const char input[] = "[{\"\\u006e\":\"\\/34/0/2\",\"vs\":\"\\uD55C\\uAE00\\ud834\\udd1e\","
+        "\"long-unknown-label-with-unicode-\\uD55C\\uAE00\":0}]";
+    size_t baseline = test_malloc_live_allocations(), calls, fail;
+    lwm2m_data_t *data = NULL;
+    int count;
+    test_malloc_fail_after((size_t)-1);
+    count = senml_json_parse_composite((const uint8_t *)input, strlen(input), &data);
+    calls = test_malloc_observed_calls();
+    test_malloc_fault_disable();
+    CU_ASSERT_EQUAL_FATAL(count, 1);
+    lwm2m_data_free(count, data);
+    CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    for (fail = 0; fail < calls; ++fail) {
+        data = NULL;
+        test_malloc_fail_after(fail);
+        count = senml_json_parse_composite((const uint8_t *)input, strlen(input), &data);
+        test_malloc_fault_disable();
+        CU_ASSERT_TRUE(count <= 0); CU_ASSERT_PTR_NULL(data);
+        if (count > 0) lwm2m_data_free(count, data);
+        CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    }
+}
+#endif
+
 static struct TestTable table[] = {
+    {"Q03 Unicode scalar and BMP boundaries", json_unicode_scalar_boundaries},
+    {"Q03 Unicode invalid and truncated strings", json_unicode_invalid_and_every_truncation},
+    {"Q02 Unicode labels paths values and formats", senml_json_unicode_names_values_roundtrip},
+#ifdef WAKAAMA_TEST_FAULTS
+    {"Q12 Unicode parser all allocation failures", senml_json_unicode_allocation_failure},
+#endif
     {"Q03 Read values without empty container placeholders", senml_json_read_values_only},
     {"Q03 SenML Opaque canonical wire and legacy input", senml_json_opaque_contract},
     {"test of senml_json_test_1()", senml_json_test_1},

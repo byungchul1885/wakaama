@@ -566,6 +566,12 @@ uint8_t object_write(lwm2m_context_t * contextP,
         size = lwm2m_data_parse(uriP, buffer, length, format, &dataP);
         if (size <= 0)
         {
+#ifndef LWM2M_VERSION_1_0
+            /* 지원 형식의 잘못된 SenML 값은 Transport 1.1 §6.6의 Bad Request다. */
+            if (format == LWM2M_CONTENT_SENML_JSON || format == LWM2M_CONTENT_SENML_CBOR)
+                result = COAP_400_BAD_REQUEST;
+            else
+#endif
             result = COAP_406_NOT_ACCEPTABLE;
         }
     }

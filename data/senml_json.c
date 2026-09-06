@@ -73,6 +73,38 @@
 
 typedef senml_record_t _record_t;
 
+/* 문자열 표기만 해제한다. 경로/ObjLink의 숫자 의미는 기존 consumer가 검사한다. */
+static int prv_decodeIdentifier(const uint8_t *src, size_t length, uint8_t *dst)
+{
+    uint8_t decoded[6 * URI_MAX_STRING_LEN];
+    size_t count;
+    if (length > sizeof(decoded)) return -1;
+    count = json_unescapeString(decoded, src, length);
+    if ((length != 0 && count == 0) || count > URI_MAX_STRING_LEN || memchr(decoded, 0, count)) return -1;
+    memcpy(dst, decoded, count);
+    dst[count] = 0;
+    return (int)count;
+}
+
+/* 긴 미지원 label도 유효성을 검사하고 마지막 '_' 의미를 보존한다. */
+static bool prv_decodeLabel(const uint8_t *src, size_t *length, uint8_t head[4], uint8_t *last)
+{
+    uint8_t local[32];
+    uint8_t *decoded = *length <= sizeof(local) ? local : lwm2m_malloc(*length);
+    size_t count;
+    if (decoded == NULL) return false;
+    count = json_unescapeString(decoded, src, *length);
+    memset(head, 0, 4);
+    if (count != 0)
+    {
+        memcpy(head, decoded, count < 4 ? count : 4);
+        *last = decoded[count-1];
+    }
+    if (decoded != local) lwm2m_free(decoded);
+    *length = count;
+    return count != 0;
+}
+
 static int prv_parseItem(const uint8_t * buffer,
                          size_t bufferLen,
                          _record_t * recordP,
@@ -82,6 +114,7 @@ static int prv_parseItem(const uint8_t * buffer,
 {
     size_t index;
     const uint8_t *name = NULL;
+    uint8_t nameBuffer[URI_MAX_STRING_LEN + 1];
     size_t nameLength = 0;
     bool timeSeen = false;
     bool bnSeen = false;
@@ -102,6 +135,7 @@ static int prv_parseItem(const uint8_t * buffer,
         size_t valueStart;
         size_t valueLen;
         int next;
+        uint8_t token[4], tokenLast;
 
         next = json_split(buffer+index,
                           bufferLen-index,
@@ -111,11 +145,12 @@ static int prv_parseItem(const uint8_t * buffer,
                           &valueLen);
         if (next < 0) return -1;
         if (tokenLen == 0) return -1;
+        if (!prv_decodeLabel(buffer + index + tokenStart, &tokenLen, token, &tokenLast)) return -1;
 
-        switch (buffer[index+tokenStart])
+        switch (token[0])
         {
         case 'b':
-            if (tokenLen == 2 && buffer[index+tokenStart+1] == 'n')
+            if (tokenLen == 2 && token[1] == 'n')
             {
                 if (bnSeen) return -1;
                 bnSeen = true;
@@ -128,24 +163,23 @@ static int prv_parseItem(const uint8_t * buffer,
                 }
                 if (valueLen >= 3)
                 {
-                    if (valueLen == 3 && buffer[index+valueStart+1] != '/') return -1;
-                    if (valueLen > URI_MAX_STRING_LEN) return -1;
-                    memcpy(baseUri, buffer+index+valueStart+1, valueLen-2);
-                    baseUri[valueLen-2] = '\0';
+                    int decoded = prv_decodeIdentifier(buffer + index + valueStart + 1,
+                                                        valueLen - 2, (uint8_t *)baseUri);
+                    if (decoded < 0 || (decoded == 1 && baseUri[0] != '/')) return -1;
                 }
                 else
                 {
                     baseUri[0] = '\0';
                 }
             }
-            else if (tokenLen == 2 && buffer[index+tokenStart+1] == 't')
+            else if (tokenLen == 2 && token[1] == 't')
             {
                 if (btSeen) return -1;
                 btSeen = true;
                 if (!json_convertTime(buffer+index+valueStart, valueLen, baseTime))
                     return -1;
             }
-            else if (tokenLen == 2 && buffer[index+tokenStart+1] == 'v')
+            else if (tokenLen == 2 && token[1] == 'v')
             {
                 if (bvSeen) return -1;
                 bvSeen = true;
@@ -183,9 +217,9 @@ static int prv_parseItem(const uint8_t * buffer,
                 }
             }
             else if (tokenLen == 4
-                  && buffer[index+tokenStart+1] == 'v'
-                  && buffer[index+tokenStart+2] == 'e'
-                  && buffer[index+tokenStart+3] == 'r')
+                  && token[1] == 'v'
+                  && token[2] == 'e'
+                  && token[3] == 'r')
             {
                 int64_t value;
                 int res;
@@ -198,7 +232,7 @@ static int prv_parseItem(const uint8_t * buffer,
                     return -1;
                 }
             }
-            else if (buffer[index+tokenStart+tokenLen-1] == '_')
+            else if (tokenLast == '_')
             {
                 /* Label ending in _ must be supported or generate error. */
                 return -1;
@@ -217,10 +251,15 @@ static int prv_parseItem(const uint8_t * buffer,
                 {
                     return -1;
                 }
-                name = buffer + index + valueStart + 1;
-                nameLength = valueLen - 2;
+                {
+                    int decoded = prv_decodeIdentifier(buffer + index + valueStart + 1,
+                                                        valueLen - 2, nameBuffer);
+                    if (decoded < 0) return -1;
+                    name = nameBuffer;
+                    nameLength = (size_t)decoded;
+                }
             }
-            else if (buffer[index+tokenStart+tokenLen-1] == '_')
+            else if (tokenLast == '_')
             {
                 /* Label ending in _ must be supported or generate error. */
                 return -1;
@@ -235,7 +274,7 @@ static int prv_parseItem(const uint8_t * buffer,
                 if (!json_convertTime(buffer+index+valueStart, valueLen, &recordP->time))
                     return -1;
             }
-            else if (buffer[index+tokenStart+tokenLen-1] == '_')
+            else if (tokenLast == '_')
             {
                 /* Label ending in _ must be supported or generate error. */
                 return -1;
@@ -248,7 +287,7 @@ static int prv_parseItem(const uint8_t * buffer,
                 if (!json_convertNumeric(buffer+index+valueStart, valueLen, &recordP->value))
                     return -1;
             }
-            else if (tokenLen == 2 && buffer[index+tokenStart+1] == 'b')
+            else if (tokenLen == 2 && token[1] == 'b')
             {
                 if (recordP->value.type != LWM2M_TYPE_UNDEFINED) return -1;
                 if (0 == lwm2m_strncmp(JSON_TRUE_STRING,
@@ -269,8 +308,8 @@ static int prv_parseItem(const uint8_t * buffer,
                 }
             }
             else if (tokenLen == 2
-                  && (buffer[index+tokenStart+1] == 'd'
-                   || buffer[index+tokenStart+1] == 's'))
+                  && (token[1] == 'd'
+                   || token[1] == 's'))
             {
                 if (recordP->value.type != LWM2M_TYPE_UNDEFINED) return -1;
                 /* Check for " around value */
@@ -280,7 +319,7 @@ static int prv_parseItem(const uint8_t * buffer,
                 {
                     return -1;
                 }
-                if (buffer[index+tokenStart+1] == 'd')
+                if (token[1] == 'd')
                 {
                     /* Don't use lwm2m_data_encode_opaque here. It would copy the buffer */
                     recordP->value.type = LWM2M_TYPE_OPAQUE;
@@ -293,7 +332,7 @@ static int prv_parseItem(const uint8_t * buffer,
                 recordP->value.value.asBuffer.buffer = (uint8_t *)buffer + index + valueStart + 1;
                 recordP->value.value.asBuffer.length = valueLen - 2;
             }
-            else if (tokenLen == 3 && buffer[index+tokenStart+1] == 'l' && buffer[index+tokenStart+2] == 'o')
+            else if (tokenLen == 3 && token[1] == 'l' && token[2] == 'o')
             {
                 if (recordP->value.type != LWM2M_TYPE_UNDEFINED) return -1;
                 /* Check for " around value */
@@ -303,8 +342,10 @@ static int prv_parseItem(const uint8_t * buffer,
                 {
                     return -1;
                 }
-                if (!utils_textToObjLink(buffer + index + valueStart + 1,
-                                         valueLen - 2,
+                uint8_t objectLink[URI_MAX_STRING_LEN + 1];
+                int decoded = prv_decodeIdentifier(buffer + index + valueStart + 1, valueLen - 2, objectLink);
+                if (decoded < 0 || !utils_textToObjLink(objectLink,
+                                         (size_t)decoded,
                                          &recordP->value.value.asObjLink.objectId,
                                          &recordP->value.value.asObjLink.objectInstanceId))
                 {
@@ -312,14 +353,14 @@ static int prv_parseItem(const uint8_t * buffer,
                 }
                 recordP->value.type = LWM2M_TYPE_OBJECT_LINK;
             }
-            else if (buffer[index+tokenStart+tokenLen-1] == '_')
+            else if (tokenLast == '_')
             {
                 /* Label ending in _ must be supported or generate error. */
                 return -1;
             }
             break;
         default:
-            if (buffer[index+tokenStart+tokenLen-1] == '_')
+            if (tokenLast == '_')
             {
                 /* Label ending in _ must be supported or generate error. */
                 return -1;

@@ -359,6 +359,9 @@ int json_itemLength(const uint8_t * buffer, size_t bufferLen);
 int json_countItems(const uint8_t * buffer, size_t bufferLen);
 int json_convertNumeric(const uint8_t *value, size_t valueLen, lwm2m_data_t *targetP);
 int json_convertTime(const uint8_t *valueStart, size_t valueLen, time_t *t);
+/* dst는 caller 소유의 최소 len-byte 버퍼다. dst==src는 허용하고 다른 겹침은 허용하지 않는다.
+ * UTF-8/Unicode scalar만 수용한다. 반환값은 실제 길이이며 NUL 종료하지 않는다.
+ * 빈 입력/잘못된 입력은 0이며 실패 시 dst의 부분 결과는 사용하면 안 된다. 할당은 없다. */
 size_t json_unescapeString(uint8_t *dst, const uint8_t *src, size_t len);
 size_t json_escapeString(uint8_t *dst, size_t dstLen, const uint8_t *src, size_t srcLen);
 lwm2m_data_t * json_extendData(lwm2m_data_t * parentP);

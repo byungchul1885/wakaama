@@ -958,7 +958,7 @@ static void prv_serializeValue(const lwm2m_data_t *value, senml_writer_t *writer
 static void prv_serializeData(const lwm2m_data_t *value, const uint8_t *baseUri, size_t baseLength,
                                uri_depth_t baseLevel, const uint8_t *parent, size_t parentLength,
                                uri_depth_t level, bool *baseWritten, size_t *records,
-                               senml_writer_t *writer)
+                               senml_writer_t *writer, bool readResponse)
 {
     uint8_t path[URI_MAX_STRING_LEN];
     size_t pathLength = parentLength, i;
@@ -967,6 +967,8 @@ static void prv_serializeData(const lwm2m_data_t *value, const uint8_t *baseUri,
     bool container = value->type == LWM2M_TYPE_OBJECT || value->type == LWM2M_TYPE_OBJECT_INSTANCE ||
                      value->type == LWM2M_TYPE_MULTIPLE_RESOURCE;
     if (writer->error != 0) return;
+    if (readResponse && value->type == LWM2M_TYPE_UNDEFINED) { writer->error = -1; return; }
+    if (readResponse && container && value->value.asChildren.count == 0) return;
     if (parentLength >= sizeof(path)) { writer->error = -1; return; }
     if (parentLength > 0) memcpy(path, parent, parentLength);
     length = utils_intToText(value->id, path + pathLength, sizeof(path) - pathLength);
@@ -984,7 +986,7 @@ static void prv_serializeData(const lwm2m_data_t *value, const uint8_t *baseUri,
         path[pathLength++] = '/';
         for (i = 0; i < value->value.asChildren.count && writer->error == 0; i++)
             prv_serializeData(value->value.asChildren.array + i, baseUri, baseLength, baseLevel,
-                               path, pathLength, level, baseWritten, records, writer);
+                               path, pathLength, level, baseWritten, records, writer, readResponse);
         return;
     default:
         break;
@@ -1018,7 +1020,7 @@ static void prv_serializeData(const lwm2m_data_t *value, const uint8_t *baseUri,
 
 static void prv_serializePack(int count, const lwm2m_data_t *values, const uint8_t *baseUri,
                                size_t baseLength, uri_depth_t baseLevel, uri_depth_t rootLevel,
-                               const uint8_t *parent, size_t parentLength, senml_writer_t *writer)
+                               const uint8_t *parent, size_t parentLength, senml_writer_t *writer, bool readResponse)
 {
     bool baseWritten = false;
     size_t records = 0;
@@ -1026,8 +1028,8 @@ static void prv_serializePack(int count, const lwm2m_data_t *values, const uint8
     prv_jsonText(writer, "[");
     for (i = 0; i < count && writer->error == 0; i++)
         prv_serializeData(values + i, baseUri, baseLength, baseLevel, parent, parentLength,
-                           rootLevel, &baseWritten, &records, writer);
-    if (!baseWritten && records == 0 && baseLength > 0)
+                           rootLevel, &baseWritten, &records, writer, readResponse);
+    if (!readResponse && !baseWritten && records == 0 && baseLength > 0)
     {
         if (baseLength > 1 && baseUri[baseLength - 1] == '/') baseLength--;
         prv_jsonText(writer, "{\"bn\":\"");
@@ -1037,7 +1039,8 @@ static void prv_serializePack(int count, const lwm2m_data_t *values, const uint8
     prv_jsonText(writer, "]");
 }
 
-int senml_json_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP)
+static int prv_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP,
+                         uint8_t **bufferP, bool readResponse)
 {
     uint8_t baseUri[URI_MAX_STRING_LEN];
     int baseLength, count;
@@ -1067,7 +1070,7 @@ int senml_json_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *
     if (baseLength == 0 || baseUri[baseLength - 1] != '/')
     { parent = (const uint8_t *)"/"; parentLength = 1; }
     prv_serializePack(count, target, baseUri, (size_t)baseLength, baseLevel, rootLevel,
-                      parent, parentLength, &measured);
+                      parent, parentLength, &measured, readResponse);
     if (measured.error != 0) return measured.error;
     if (measured.length > INT_MAX) return -3;
     output.buffer = lwm2m_malloc(measured.length);
@@ -1076,11 +1079,17 @@ int senml_json_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *
     output.length = 0;
     output.error = 0;
     prv_serializePack(count, target, baseUri, (size_t)baseLength, baseLevel, rootLevel,
-                      parent, parentLength, &output);
+                      parent, parentLength, &output, readResponse);
     if (output.error != 0 || output.length != measured.length)
     { lwm2m_free(output.buffer); return -1; }
     *bufferP = output.buffer;
     return (int)output.length;
 }
+
+int senml_json_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP)
+{ return prv_serialize(uriP, size, tlvP, bufferP, false); }
+
+int senml_json_serialize_read(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP)
+{ return prv_serialize(uriP, size, tlvP, bufferP, true); }
 #endif
 

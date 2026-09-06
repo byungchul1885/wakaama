@@ -683,7 +683,39 @@ static void senml_json_opaque_contract(void) {
     }
 }
 
+static void senml_json_read_values_only(void) {
+    lwm2m_uri_t uri;
+    lwm2m_data_t data[4] = {{0}}, before[4];
+    uint8_t *wire = NULL;
+    int length;
+    const char expected[] = "[{\"bn\":\"/34/0/\",\"n\":\"3\",\"vb\":false},{\"n\":\"5\",\"vd\":\"\"}]";
+    CU_ASSERT_TRUE_FATAL(lwm2m_stringToUri("/34/0", 5, &uri));
+    data[0].id = 2; data[0].type = LWM2M_TYPE_MULTIPLE_RESOURCE;
+    data[1].id = 3; data[1].type = LWM2M_TYPE_BOOLEAN;
+    data[2].id = 4; data[2].type = LWM2M_TYPE_MULTIPLE_RESOURCE;
+    data[3].id = 5; data[3].type = LWM2M_TYPE_OPAQUE;
+    memcpy(before, data, sizeof(data));
+    length = senml_json_serialize_read(&uri, 4, data, &wire);
+    CU_ASSERT_EQUAL_FATAL(length, sizeof(expected) - 1);
+    CU_ASSERT_EQUAL(memcmp(wire, expected, length), 0);
+    CU_ASSERT_EQUAL(memcmp(before, data, sizeof(data)), 0);
+    lwm2m_free(wire);
+    /* 빈 MR과 0-byte Opaque는 다른 값이다. MR만 비어 있으면 빈 Pack이다. */
+    length = senml_json_serialize_read(&uri, 1, data, &wire);
+    CU_ASSERT_EQUAL_FATAL(length, 2);
+    CU_ASSERT_EQUAL(memcmp(wire, "[]", 2), 0);
+    lwm2m_free(wire);
+    data[0].type = LWM2M_TYPE_UNDEFINED;
+    CU_ASSERT_EQUAL(senml_json_serialize_read(&uri, 1, data, &wire), -1);
+    CU_ASSERT_PTR_NULL(wire);
+    /* 기존 경로-only 요청 serializer는 보존한다. */
+    length = senml_json_serialize(&uri, 1, data, &wire);
+    CU_ASSERT_TRUE(length > 0);
+    lwm2m_free(wire);
+}
+
 static struct TestTable table[] = {
+    {"Q03 Read values without empty container placeholders", senml_json_read_values_only},
     {"Q03 SenML Opaque canonical wire and legacy input", senml_json_opaque_contract},
     {"test of senml_json_test_1()", senml_json_test_1},
     {"test of senml_json_test_2()", senml_json_test_2},

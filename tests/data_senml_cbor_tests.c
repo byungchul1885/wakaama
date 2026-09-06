@@ -800,7 +800,38 @@ static void senml_cbor_test_31(void) {
     senml_cbor_test_raw_error("/34/0/2", buffer, sizeof(buffer), LWM2M_CONTENT_SENML_CBOR, "31");
 }
 
+static void senml_cbor_read_values_only(void) {
+    lwm2m_uri_t uri;
+    lwm2m_data_t data[4] = {{0}}, before[4];
+    uint8_t *wire = NULL;
+    int length;
+    const uint8_t expected[] = {0x82,0xa3,0x21,0x66,'/','3','4','/','0','/',
+        0x00,0x61,'3',0x04,0xf4,0xa2,0x00,0x61,'5',0x08,0x40};
+    CU_ASSERT_TRUE_FATAL(lwm2m_stringToUri("/34/0", 5, &uri));
+    data[0].id = 2; data[0].type = LWM2M_TYPE_MULTIPLE_RESOURCE;
+    data[1].id = 3; data[1].type = LWM2M_TYPE_BOOLEAN;
+    data[2].id = 4; data[2].type = LWM2M_TYPE_MULTIPLE_RESOURCE;
+    data[3].id = 5; data[3].type = LWM2M_TYPE_OPAQUE;
+    memcpy(before, data, sizeof(data));
+    length = senml_cbor_serialize_read(&uri, 4, data, &wire);
+    CU_ASSERT_EQUAL_FATAL(length, sizeof(expected));
+    CU_ASSERT_EQUAL(memcmp(wire, expected, length), 0);
+    CU_ASSERT_EQUAL(memcmp(before, data, sizeof(data)), 0);
+    lwm2m_free(wire);
+    length = senml_cbor_serialize_read(&uri, 1, data, &wire);
+    CU_ASSERT_EQUAL_FATAL(length, 1);
+    CU_ASSERT_EQUAL(wire[0], 0x80);
+    lwm2m_free(wire);
+    data[0].type = LWM2M_TYPE_UNDEFINED;
+    CU_ASSERT_EQUAL(senml_cbor_serialize_read(&uri, 1, data, &wire), -1);
+    CU_ASSERT_PTR_NULL(wire);
+    length = senml_cbor_serialize(&uri, 1, data, &wire);
+    CU_ASSERT_TRUE(length > 0);
+    lwm2m_free(wire);
+}
+
 static struct TestTable table[] = {
+    {"Q03 Read values without empty container placeholders", senml_cbor_read_values_only},
     {"test of senml_cbor_test_1()", senml_cbor_test_1},   {"test of senml_cbor_test_2()", senml_cbor_test_2},
     {"test of senml_cbor_test_3()", senml_cbor_test_3},   {"test of senml_cbor_test_4()", senml_cbor_test_4},
     {"test of senml_cbor_test_5()", senml_cbor_test_5},   {"test of senml_cbor_test_6()", senml_cbor_test_6},

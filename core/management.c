@@ -933,7 +933,23 @@ static uint8_t prv_readSnapshot(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
                                         LWM2M_URI_IS_SET_RESOURCE(uriP), &format);
         if (result != COAP_205_CONTENT) goto cleanup;
     }
-    length = lwm2m_data_serialize(composite ? NULL : uriP, size, data, &format, &buffer);
+    /* 값 없는 경로 목록은 Composite 요청용이며 Read 응답 값으로 재사용하지 않는다. */
+    switch (format)
+    {
+#ifdef LWM2M_SUPPORT_SENML_JSON
+    case LWM2M_CONTENT_SENML_JSON:
+        length = senml_json_serialize_read(composite ? NULL : uriP, size, data, &buffer);
+        break;
+#endif
+#ifdef LWM2M_SUPPORT_SENML_CBOR
+    case LWM2M_CONTENT_SENML_CBOR:
+        length = senml_cbor_serialize_read(composite ? NULL : uriP, size, data, &buffer);
+        break;
+#endif
+    default:
+        length = lwm2m_data_serialize(composite ? NULL : uriP, size, data, &format, &buffer);
+        break;
+    }
     if (length <= 0)
     { result = length == -3 ? COAP_413_ENTITY_TOO_LARGE : COAP_500_INTERNAL_SERVER_ERROR; goto cleanup; }
     if ((size_t)length > COMPOSITE_SNAPSHOT_BYTES_MAX || message->payload_len > LWM2M_COMPOSITE_MAX_REQUEST_SIZE)

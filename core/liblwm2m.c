@@ -104,6 +104,7 @@ void lwm2m_close_server_session(lwm2m_context_t *contextP, lwm2m_server_t *serve
         return;
     }
     sessionH = serverP->sessionH;
+    observe_changedLifetime(contextP);
     serverP->sessionH = NULL;
 #ifndef LWM2M_VERSION_1_0
     (void)dm_remove_deferred_for_generation(contextP,

@@ -1122,8 +1122,26 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
             {
                 lwm2m_data_t * dataP = NULL;
                 int size = 0;
+                uint32_t observe = 0;
+                uint64_t epoch;
+
+                (void)coap_get_header_observe(message, &observe);
+                if (observe > 1) { result = COAP_400_BAD_REQUEST; break; }
+                /* 취소는 후속 Read 실패와 무관하게 먼저 완료한다. Attribute는 보존한다. */
+                if (observe == 1)
+                {
+                    result = observe_handleRequest(contextP, uriP, serverP, 0, NULL, message, response);
+                    if (result != COAP_205_CONTENT) break;
+                }
+                epoch = contextP->observeEpoch;
 
                 result = object_readData(contextP, uriP, &size, &dataP);
+                if (contextP->observeEpoch != epoch)
+                {
+                    lwm2m_data_free(size, dataP);
+                    result = COAP_503_SERVICE_UNAVAILABLE;
+                    break;
+                }
                 if (COAP_205_CONTENT == result)
                 {
                     result = utils_getResponseFormat(message->accept_num,
@@ -1134,31 +1152,24 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
                                                      &format);
                     if (COAP_205_CONTENT == result)
                     {
-                        coap_set_header_content_type(response, format);
-                        result = observe_handleRequest(contextP,
-                                                       uriP,
-                                                       serverP,
-                                                       size,
-                                                       dataP,
-                                                       message,
-                                                       response);
-                        if (COAP_205_CONTENT == result)
+                        /* 응답 직렬화가 실패한 신규/재Observe는 기존 관계를 변경하지 않는다. */
+                        res = lwm2m_data_serialize(uriP, size, dataP, &format, &buffer);
+                        if (res < 0)
                         {
-                            res = lwm2m_data_serialize(uriP, size, dataP, &format, &buffer);
-                            if (res < 0)
+                            result = COAP_500_INTERNAL_SERVER_ERROR;
+                        }
+                        else
+                        {
+                            length = (size_t)res;
+                            coap_set_header_content_type(response, format);
+                            if (observe == 0)
                             {
-                                result = COAP_500_INTERNAL_SERVER_ERROR;
-                            }
-                            else
-                            {
-                                length = (size_t)res;
-                                LOG_ARG_DBG("Observe Request[/%d/%d/%d]: %.*s\n", uriP->objectId, uriP->instanceId,
-                                            uriP->resourceId, (int)length, STR_NULL2EMPTY(buffer));
+                                result = observe_handleRequest(contextP, uriP, serverP, size, dataP, message, response);
                             }
                         }
                     }
-                    lwm2m_data_free(size, dataP);
                 }
+                lwm2m_data_free(size, dataP);
             }
             else if (IS_OPTION(message, COAP_OPTION_ACCEPT)
                   && message->accept_num == 1

@@ -840,6 +840,17 @@ struct _lwm2m_transaction_
 /*
  * LwM2M observed resources
  */
+typedef struct
+{
+    lwm2m_data_type_t type;
+    union
+    {
+        int64_t asInteger;
+        uint64_t asUnsigned;
+        double asFloat;
+    } value;
+} lwm2m_observe_value_t;
+
 typedef struct _lwm2m_watcher_
 {
     struct _lwm2m_watcher_ * next;
@@ -853,12 +864,11 @@ typedef struct _lwm2m_watcher_
     time_t lastTime;
     uint32_t counter;
     uint16_t lastMid;
-    union
-    {
-        int64_t asInteger;
-        uint64_t asUnsigned;
-        double  asFloat;
-    } lastValue;
+    time_t lastEvaluation;
+    bool notifyPending;
+    uint64_t changeSequence;
+    lwm2m_observe_value_t lastValue;
+    lwm2m_observe_value_t evaluatedValue;
 } lwm2m_watcher_t;
 
 typedef struct _lwm2m_observed_
@@ -1049,6 +1059,8 @@ struct _lwm2m_context_
     lwm2m_attribute_entry_t *attributeList;
     /* 설정/대상 수명 변경을 Read callback 전후에 검출한다. wrap하지 않는다. */
     uint64_t attributeEpoch;
+    /* callback 후 transient 관찰 pointer 재사용을 차단한다. */
+    uint64_t observeEpoch;
     lwm2m_registration_object_filter_t registrationObjectFilter;
     void *               registrationObjectFilterUserData;
 #ifndef LWM2M_VERSION_1_0

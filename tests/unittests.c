@@ -141,6 +141,10 @@ int main(int argc, char **argv) {
        goto exit;
    if (CUE_SUCCESS != create_observe_test_suit())
        goto exit;
+#ifdef WAKAAMA_TEST_FAULTS
+   if (CUE_SUCCESS != create_notify_test_suit())
+       goto exit;
+#endif
 #if defined(LWM2M_SUPPORT_SENML_JSON) && defined(LWM2M_SUPPORT_SENML_CBOR)
    if (CUE_SUCCESS != create_composite_test_suit())
        goto exit;

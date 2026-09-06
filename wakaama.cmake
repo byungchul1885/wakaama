@@ -322,6 +322,7 @@ function(target_sources_wakaama target)
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/objects.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/observe.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/attributes.c
+                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/notify.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/packet.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/registration.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/uri.c

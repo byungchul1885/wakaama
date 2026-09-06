@@ -24,6 +24,11 @@ uint8_t observe_handleRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2
 void observe_cancel(lwm2m_context_t *contextP, uint16_t mid, void *fromSessionH);
 /* server 해제 전에 borrowed watcher를 제거한다. SSID 설정은 보존한다. */
 void observe_forgetServer(lwm2m_context_t *contextP, lwm2m_server_t *serverP);
+/* 관찰 목록/세션 수명 변경을 표시한다. context 자체는 callback 중 해제하지 않는다. */
+void observe_changedLifetime(lwm2m_context_t *contextP);
+/* 숫자형 단일 leaf의 값 사본이다. tree/buffer 소유권을 가져오지 않는다. */
+bool observe_captureValue(const lwm2m_uri_t *uriP, int count, const lwm2m_data_t *dataP,
+                           lwm2m_observe_value_t *output);
 /* uri가 NULL이면 모든 설정, 아니면 해당 경로와 자손을 해제한다. */
 void observe_clearParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP);
 /* 새 값이 있는 필드만 caller 소유 사본에 합친다. 입력/출력 주소는 같아도 된다. */

@@ -65,6 +65,7 @@ CU_ErrorCode create_reporting_test_suit(void);
 CU_ErrorCode create_management_deferred_test_suit(void);
 CU_ErrorCode create_composite_test_suit(void);
 CU_ErrorCode create_observe_test_suit(void);
+CU_ErrorCode create_notify_test_suit(void);
 void test_reset_close_connection_count(void);
 size_t test_get_close_connection_count(void);
 #endif

@@ -92,6 +92,7 @@ static int prv_parseItem(const uint8_t *buffer, size_t bufferLen, senml_record_t
         return -1;
 
     recordP->ids[0] = LWM2M_MAX_ID;
+    recordP->pathPresent = false;
     recordP->ids[1] = LWM2M_MAX_ID;
     recordP->ids[2] = LWM2M_MAX_ID;
     recordP->ids[3] = LWM2M_MAX_ID;
@@ -296,6 +297,7 @@ static int prv_parseItem(const uint8_t *buffer, size_t bufferLen, senml_record_t
         }
         if (!lwm2m_stringToUri(uriStr, length, &uri))
             return -1;
+        recordP->pathPresent = true;
         if (LWM2M_URI_IS_SET_OBJECT(&uri)) {
             recordP->ids[0] = uri.objectId;
         }
@@ -395,18 +397,26 @@ static bool prv_convertValue(const senml_record_t *recordP, lwm2m_data_t *target
 }
 
 static int prv_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen,
-                      lwm2m_data_t **dataP, bool composite);
+                      lwm2m_data_t **dataP, bool composite, lwm2m_uri_t **urisP);
 
 int senml_cbor_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen, lwm2m_data_t **dataP) {
-    return prv_parse(uriP, buffer, bufferLen, dataP, false);
+    return prv_parse(uriP, buffer, bufferLen, dataP, false, NULL);
 }
 
 int senml_cbor_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP) {
-    return prv_parse(NULL, buffer, length, dataP, true);
+    return prv_parse(NULL, buffer, length, dataP, true, NULL);
+}
+
+int senml_cbor_parse_paths(const uint8_t *buffer, size_t length, lwm2m_uri_t **urisP) {
+    lwm2m_data_t *unused = NULL;
+    if (urisP == NULL) return -1;
+    *urisP = NULL;
+    if (buffer == NULL || length == 0) return -1;
+    return prv_parse(NULL, buffer, length, &unused, false, urisP);
 }
 
 static int prv_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen,
-                      lwm2m_data_t **dataP, bool composite) {
+                      lwm2m_data_t **dataP, bool composite, lwm2m_uri_t **urisP) {
     int count;
     senml_record_t *recordArray;
     int recordIndex;
@@ -433,9 +443,10 @@ static int prv_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t buff
     count = (int)val;
     if (((uint64_t)count) != val || count <= 0 || ((size_t)count) > bufferLen / 3)
         goto error;
+    if (urisP != NULL && count > LWM2M_COMPOSITE_MAX_PATHS) return -3;
     recordArray = (senml_record_t *)lwm2m_malloc(count * sizeof(senml_record_t));
     if (recordArray == NULL)
-        goto error;
+        return urisP != NULL ? -2 : -1;
 
     baseUri[0] = '\0';
     baseTime = 0;
@@ -449,6 +460,12 @@ static int prv_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t buff
     }
     if (offset != bufferLen)
         goto error;
+
+    if (urisP != NULL) {
+        int pathCount = senml_records_to_paths(recordArray, count, urisP);
+        lwm2m_free(recordArray);
+        return pathCount;
+    }
 
     if (composite && !senml_validate_write_records(recordArray, count))
         goto error;

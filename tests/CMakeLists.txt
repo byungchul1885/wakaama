@@ -11,6 +11,7 @@ set(TEST_SOURCES
     coap_parse_message.c
     data_cbor_tests.c
     core_convert_numbers_test.c
+    core_composite_tests.c
     core_list_tests.c
     core_logging_tests.c
     core_management_deferred_tests.c

@@ -93,6 +93,7 @@ static int prv_parseItem(const uint8_t * buffer,
     memset(recordP->ids, 0xFF, 4*sizeof(uint16_t));
     memset(&recordP->value, 0, sizeof(recordP->value));
     recordP->time = 0;
+    recordP->pathPresent = false;
 
     index = 0;
     do
@@ -346,6 +347,7 @@ static int prv_parseItem(const uint8_t * buffer,
             length += nameLength;
         }
         if (!lwm2m_stringToUri(uriStr, length, &uri)) return -1;
+        recordP->pathPresent = true;
         if (LWM2M_URI_IS_SET_OBJECT(&uri))
         {
             recordP->ids[0] = uri.objectId;
@@ -591,23 +593,32 @@ error:
 }
 
 static int prv_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen,
-                      lwm2m_data_t **dataP, bool composite);
+                      lwm2m_data_t **dataP, bool composite, lwm2m_uri_t **urisP);
 
 int senml_json_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen,
                       lwm2m_data_t **dataP)
 {
-    return prv_parse(uriP, buffer, bufferLen, dataP, false);
+    return prv_parse(uriP, buffer, bufferLen, dataP, false, NULL);
 }
 
 int senml_json_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP)
 {
-    return prv_parse(NULL, buffer, length, dataP, true);
+    return prv_parse(NULL, buffer, length, dataP, true, NULL);
+}
+
+int senml_json_parse_paths(const uint8_t *buffer, size_t length, lwm2m_uri_t **urisP)
+{
+    lwm2m_data_t *unused = NULL;
+    if (urisP == NULL) return -1;
+    *urisP = NULL;
+    if (buffer == NULL || length == 0) return -1;
+    return prv_parse(NULL, buffer, length, &unused, false, urisP);
 }
 
 static int prv_parse(const lwm2m_uri_t * uriP,
                      const uint8_t * buffer,
                      size_t bufferLen,
-                     lwm2m_data_t ** dataP, bool composite)
+                     lwm2m_data_t ** dataP, bool composite, lwm2m_uri_t **urisP)
 {
     size_t index;
     int count = 0;
@@ -632,8 +643,9 @@ static int prv_parse(const lwm2m_uri_t * uriP,
     _GO_TO_NEXT_CHAR(index, buffer, bufferLen);
     count = json_countItems(buffer + index, bufferLen - index);
     if (count <= 0) goto error;
+    if (urisP != NULL && count > LWM2M_COMPOSITE_MAX_PATHS) return -3;
     recordArray = (_record_t*)lwm2m_malloc(count * sizeof(_record_t));
-    if (recordArray == NULL) goto error;
+    if (recordArray == NULL) return urisP != NULL ? -2 : -1;
     /* at this point we are sure buffer[index] is '{' and all { and } are matching */
     recordIndex = 0;
     baseUri[0] = '\0';
@@ -669,6 +681,15 @@ static int prv_parse(const lwm2m_uri_t * uriP,
     }
 
     if (buffer[index] != JSON_FOOTER) goto error;
+    if (urisP != NULL)
+    {
+        int pathCount;
+        if (index + 1 + json_skipSpace(buffer + index + 1, bufferLen - index - 1) != bufferLen)
+            goto error;
+        pathCount = senml_records_to_paths(recordArray, count, urisP);
+        lwm2m_free(recordArray);
+        return pathCount;
+    }
     if (composite && (index + 1 + json_skipSpace(buffer + index + 1, bufferLen - index - 1) != bufferLen ||
                       !senml_validate_write_records(recordArray, count))) goto error;
 

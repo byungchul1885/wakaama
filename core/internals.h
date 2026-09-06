@@ -250,6 +250,7 @@ typedef struct {
     uint16_t ids[4];
     lwm2m_data_t value; /* Any buffer will be within the parsed data */
     time_t time;
+    bool pathPresent; /* 이름 또는 유효한 base name에서 경로를 얻었는지 구분한다. */
 } senml_record_t;
 
 typedef bool (*senml_convertValue)(const senml_record_t *recordP, lwm2m_data_t *targetP);
@@ -286,6 +287,7 @@ int json_serialize(lwm2m_uri_t * uriP, int size, lwm2m_data_t * tlvP, uint8_t **
 #ifdef LWM2M_SUPPORT_SENML_JSON
 int senml_json_parse(const lwm2m_uri_t * uriP, const uint8_t * buffer, size_t bufferLen, lwm2m_data_t ** dataP);
 int senml_json_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP);
+int senml_json_parse_paths(const uint8_t *buffer, size_t length, lwm2m_uri_t **urisP);
 int senml_json_serialize(const lwm2m_uri_t * uriP, int size, const lwm2m_data_t * tlvP, uint8_t ** bufferP);
 #endif
 
@@ -303,6 +305,7 @@ int cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *dataP,
 // defined in senml_cbor.c
 int senml_cbor_parse(const lwm2m_uri_t *uriP, const uint8_t *buffer, size_t bufferLen, lwm2m_data_t **dataP);
 int senml_cbor_parse_composite(const uint8_t *buffer, size_t length, lwm2m_data_t **dataP);
+int senml_cbor_parse_paths(const uint8_t *buffer, size_t length, lwm2m_uri_t **urisP);
 int senml_cbor_serialize(const lwm2m_uri_t *uriP, int size, const lwm2m_data_t *tlvP, uint8_t **bufferP);
 #endif
 
@@ -312,6 +315,13 @@ int senml_convert_records(const lwm2m_uri_t *uriP, senml_record_t *recordArray, 
                           senml_convertValue convertValue, lwm2m_data_t **dataP);
 /* 해석된 경로를 정렬하며 중복/상하위 충돌/값 없는 Write를 거절한다. */
 bool senml_validate_write_records(senml_record_t *records, int count);
+/* 입력 record/bytes는 borrowed. 성공 시 URI 배열은 caller가 lwm2m_free한다.
+ * 실패 시 *urisP=NULL; -1은 잘못된 입력, -2는 할당 실패, -3은 경로 상한 초과다.
+ * 중복/상하위 경로도 보존하여 호출자가 모든 명시 경로의 권한을 먼저 검사할 수 있게 한다. */
+#ifndef LWM2M_COMPOSITE_MAX_PATHS
+#define LWM2M_COMPOSITE_MAX_PATHS 256
+#endif
+int senml_records_to_paths(const senml_record_t *records, int count, lwm2m_uri_t **urisP);
 lwm2m_data_t *senml_extendData(lwm2m_data_t *parentP, lwm2m_data_type_t type, uint16_t id);
 int senml_dataStrip(int size, lwm2m_data_t *dataP, lwm2m_data_t **resultP);
 lwm2m_data_t *senml_findDataItem(lwm2m_data_t *listP, size_t count, uint16_t id);

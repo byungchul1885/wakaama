@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "CUnit/Basic.h"
 
@@ -62,7 +63,13 @@ CU_ErrorCode add_tests(CU_pSuite pSuite, struct TestTable* testTable)
     return CUE_SUCCESS;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    CU_pSuite selectedSuite = NULL;
+    unsigned int failed;
+    if (argc != 1 && (argc != 3 || strcmp(argv[1], "--suite") != 0)) {
+        fprintf(stderr, "Usage: %s [--suite NAME]\n", argv[0]);
+        return 2;
+    }
     /* initialize the CUnit test registry */
     if (CUE_SUCCESS != CU_initialize_registry())
         return CU_get_error();
@@ -132,6 +139,10 @@ int main(void) {
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
    if (CUE_SUCCESS != create_management_deferred_test_suit())
        goto exit;
+#if defined(LWM2M_SUPPORT_SENML_JSON) && defined(LWM2M_SUPPORT_SENML_CBOR)
+   if (CUE_SUCCESS != create_composite_test_suit())
+       goto exit;
+#endif
 #endif
 
    if (CUE_SUCCESS != create_utils_suit())
@@ -141,14 +152,27 @@ int main(void) {
        goto exit;
 
    CU_basic_set_mode(CU_BRM_VERBOSE);
-   CU_basic_run_tests();
+   if (argc == 3) {
+       selectedSuite = CU_get_suite(argv[2]);
+       if (selectedSuite == NULL || selectedSuite->uiNumberOfTests == 0) {
+           fprintf(stderr, "Requested suite has no tests: %s\n", argv[2]);
+           CU_cleanup_registry();
+           return 2;
+       }
+       CU_basic_run_suite(selectedSuite);
+   } else {
+       CU_basic_run_tests();
+   }
    CU_basic_show_failures(CU_get_failure_list());
    printf("\n");
 
-   if (CU_get_number_of_tests_failed() > 0) {
-     return 1;
-   }
-   return 0;
+   failed = CU_get_number_of_tests_failed();
+   if (CU_get_error() != CUE_SUCCESS || CU_get_number_of_tests_run() == 0) failed++;
+   printf("{\"suite\":\"%s\",\"tests\":%u,\"assertions\":%u,\"failed\":%u}\n",
+          argc == 3 ? argv[2] : "all", CU_get_number_of_tests_run(),
+          CU_get_number_of_asserts(), failed);
+   CU_cleanup_registry();
+   return failed > 0 ? 1 : 0;
 
 exit:
    CU_cleanup_registry();

@@ -21,6 +21,47 @@
 
 #if defined(LWM2M_SUPPORT_JSON) || defined(LWM2M_SUPPORT_SENML_JSON) || defined(LWM2M_SUPPORT_SENML_CBOR)
 
+int senml_records_to_paths(const senml_record_t *records, int count, lwm2m_uri_t **urisP)
+{
+    lwm2m_uri_t *uris;
+    int i;
+    if (urisP == NULL) return -1;
+    *urisP = NULL;
+    if (records == NULL || count <= 0) return -1;
+    if (count > LWM2M_COMPOSITE_MAX_PATHS) return -3;
+    for (i = 0; i < count; ++i)
+    {
+        int depth;
+        bool ended = false;
+        if (!records[i].pathPresent || records[i].value.type != LWM2M_TYPE_UNDEFINED) return -1;
+        for (depth = 0; depth < 4; ++depth)
+        {
+            if (records[i].ids[depth] == LWM2M_MAX_ID) ended = true;
+            else if (ended) return -1;
+        }
+    }
+    uris = lwm2m_malloc((size_t)count * sizeof(*uris));
+    if (uris == NULL) return -2;
+    for (i = 0; i < count; ++i)
+    {
+        LWM2M_URI_RESET(uris + i);
+        uris[i].objectId = records[i].ids[0];
+        uris[i].instanceId = records[i].ids[1];
+        uris[i].resourceId = records[i].ids[2];
+#ifndef LWM2M_VERSION_1_0
+        uris[i].resourceInstanceId = records[i].ids[3];
+#else
+        if (records[i].ids[3] != LWM2M_MAX_ID)
+        {
+            lwm2m_free(uris);
+            return -1;
+        }
+#endif
+    }
+    *urisP = uris;
+    return count;
+}
+
 static int prv_compareWriteRecord(const void *left, const void *right)
 {
     const senml_record_t *a = left;

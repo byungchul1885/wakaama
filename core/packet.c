@@ -179,6 +179,8 @@ static lwm2m_dm_operation_t prv_dm_operation(const coap_packet_t *requestP,
                    : LWM2M_DM_OPERATION_WRITE;
     case COAP_IPATCH:
         return LWM2M_DM_OPERATION_WRITE;
+    case COAP_FETCH:
+        return LWM2M_DM_OPERATION_READ_COMPOSITE;
     case COAP_DELETE:
         return LWM2M_DM_OPERATION_DELETE;
     default:
@@ -738,13 +740,19 @@ static char *prv_block1_key(coap_packet_t *message)
 {
     char *uri = coap_get_packet_uri_as_string(message);
 #ifndef LWM2M_VERSION_1_0
-    if (uri != NULL && message->code == COAP_IPATCH)
+    if (uri != NULL && (message->code == COAP_IPATCH || message->code == COAP_FETCH))
     {
         /* 기존 Write와 Composite 또는 서로 다른 형식의 block을 합치지 않는다. */
-        size_t capacity = strlen(uri) + 32U;
+        size_t capacity = strlen(uri) + 64U;
         char *key = lwm2m_malloc(capacity);
-        if (key != NULL)
-            snprintf(key, capacity, "iPATCH:%u:%u:%s",
+        if (key != NULL && message->code == COAP_FETCH)
+            snprintf(key, capacity, "FETCH:%u:%u:%u:%u:%s",
+                     IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) ? 1U : 0U,
+                     (unsigned int)message->content_type, (unsigned int)message->accept_num,
+                     message->accept_num > 0 ? (unsigned int)message->accept[0] : 0U, uri);
+        else if (key != NULL)
+            snprintf(key, capacity, "%s:%u:%u:%s",
+                     message->code == COAP_FETCH ? "FETCH" : "iPATCH",
                      IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) ? 1U : 0U,
                      (unsigned int)message->content_type, uri);
         lwm2m_free(uri);
@@ -772,7 +780,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
         LOG_ARG_DBG("Payload: %.*s", (int)message->payload_len, STR_NULL2EMPTY(message->payload));
         if ((message->code >= COAP_GET && message->code <= COAP_DELETE)
 #ifndef LWM2M_VERSION_1_0
-            || message->code == COAP_IPATCH
+            || message->code == COAP_IPATCH || message->code == COAP_FETCH
 #endif
            )
         {
@@ -1002,7 +1010,8 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             {
                 /* Save original payload pointer for later freeing. Payload in response may be updated. */
                 uint8_t *payload = response->payload;
-                if (IS_OPTION(message, COAP_OPTION_BLOCK2) && !IS_OPTION(response, COAP_OPTION_BLOCK2))
+                if (response->code == COAP_205_CONTENT && IS_OPTION(message, COAP_OPTION_BLOCK2) &&
+                    !IS_OPTION(response, COAP_OPTION_BLOCK2))
                 {
                     /* get offset for blockwise transfers */
                     if (coap_get_header_block2(message, &block_num, NULL, &block_size, &block_offset))

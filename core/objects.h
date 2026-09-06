@@ -59,6 +59,9 @@ uint8_t object_writeInstance(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m
 #ifndef LWM2M_VERSION_1_0
 uint8_t object_writeComposite(lwm2m_context_t *contextP, lwm2m_media_type_t format,
                               const uint8_t *buffer, size_t length);
+/* uriP는 borrowed. 출력 트리는 caller가 lwm2m_data_free(*sizeP, *dataP)로 해제한다.
+ * 진입 시 출력 포인터의 기존 버퍼를 인계받지 않는다. 실패 시 출력은 0/NULL이다.
+ * Read/Send 공용 best-effort 집계이며 5.xx는 부분 성공으로 숨기지 않는다. */
 uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, size_t numUris, int *sizeP,
                                  lwm2m_data_t **dataP);
 #endif

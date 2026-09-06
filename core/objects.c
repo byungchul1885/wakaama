@@ -51,6 +51,7 @@
 
 */
 #include "internals.h"
+#include <limits.h>
 
 #ifdef LWM2M_CLIENT_MODE
 
@@ -1429,216 +1430,181 @@ uint8_t object_writeInstance(lwm2m_context_t * contextP,
 }
 
 #ifndef LWM2M_VERSION_1_0
-uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, size_t numUris, int *sizeP,
-                                 lwm2m_data_t **dataP) {
-    size_t i;
-    int count;
-    uint8_t result = COAP_205_CONTENT;
+/* 배열 병합은 leaf 버퍼 소유권을 옮긴다. 실패해도 양쪽 트리는 각각 해제할 수 있다. */
+static bool prv_compositeContainer(lwm2m_data_type_t type)
+{
+    return type == LWM2M_TYPE_OBJECT || type == LWM2M_TYPE_OBJECT_INSTANCE ||
+           type == LWM2M_TYPE_MULTIPLE_RESOURCE;
+}
 
+static int prv_mergeComposite(size_t *countP, lwm2m_data_t **targetP,
+                              size_t sourceCount, lwm2m_data_t *sourceP)
+{
+    lwm2m_data_t *grown;
+    size_t i;
+    if (sourceCount == 0) return 1;
+    if (*countP > (size_t)INT_MAX || sourceCount > (size_t)INT_MAX - *countP) return 0;
+    grown = lwm2m_data_new((int)(*countP + sourceCount));
+    if (grown == NULL) return 0;
+    if (*countP != 0) memcpy(grown, *targetP, *countP * sizeof(*grown));
+    lwm2m_free(*targetP);
+    *targetP = grown;
+    for (i = 0; i < sourceCount; ++i)
+    {
+        size_t j;
+        for (j = 0; j < *countP; ++j)
+            if (grown[j].id == sourceP[i].id) break;
+        if (j == *countP)
+        {
+            grown[j] = sourceP[i];
+            memset(sourceP + i, 0, sizeof(*sourceP));
+            ++*countP;
+        }
+        else if (prv_compositeContainer(grown[j].type) &&
+                 grown[j].type == sourceP[i].type)
+        {
+            if (!prv_mergeComposite(&grown[j].value.asChildren.count,
+                                    &grown[j].value.asChildren.array,
+                                    sourceP[i].value.asChildren.count,
+                                    sourceP[i].value.asChildren.array)) return 0;
+        }
+        else
+        {
+            /* 겹치는 경로의 타입 변경은 객체 계약 위반이다. 부분 성공으로 숨기지 않는다. */
+            if (prv_compositeContainer(grown[j].type) || prv_compositeContainer(sourceP[i].type))
+                return 0;
+            if (grown[j].type == LWM2M_TYPE_STRING || grown[j].type == LWM2M_TYPE_OPAQUE ||
+                grown[j].type == LWM2M_TYPE_CORE_LINK)
+                lwm2m_free(grown[j].value.asBuffer.buffer);
+            grown[j] = sourceP[i];
+            memset(sourceP + i, 0, sizeof(*sourceP));
+        }
+    }
+    return 1;
+}
+
+static bool prv_compositeCovers(const lwm2m_uri_t *parent, const lwm2m_uri_t *child)
+{
+    return !LWM2M_URI_IS_SET_OBJECT(parent) ||
+           (parent->objectId == child->objectId &&
+            (!LWM2M_URI_IS_SET_INSTANCE(parent) ||
+             (parent->instanceId == child->instanceId &&
+              (!LWM2M_URI_IS_SET_RESOURCE(parent) ||
+               (parent->resourceId == child->resourceId &&
+                (!LWM2M_URI_IS_SET_RESOURCE_INSTANCE(parent) ||
+                 parent->resourceInstanceId == child->resourceInstanceId))))));
+}
+
+/* callback 이후 owner의 최신 목록을 재조회한다. 목록 노드나 next를 보관하지 않는다. */
+static uint8_t prv_readCompositePath(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
+                                    size_t *countP, lwm2m_data_t **dataP)
+{
+    lwm2m_object_t *objectP;
+    if (contextP->currentDmRequestActive && contextP->compositeAccessCallback != NULL &&
+        !contextP->compositeAccessCallback(contextP, contextP->currentDmServerShortId, uriP,
+                                           false, contextP->compositeAccessUserData))
+        return COAP_401_UNAUTHORIZED;
+    if (!LWM2M_URI_IS_SET_OBJECT(uriP) || !LWM2M_URI_IS_SET_INSTANCE(uriP))
+    {
+        uint32_t nextId = 0;
+        uint8_t lastResult = COAP_404_NOT_FOUND;
+        bool any = false;
+        while (nextId < LWM2M_MAX_ID)
+        {
+            lwm2m_uri_t child = *uriP;
+            uint8_t result;
+            if (!LWM2M_URI_IS_SET_OBJECT(uriP))
+            {
+                for (objectP = contextP->objectList; objectP != NULL; objectP = objectP->next)
+                    if (objectP->objID >= nextId && objectP->objID != LWM2M_SECURITY_OBJECT_ID &&
+                        objectP->objID != LWM2M_OSCORE_OBJECT_ID) break;
+                if (objectP == NULL) break;
+                child.objectId = objectP->objID;
+                nextId = (uint32_t)objectP->objID + 1;
+            }
+            else
+            {
+                lwm2m_list_t *instanceP;
+                objectP = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
+                if (objectP == NULL) break;
+                for (instanceP = objectP->instanceList; instanceP != NULL; instanceP = instanceP->next)
+                    if (instanceP->id >= nextId) break;
+                if (instanceP == NULL) break;
+                child.instanceId = instanceP->id;
+                nextId = (uint32_t)instanceP->id + 1;
+            }
+            result = prv_readCompositePath(contextP, &child, countP, dataP);
+            if (result >= COAP_500_INTERNAL_SERVER_ERROR) return result;
+            if (result == COAP_205_CONTENT) any = true;
+            else if (result != COAP_404_NOT_FOUND) lastResult = result;
+        }
+        return any ? COAP_205_CONTENT : lastResult;
+    }
+    else
+    {
+        int size = 0;
+        lwm2m_data_t *values = NULL;
+        lwm2m_data_t objectNode;
+        lwm2m_data_t *instance;
+        uint8_t result = object_readData(contextP, uriP, &size, &values);
+        if (result != COAP_205_CONTENT) return result;
+        if (size <= 0) { lwm2m_data_free(size, values); return COAP_404_NOT_FOUND; }
+        instance = lwm2m_data_new(1);
+        if (instance == NULL) { lwm2m_data_free(size, values); return COAP_500_INTERNAL_SERVER_ERROR; }
+        instance->type = LWM2M_TYPE_OBJECT_INSTANCE;
+        instance->id = uriP->instanceId;
+        instance->value.asChildren.count = (size_t)size;
+        instance->value.asChildren.array = values;
+        memset(&objectNode, 0, sizeof(objectNode));
+        objectNode.type = LWM2M_TYPE_OBJECT;
+        objectNode.id = uriP->objectId;
+        objectNode.value.asChildren.count = 1;
+        objectNode.value.asChildren.array = instance;
+        if (!prv_mergeComposite(countP, dataP, 1, &objectNode))
+            result = COAP_500_INTERNAL_SERVER_ERROR;
+        /* 이동한 노드는 0 초기화되어 있다. 남은 소유물만 해제한다. */
+        if (objectNode.type == LWM2M_TYPE_OBJECT)
+            lwm2m_data_free((int)objectNode.value.asChildren.count, objectNode.value.asChildren.array);
+        return result;
+    }
+}
+
+uint8_t object_readCompositeData(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, size_t numUris,
+                                int *sizeP, lwm2m_data_t **dataP)
+{
+    size_t count = 0;
+    size_t i;
+    uint8_t result = COAP_404_NOT_FOUND;
     *sizeP = 0;
     *dataP = NULL;
-
-    for (i = 0; i < numUris; i++) {
-        int partialSize = 0;
-        lwm2m_data_t *partialDataP = NULL;
-        uint8_t res;
-        if (uriP[i].objectId == LWM2M_SECURITY_OBJECT_ID || uriP[i].objectId == LWM2M_OSCORE_OBJECT_ID) {
-            res = COAP_401_UNAUTHORIZED;
-        } else {
-            res = object_readData(contextP, uriP + i, &partialSize, &partialDataP);
+    if (uriP == NULL && numUris != 0) return COAP_400_BAD_REQUEST;
+    for (i = 0; i < numUris; ++i)
+    {
+        size_t j;
+        uint8_t partialResult;
+        bool covered = false;
+        /* Send에서도 쓰는 helper이므로 금지 대상은 조회하지 않고 best-effort로 제외한다.
+         * 외부 Read Composite는 정규화 전에 명시적인 금지 경로를 일괄 거절한다. */
+        if (uriP[i].objectId == LWM2M_SECURITY_OBJECT_ID || uriP[i].objectId == LWM2M_OSCORE_OBJECT_ID)
+        { result = COAP_401_UNAUTHORIZED; continue; }
+        for (j = 0; j < numUris; ++j)
+        {
+            if (i != j && prv_compositeCovers(uriP + j, uriP + i) &&
+                (j < i || !prv_compositeCovers(uriP + i, uriP + j)))
+            { covered = true; break; }
         }
-        if (res == COAP_205_CONTENT && partialSize > 0) {
-            size_t *countP;
-            lwm2m_data_t **childrenP;
-            bool finished = false;
-            lwm2m_data_t *parentP = NULL;
-            size_t j;
-
-            if (LWM2M_URI_IS_SET_OBJECT(uriP + i)) {
-                // Find the object
-                for (j = 0; (int)j < *sizeP; j++) {
-                    if (uriP[i].objectId == (*dataP)[j].id) {
-                        if (LWM2M_URI_IS_SET_INSTANCE(uriP + i)) {
-                            parentP = (*dataP) + j;
-                        } else {
-                            // Duplicate or overlapping reads. Replace all instances.
-                            lwm2m_data_free((*dataP)[j].value.asChildren.count, (*dataP)[j].value.asChildren.array);
-                            (*dataP)[j].value.asChildren.count = partialSize;
-                            (*dataP)[j].value.asChildren.array = partialDataP;
-                            finished = true;
-                        }
-                        break;
-                    }
-                }
-                if ((int)j == *sizeP) {
-                    // Need to add a new object
-                    if (0 != lwm2m_data_append_one(sizeP, dataP, LWM2M_TYPE_OBJECT, uriP[i].objectId)) {
-                        parentP = *dataP + *sizeP - 1;
-
-                        if (!LWM2M_URI_IS_SET_INSTANCE(uriP + i)) {
-                            // Need to add the instances
-                            parentP->value.asChildren.count = partialSize;
-                            parentP->value.asChildren.array = partialDataP;
-                            finished = true;
-                        }
-                    } else {
-                        lwm2m_data_free(partialSize, partialDataP);
-                        if (result == COAP_205_CONTENT) {
-                            result = COAP_400_BAD_REQUEST;
-                        }
-                        finished = true;
-                    }
-                }
-            } else {
-                // Root level. Add objects
-                if (0 == lwm2m_data_append(sizeP, dataP, partialSize, partialDataP)) {
-                    lwm2m_data_free(partialSize, partialDataP);
-                    if (result == COAP_205_CONTENT) {
-                        result = COAP_400_BAD_REQUEST;
-                    }
-                }
-                finished = true;
-            }
-
-            if (!finished) {
-                // Find the instance
-                countP = &parentP->value.asChildren.count;
-                childrenP = &parentP->value.asChildren.array;
-                for (j = 0; j < *countP; j++) {
-                    if (uriP[i].instanceId == (*childrenP)[j].id) {
-                        if (LWM2M_URI_IS_SET_RESOURCE(uriP + i)) {
-                            parentP = (*childrenP) + j;
-                        } else {
-                            // Duplicate or overlapping reads. replace all resources.
-                            lwm2m_data_free((*childrenP)[j].value.asChildren.count,
-                                            (*childrenP)[j].value.asChildren.array);
-                            (*childrenP)[j].value.asChildren.count = partialSize;
-                            (*childrenP)[j].value.asChildren.array = partialDataP;
-                            finished = true;
-                        }
-                        break;
-                    }
-                }
-                if (j == *countP) {
-                    // Need to add a new instance
-                    count = parentP->value.asChildren.count;
-                    if (0 != lwm2m_data_append_one(&count, &parentP->value.asChildren.array, LWM2M_TYPE_OBJECT_INSTANCE,
-                                                   uriP[i].instanceId)) {
-                        parentP->value.asChildren.count = count;
-                        parentP = parentP->value.asChildren.array + count - 1;
-
-                        if (!LWM2M_URI_IS_SET_RESOURCE(uriP + i)) {
-                            parentP->value.asChildren.count = partialSize;
-                            parentP->value.asChildren.array = partialDataP;
-                            finished = true;
-                        }
-                    } else {
-                        lwm2m_data_free(partialSize, partialDataP);
-                        if (result == COAP_205_CONTENT) {
-                            result = COAP_400_BAD_REQUEST;
-                        }
-                        finished = true;
-                    }
-                }
-            }
-
-            if (!finished) {
-                // Find the resource
-                countP = &parentP->value.asChildren.count;
-                childrenP = &parentP->value.asChildren.array;
-                for (j = 0; j < *countP; j++) {
-                    if (uriP[i].resourceId == (*childrenP)[j].id) {
-                        if (LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uriP + i)) {
-                            parentP = (*childrenP) + j;
-                        } else {
-                            // Duplicate or overlapping reads.
-                            if ((*childrenP)[j].type == LWM2M_TYPE_MULTIPLE_RESOURCE) {
-                                // Replace the resource instances
-                                lwm2m_data_free((*childrenP)[j].value.asChildren.count,
-                                                (*childrenP)[j].value.asChildren.array);
-                                (*childrenP)[j].value.asChildren.count = partialSize;
-                                (*childrenP)[j].value.asChildren.array = partialDataP;
-                            } else {
-                                // Overwrite the value
-                                memcpy((*childrenP) + j, partialDataP, sizeof(lwm2m_data_t));
-                                // Shallow free
-                                memset(partialDataP, 0, sizeof(lwm2m_data_t));
-                                lwm2m_data_free(partialSize, partialDataP);
-                            }
-                            finished = true;
-                        }
-                        break;
-                    }
-                }
-                if (j == *countP) {
-                    // Need to add a new resource
-                    count = parentP->value.asChildren.count;
-                    if (0 != lwm2m_data_append_one(&count, &parentP->value.asChildren.array, LWM2M_TYPE_UNDEFINED,
-                                                   uriP[i].resourceId)) {
-                        parentP->value.asChildren.count = count;
-                        parentP = parentP->value.asChildren.array + count - 1;
-
-                        memcpy(parentP, partialDataP, sizeof(lwm2m_data_t));
-                        // Shallow free
-                        memset(partialDataP, 0, sizeof(lwm2m_data_t));
-                        lwm2m_data_free(partialSize, partialDataP);
-                        finished = true;
-                    } else {
-                        lwm2m_data_free(partialSize, partialDataP);
-                        if (result == COAP_205_CONTENT) {
-                            result = COAP_400_BAD_REQUEST;
-                        }
-                        finished = true;
-                    }
-                }
-            }
-
-            if (!finished) {
-                // Find the resource instance
-                countP = &parentP->value.asChildren.count;
-                childrenP = &parentP->value.asChildren.array;
-                for (j = 0; j < *countP; j++) {
-                    if (uriP[i].resourceInstanceId == (*childrenP)[j].id) {
-                        // Duplicate or overlapping reads.
-                        // Overwrite the value
-                        memcpy((*childrenP) + j, partialDataP->value.asChildren.array, sizeof(lwm2m_data_t));
-                        // Shallow free
-                        memset(partialDataP, 0, sizeof(lwm2m_data_t));
-                        lwm2m_data_free(partialSize, partialDataP);
-                        break;
-                    }
-                }
-                if (j == *countP) {
-                    // Need to add a new resource instance
-                    count = parentP->value.asChildren.count;
-                    if (0 != lwm2m_data_append_one(&count, &parentP->value.asChildren.array, LWM2M_TYPE_UNDEFINED,
-                                                   uriP[i].resourceInstanceId)) {
-                        parentP->value.asChildren.count = count;
-                        parentP = parentP->value.asChildren.array + count - 1;
-                        memcpy(parentP, partialDataP->value.asChildren.array, sizeof(lwm2m_data_t));
-                        // Shallow free
-                        memset(partialDataP, 0, sizeof(lwm2m_data_t));
-                        lwm2m_data_free(partialSize, partialDataP);
-                    } else {
-                        lwm2m_data_free(partialSize, partialDataP);
-                        if (result == COAP_205_CONTENT) {
-                            result = COAP_400_BAD_REQUEST;
-                        }
-                    }
-                }
-            }
-        } else if (result == COAP_205_CONTENT && res != COAP_404_NOT_FOUND) {
-            result = res;
+        if (covered) continue;
+        partialResult = prv_readCompositePath(contextP, uriP + i, &count, dataP);
+        if (partialResult >= COAP_500_INTERNAL_SERVER_ERROR)
+        {
+            lwm2m_data_free((int)count, *dataP);
+            *dataP = NULL;
+            return partialResult;
         }
+        if (partialResult != COAP_404_NOT_FOUND) result = partialResult;
     }
-
-    if (*sizeP > 0) {
-        result = COAP_205_CONTENT;
-    } else if (result == COAP_205_CONTENT) {
-        result = COAP_404_NOT_FOUND;
-    }
-
-    return result;
+    *sizeP = (int)count;
+    return count > 0 ? COAP_205_CONTENT : result;
 }
 #endif
 

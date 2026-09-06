@@ -35,6 +35,13 @@ set(TARGET_NAME lwm2munittests)
 add_executable(${TARGET_NAME})
 target_sources(${TARGET_NAME} PRIVATE ${TEST_SOURCES})
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(${TARGET_NAME} PRIVATE helper/faults.c)
+    target_compile_definitions(${TARGET_NAME} PRIVATE WAKAAMA_TEST_FAULTS)
+    target_link_options(${TARGET_NAME} PRIVATE
+        -Wl,--wrap=malloc -Wl,--wrap=free -Wl,--wrap=lwm2m_gettime)
+endif()
+
 set_defines(${TARGET_NAME})
 
 # link CUnit

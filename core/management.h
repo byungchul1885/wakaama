@@ -30,6 +30,9 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t *contextP,
                                         uint16_t exchangeMid);
 #ifndef LWM2M_VERSION_1_0
 void dm_clearDeferredRequests(lwm2m_context_t *contextP);
+/* serverShortId=0이면 전체 해제. 그 외에는 해당 세션 세대만 제거한다. */
+void dm_clearCompositeSnapshots(lwm2m_context_t *contextP, uint16_t serverShortId, uint64_t generation);
+void dm_expireCompositeSnapshots(lwm2m_context_t *contextP, time_t now);
 size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
                                          uint16_t shortServerId,
                                          uint64_t generation);

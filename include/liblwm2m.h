@@ -895,7 +895,9 @@ typedef enum
     LWM2M_DM_OPERATION_WRITE_ATTRIBUTES,
     LWM2M_DM_OPERATION_EXECUTE,
     LWM2M_DM_OPERATION_CREATE,
-    LWM2M_DM_OPERATION_DELETE
+    LWM2M_DM_OPERATION_DELETE,
+    /* 일반 Read와 별도 전달 증거로 처리한다. URI는 root이며 경로는 payload에 있다. */
+    LWM2M_DM_OPERATION_READ_COMPOSITE
 } lwm2m_dm_operation_t;
 
 typedef struct
@@ -968,6 +970,14 @@ typedef uint8_t (*lwm2m_reporting_async_send_callback_t)(
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
 typedef uint32_t lwm2m_deferred_request_id_t;
 typedef struct _lwm2m_deferred_request_ lwm2m_deferred_request_t;
+typedef struct _lwm2m_composite_snapshot_ lwm2m_composite_snapshot_t;
+/* 동기적인 읽기 전용 검사다. 경로/context는 borrowed이며 callback 안에서 객체,
+ * session 또는 snapshot을 삭제/변경하지 않는다. true는 역할/가시성 허용이며
+ * 리소스 R/W 및 동적 ACL의 전체 검사를 대체하지 않는다. */
+typedef bool (*lwm2m_composite_access_callback_t)(lwm2m_context_t *contextP, uint16_t serverShortId,
+    const lwm2m_uri_t *uriP, bool writing, void *userData);
+void lwm2m_set_composite_access_callback(lwm2m_context_t *contextP,
+    lwm2m_composite_access_callback_t callback, void *userData);
 #endif
 
 struct _lwm2m_context_
@@ -998,6 +1008,10 @@ struct _lwm2m_context_
     uint16_t             currentDmTransportMessageId; // deferred 응답 판별에 사용하는 현재 패킷 MID
     lwm2m_deferred_request_id_t currentDmDeferredRequestId;
     lwm2m_deferred_request_t *deferredRequestList;
+    /* context 소유. 서버/세션은 stable ID만 보관하고 close/만료 때 bytes와 함께 해제한다. */
+    lwm2m_composite_snapshot_t *compositeSnapshots;
+    lwm2m_composite_access_callback_t compositeAccessCallback;
+    void *compositeAccessUserData;
     lwm2m_deferred_request_id_t nextDeferredRequestId;
     lwm2m_random_callback_t randomCallback;
     void *               randomCallbackUserData;

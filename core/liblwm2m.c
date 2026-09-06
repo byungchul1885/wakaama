@@ -95,6 +95,9 @@ void lwm2m_close_server_session(lwm2m_context_t *contextP, lwm2m_server_t *serve
 
     if (contextP == NULL || serverP == NULL)
         return;
+#ifndef LWM2M_VERSION_1_0
+    dm_clearCompositeSnapshots(contextP, serverP->shortID, serverP->sessionGeneration);
+#endif
     if (serverP->sessionH == NULL)
     {
         prv_clear_server_block_data(serverP);
@@ -228,6 +231,7 @@ void lwm2m_close(lwm2m_context_t * contextP)
     LOG_DBG("Entering");
 #ifndef LWM2M_VERSION_1_0
     dm_clearDeferredRequests(contextP);
+    dm_clearCompositeSnapshots(contextP, 0, 0);
 #endif
     lwm2m_deregister(contextP);
     prv_deleteServerList(contextP);
@@ -428,6 +432,9 @@ int lwm2m_step(lwm2m_context_t * contextP,
     if (tv_sec < 0) return COAP_500_INTERNAL_SERVER_ERROR;
 
 #ifdef LWM2M_CLIENT_MODE
+#ifndef LWM2M_VERSION_1_0
+    dm_expireCompositeSnapshots(contextP, tv_sec);
+#endif
     LOG_ARG_DBG("State: %s", STR_STATE(contextP->state));
     // state can also be modified in bootstrap_handleCommand().
 

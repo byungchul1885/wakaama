@@ -104,6 +104,7 @@ typedef enum {
   COAP_POST,
   COAP_PUT,
   COAP_DELETE,
+  COAP_FETCH = 5,
   COAP_IPATCH = 7
 } coap_method_t;
 

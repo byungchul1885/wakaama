@@ -1238,7 +1238,12 @@ static uint8_t atomic_write_request(write_state_t *state, const uint8_t *payload
     if (mode == 1) objects[0].next = NULL;
     if (mode == 2) server.shortID = 2;
     lwm2m_set_composite_access_callback(&context, write_access, state);
-    if (mode != 3) lwm2m_set_composite_write_callback(&context, atomic_write_owner, state);
+    if (mode != 3) {
+        lwm2m_set_composite_write_callback(&context, atomic_write_owner, true, state);
+        CU_ASSERT_TRUE(context.compositeWriteDurableBlock1);
+        lwm2m_set_composite_write_callback(&context, atomic_write_owner, false, state);
+        CU_ASSERT_FALSE(context.compositeWriteDurableBlock1);
+    }
     coap_init_message(&request, COAP_TYPE_CON, COAP_IPATCH, 800);
     coap_set_header_content_type(&request, format);
     coap_set_payload(&request, (uint8_t *)payload, length);
@@ -1247,8 +1252,9 @@ static uint8_t atomic_write_request(write_state_t *state, const uint8_t *payload
     coap_free_header(&request);
     coap_free_header(&response);
     CU_ASSERT_FALSE(context.currentDmRequestActive);
-    lwm2m_set_composite_write_callback(&context, NULL, NULL);
+    lwm2m_set_composite_write_callback(&context, NULL, true, NULL);
     CU_ASSERT_PTR_NULL(context.compositeWriteCallback);
+    CU_ASSERT_FALSE(context.compositeWriteDurableBlock1);
     return result;
 }
 

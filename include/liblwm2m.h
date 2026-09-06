@@ -988,11 +988,13 @@ void lwm2m_set_composite_access_callback(lwm2m_context_t *contextP,
  * 실패 반환 때 부분 반영과 외부 IO는 없어야 한다. core는 객체별 순차 Write나 보상을 하지 않는다.
  * 성공은 2.04이며 비동기 수락/지연 응답은 지원하지 않는다. context/session을 닫지 않는다.
  * 현재 IID 존재 검사는 owner의 durable replay 판정 뒤 수행한다. 삭제 후 옛 요청 재전송이
- * 새 세대에 적용되지 않도록 할 책임도 owner에 있다. NULL로 해제하면 기존 단일 객체 경로다. */
+ * 새 세대에 적용되지 않도록 할 책임도 owner에 있다. NULL로 해제하면 기존 단일 객체 경로다.
+ * durableBlock1은 완료 재전송을 owner가 영속 교환으로 판정할 때만 true다. 기존 객체별
+ * callback/flag 유무와 독립적이며 callback 해제 때 함께 초기화된다. */
 typedef uint8_t (*lwm2m_composite_write_callback_t)(lwm2m_context_t *contextP,
     lwm2m_media_type_t format, size_t count, const lwm2m_data_t *objects, void *userData);
 void lwm2m_set_composite_write_callback(lwm2m_context_t *contextP,
-    lwm2m_composite_write_callback_t callback, void *userData);
+    lwm2m_composite_write_callback_t callback, bool durableBlock1, void *userData);
 typedef enum {
     LWM2M_COMPOSITE_READ_SUBMITTED,
     LWM2M_COMPOSITE_READ_RELEASED
@@ -1044,6 +1046,7 @@ struct _lwm2m_context_
     lwm2m_composite_access_callback_t compositeAccessCallback;
     void *compositeAccessUserData;
     lwm2m_composite_write_callback_t compositeWriteCallback;
+    bool compositeWriteDurableBlock1;
     void *compositeWriteUserData;
     lwm2m_composite_read_event_callback_t compositeReadEventCallback;
     void *compositeReadEventUserData;

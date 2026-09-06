@@ -307,6 +307,7 @@ static bool prv_durable_block1_exchange(lwm2m_context_t *contextP, coap_packet_t
 #ifndef LWM2M_VERSION_1_0
     if (message->code==COAP_IPATCH) {
         bool found=false;
+        if (contextP->compositeWriteCallback != NULL) return contextP->compositeWriteDurableBlock1;
         /* root Composite는 모든 등록 consumer가 영속 교환을 선언했을 때만 허용한다. */
         for (object=contextP->objectList;object!=NULL;object=object->next) {
             if (object->writeCompositeFunc==NULL) continue;

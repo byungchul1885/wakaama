@@ -422,10 +422,11 @@ static void prv_updateServerInfo(lwm2m_context_t * contextP, lwm2m_object_t *ser
 
 #ifndef LWM2M_VERSION_1_0
 void lwm2m_set_composite_write_callback(lwm2m_context_t *contextP,
-    lwm2m_composite_write_callback_t callback, void *userData)
+    lwm2m_composite_write_callback_t callback, bool durableBlock1, void *userData)
 {
     if (contextP == NULL) return;
     contextP->compositeWriteCallback = callback;
+    contextP->compositeWriteDurableBlock1 = callback != NULL && durableBlock1;
     contextP->compositeWriteUserData = userData;
 }
 

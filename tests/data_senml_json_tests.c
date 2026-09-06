@@ -525,14 +525,14 @@ static void senml_json_test_23(void) {
     lwm2m_data_t *dataP = lwm2m_data_new(1);
     CU_ASSERT_PTR_NOT_NULL_FATAL(dataP)
     lwm2m_data_encode_opaque(rawData, sizeof(rawData), dataP);
-    const char *buffer = "[{\"bn\":\"/34/0/2\",\"vd\":\"AQIDBAU=\"}]";
+    const char *buffer = "[{\"bn\":\"/34/0/2\",\"vd\":\"AQIDBAU\"}]";
     senml_json_test_raw("/34/0/2", (uint8_t *)buffer, strlen(buffer), LWM2M_CONTENT_SENML_JSON, "23a");
     senml_json_test_data_and_compare("/34/0/2", LWM2M_CONTENT_SENML_JSON, dataP, 1, "23b", (uint8_t *)buffer,
                                      strlen(buffer));
     lwm2m_data_free(1, dataP);
 
     /* This test is added for https://github.com/eclipse-wakaama/wakaama/issues/274 */
-    const char *buffer2 = "[{\"bn\":\"/34/0/2\",\"vd\":\"MA==\"}]";
+    const char *buffer2 = "[{\"bn\":\"/34/0/2\",\"vd\":\"MA\"}]";
     senml_json_test_raw("/34/0/2", (uint8_t *)buffer2, strlen(buffer2), LWM2M_CONTENT_SENML_JSON, "23c");
 }
 
@@ -620,7 +620,71 @@ static void senml_json_test_26(void) {
     senml_json_test_raw("/34/0/2", (uint8_t *)buffer2, strlen(buffer2), LWM2M_CONTENT_SENML_JSON, "26b");
 }
 
+static void senml_json_opaque_contract(void) {
+    static const struct {
+        const char *input;
+        const char *canonical;
+        uint8_t bytes[5];
+        size_t length;
+    } cases[] = {
+        {"", "", {0}, 0},
+        {"AA", "AA", {0}, 1},
+        {"_w", "_w", {0xff}, 1},
+        {"__8", "__8", {0xff,0xff}, 2},
+        {"____", "____", {0xff,0xff,0xff}, 3},
+        {"_____w", "_____w", {0xff,0xff,0xff,0xff}, 4},
+        {"______8", "______8", {0xff,0xff,0xff,0xff,0xff}, 5},
+        {"-_8", "-_8", {0xfb,0xff}, 2},
+        {"_wD_", "_wD_", {0xff,0,0xff}, 3},
+        {"/w==", "_w", {0xff}, 1},
+        {"//8=", "__8", {0xff,0xff}, 2},
+        {"////", "____", {0xff,0xff,0xff}, 3},
+        {"+/8=", "-_8", {0xfb,0xff}, 2},
+        {"+/8", "-_8", {0xfb,0xff}, 2},
+        {"\\u005f\\u0077", "_w", {0xff}, 1},
+        {"\\/w==", "_w", {0xff}, 1}
+    };
+    static const char *invalid[] = {
+        "A", "AAAAA", "=", "====", "AA=", "AA===", "AAA==", "AAAA=", "AA==AA==",
+        "A=AA", "AA A", "AA\\n", "AA\\u0000", "AA*", "-_8=", "+_8", "-/8", "AB", "AAB", "/x==", "//9="
+    };
+    lwm2m_uri_t uri;
+    size_t i;
+    CU_ASSERT_TRUE_FATAL(lwm2m_stringToUri("/34/0/2", 7, &uri));
+    for (i = 0; i < sizeof(cases)/sizeof(cases[0]); i++) {
+        char input[128], expected[128];
+        lwm2m_data_t *parsed = NULL;
+        lwm2m_media_type_t format = LWM2M_CONTENT_SENML_JSON;
+        uint8_t *wire = NULL;
+        int count, length;
+        snprintf(input, sizeof(input), "[{\"bn\":\"/34/0/2\",\"vd\":\"%s\"}]", cases[i].input);
+        snprintf(expected, sizeof(expected), "[{\"bn\":\"/34/0/2\",\"vd\":\"%s\"}]", cases[i].canonical);
+        count = lwm2m_data_parse(&uri, (uint8_t *)input, strlen(input), format, &parsed);
+        if (count != 1) fprintf(stderr, "Opaque fixture 실패: %s count=%d\n", cases[i].input, count);
+        CU_ASSERT_EQUAL_FATAL(count, 1);
+        CU_ASSERT_EQUAL(parsed->id, 2);
+        CU_ASSERT_EQUAL(parsed->type, LWM2M_TYPE_OPAQUE);
+        CU_ASSERT_EQUAL_FATAL(parsed->value.asBuffer.length, cases[i].length);
+        if (cases[i].length != 0) CU_ASSERT_EQUAL(memcmp(parsed->value.asBuffer.buffer, cases[i].bytes, cases[i].length), 0);
+        length = lwm2m_data_serialize(&uri, count, parsed, &format, &wire);
+        CU_ASSERT_EQUAL_FATAL(length, strlen(expected));
+        CU_ASSERT_EQUAL(memcmp(wire, expected, (size_t)length), 0);
+        lwm2m_free(wire);
+        lwm2m_data_free(count, parsed);
+    }
+    for (i = 0; i < sizeof(invalid)/sizeof(invalid[0]); i++) {
+        char input[128];
+        lwm2m_data_t *parsed = NULL;
+        int count;
+        snprintf(input, sizeof(input), "[{\"bn\":\"/34/0/2\",\"vd\":\"%s\"}]", invalid[i]);
+        count = lwm2m_data_parse(&uri, (uint8_t *)input, strlen(input), LWM2M_CONTENT_SENML_JSON, &parsed);
+        CU_ASSERT_TRUE(count <= 0);
+        if (count > 0) lwm2m_data_free(count, parsed);
+    }
+}
+
 static struct TestTable table[] = {
+    {"Q03 SenML Opaque canonical wire and legacy input", senml_json_opaque_contract},
     {"test of senml_json_test_1()", senml_json_test_1},
     {"test of senml_json_test_2()", senml_json_test_2},
     {"test of senml_json_test_3()", senml_json_test_3},

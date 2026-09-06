@@ -387,7 +387,8 @@ size_t json_unescapeString(uint8_t *dst, const uint8_t *src, size_t len)
             {
                 uint8_t v1, v2;
                 i++;
-                if (i >= len - 4) return 0;
+                /* 끝의 정확한 4자리도 유효하다. 뺄셈 underflow 없이 남은 길이를 검사한다. */
+                if (len - i < 4) return 0;
                 if (src[i++] != '0') return 0;
                 if (src[i++] != '0') return 0;
                 v1 = prv_hexValue(src[i++]);

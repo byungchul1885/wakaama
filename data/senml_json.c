@@ -19,6 +19,7 @@
 #include "internals.h"
 #include <ctype.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -432,6 +433,74 @@ static int prv_parseItem(const uint8_t * buffer,
     return 0;
 }
 
+static int prv_opaqueDigit(uint8_t digit)
+{
+    if (digit >= 'A' && digit <= 'Z') return digit - 'A';
+    if (digit >= 'a' && digit <= 'z') return digit - 'a' + 26;
+    if (digit >= '0' && digit <= '9') return digit - '0' + 52;
+    if (digit == '-' || digit == '+') return 62;
+    if (digit == '_' || digit == '/') return 63;
+    return -1;
+}
+
+/* RFC 8428의 base64url을 읽는다. 기존 일반 base64 수신만 호환 허용하되
+ * 두 alphabet 혼합, 잘못된 padding/남은 bit는 거절한다. DB/IPC base64와 별개다.
+ * buffer는 호출자가 소유하며 검증 성공 후 같은 버퍼 앞부분에 decoded bytes를 쓴다. */
+static size_t prv_decodeOpaque(uint8_t *buffer, size_t length)
+{
+    size_t count = length, i, written = 0;
+    unsigned bits = 0;
+    uint32_t value = 0;
+    bool url = false, standard = false;
+    while (count > 0 && buffer[count - 1] == '=') count--;
+    if (count == 0 || count % 4 == 1 || length - count > 2) return 0;
+    if (length != count && (length % 4 != 0 ||
+        (length - count == 2 ? count % 4 != 2 : count % 4 != 3))) return 0;
+    for (i = 0; i < count; i++)
+    {
+        if (prv_opaqueDigit(buffer[i]) < 0) return 0;
+        if (buffer[i] == '-' || buffer[i] == '_') url = true;
+        if (buffer[i] == '+' || buffer[i] == '/') standard = true;
+    }
+    if (url && (standard || length != count)) return 0;
+    if ((count % 4 == 2 && (prv_opaqueDigit(buffer[count - 1]) & 15) != 0) ||
+        (count % 4 == 3 && (prv_opaqueDigit(buffer[count - 1]) & 3) != 0)) return 0;
+    for (i = 0; i < count; i++)
+    {
+        value = (value << 6) | (unsigned)prv_opaqueDigit(buffer[i]);
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            buffer[written++] = (uint8_t)(value >> bits);
+        }
+    }
+    return written;
+}
+
+/* 송신은 URL-safe alphabet과 padding 생략으로 고정한다. 결과 버퍼는 caller 소유다. */
+static int prv_encodeOpaque(const uint8_t *data, size_t length, uint8_t *buffer, size_t capacity)
+{
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    size_t i = 0, written = 0, required;
+    if (length / 3 > (SIZE_MAX - 3) / 4) return -1;
+    required = length / 3 * 4 + (length % 3 == 0 ? 0 : length % 3 + 1);
+    if (required > capacity || required > INT_MAX || (length > 0 && data == NULL)) return -1;
+    while (i < length)
+    {
+        size_t tail = length - i;
+        uint32_t value = (uint32_t)data[i] << 16;
+        if (tail > 1) value |= (uint32_t)data[i + 1] << 8;
+        if (tail > 2) value |= data[i + 2];
+        buffer[written++] = (uint8_t)alphabet[value >> 18];
+        buffer[written++] = (uint8_t)alphabet[(value >> 12) & 63];
+        if (tail > 1) buffer[written++] = (uint8_t)alphabet[(value >> 6) & 63];
+        if (tail > 2) buffer[written++] = (uint8_t)alphabet[value & 63];
+        i += tail < 3 ? tail : 3;
+    }
+    return (int)written;
+}
+
 static bool prv_convertValue(const _record_t * recordP,
                              lwm2m_data_t * targetP)
 {
@@ -467,18 +536,17 @@ static bool prv_convertValue(const _record_t * recordP,
         {
             size_t dataLength;
             uint8_t *data;
-            dataLength = utils_base64GetDecodedSize((const char *)recordP->value.value.asBuffer.buffer,
-                                                    recordP->value.value.asBuffer.length);
-            data = (uint8_t*) lwm2m_malloc(dataLength);
+            data = (uint8_t*) lwm2m_malloc(recordP->value.value.asBuffer.length);
             if (!data) return false;
-            dataLength = utils_base64Decode((const char *)recordP->value.value.asBuffer.buffer,
-                                   recordP->value.value.asBuffer.length,
-                                   data,
-                                   dataLength);
+            dataLength = json_unescapeString(data, recordP->value.value.asBuffer.buffer,
+                                             recordP->value.value.asBuffer.length);
+            dataLength = prv_decodeOpaque(data, dataLength);
             if (dataLength)
             {
                 lwm2m_data_encode_opaque(data, dataLength, targetP);
                 lwm2m_free(data);
+                if (targetP->type != LWM2M_TYPE_OPAQUE || targetP->value.asBuffer.buffer == NULL)
+                    return false;
             }
             else
             {
@@ -927,12 +995,12 @@ static int prv_serializeValue(const lwm2m_data_t * tlvP,
 
         if (tlvP->value.asBuffer.length > 0)
         {
-            res = utils_base64Encode(tlvP->value.asBuffer.buffer,
+            int encodedLength = prv_encodeOpaque(tlvP->value.asBuffer.buffer,
                                      tlvP->value.asBuffer.length,
                                      buffer+head,
                                      bufferLen - head);
-            if (res < tlvP->value.asBuffer.length) return -1;
-            head += res;
+            if (encodedLength < 0) return -1;
+            head += (size_t)encodedLength;
         }
 
         if (bufferLen - head < 1) return -1;

@@ -134,6 +134,8 @@ static void pmax_boundaries(void) {
     init(&f); observe(&f, 0, LWM2M_CONTENT_SENML_CBOR);
     attr.toSet = LWM2M_ATTR_FLAG_MIN_PERIOD | LWM2M_ATTR_FLAG_MAX_PERIOD;
     attr.minPeriod = 5; attr.maxPeriod = 0; parameters(&f, 0, &attr);
+    /* 초기 제출 중 변경 가능성을 한 번 대조한 뒤 pmax=0은 주기 조회를 만들지 않는다. */
+    f.reads = 0; (void)tick(&f, 110, 0); CU_ASSERT_EQUAL(f.reads, 1);
     f.reads = 0; (void)tick(&f, 110, 0); CU_ASSERT_EQUAL(f.reads, 0);
     attr.maxPeriod = 5; parameters(&f, 0, &attr); (void)tick(&f, 110, 0);
     attr.maxPeriod = 4; parameters(&f, 0, &attr); (void)tick(&f, 110, 0);
@@ -238,6 +240,8 @@ static uint8_t request_observe(fixture_t *f, uint32_t count) {
     coap_set_header_token(&request, &token, 1); coap_set_header_observe(&request, count);
     coap_set_header_accept(&request, LWM2M_CONTENT_SENML_CBOR);
     uint8_t result = dm_handleRequest(&f->context, &f->path, f->servers, &request, &response);
+    if (result == COAP_205_CONTENT && count == 0)
+        observe_completeRequest(&f->context, f->context.observePreparationId, f->servers, COAP_NO_ERROR);
     if (result != COAP_205_CONTENT || count == 1) CU_ASSERT_FALSE(IS_OPTION(&response, COAP_OPTION_OBSERVE));
     lwm2m_free(response.payload); coap_free_header(&request); coap_free_header(&response);
     return result;

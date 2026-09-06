@@ -1089,7 +1089,20 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     createdLocationPath = coap_get_multi_option_as_path_string(response->location_path);
                 }
 #endif
+#ifdef LWM2M_CLIENT_MODE
+                uint64_t observationId = observe_responsePending(contextP, fromSessionH, message, response);
+#endif
                 coap_error_code = message_send(contextP, response, fromSessionH);
+#ifdef LWM2M_CLIENT_MODE
+                {
+                    lwm2m_server_t *observingServer = utils_findServer(contextP, fromSessionH);
+                    if (observingServer != NULL && observingServer->status != STATE_REGISTERED &&
+                        observingServer->status != STATE_REG_UPDATE_NEEDED &&
+                        observingServer->status != STATE_REG_FULL_UPDATE_NEEDED &&
+                        observingServer->status != STATE_REG_UPDATE_PENDING) observingServer = NULL;
+                    observe_completeRequest(contextP, observationId, observingServer, coap_error_code);
+                }
+#endif
                 if (coap_error_code == NO_ERROR && block1Uri != NULL)
                     coap_block1_mark_response_submitted(prv_get_peer_block_data(contextP, fromSessionH),
                         block1Uri, message->token, message->token_len, response->code, prv_durable_block1_exchange(contextP,message));
@@ -1121,6 +1134,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 }
                 if (1 == coap_set_status_code(response, coap_error_code))
                 {
+#ifdef LWM2M_CLIENT_MODE
+                    (void)observe_responsePending(contextP, fromSessionH, message, response);
+#endif
                     coap_error_code = message_send(contextP, response, fromSessionH);
                     if (coap_error_code == NO_ERROR && block1Uri != NULL)
                         coap_block1_mark_response_submitted(prv_get_peer_block_data(contextP, fromSessionH),

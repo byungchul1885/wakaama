@@ -1218,7 +1218,7 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
                             coap_set_header_content_type(response, format);
                             if (observe == 0)
                             {
-                                result = observe_handleRequest(contextP, uriP, serverP, size, dataP, message, response);
+                                result = observe_prepareRequest(contextP, uriP, serverP, size, dataP, message, response);
                             }
                         }
                     }

@@ -311,7 +311,7 @@ static bool prv_connected(const lwm2m_server_t *server)
             server->status == STATE_REG_FULL_UPDATE_NEEDED || server->status == STATE_REG_UPDATE_PENDING);
 }
 
-void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeoutP)
+static void prv_evaluateObservers(lwm2m_context_t *contextP, time_t currentTime, time_t *timeoutP)
 {
     lwm2m_observed_t *observed;
     size_t ended = 0;
@@ -474,5 +474,14 @@ restart:
             if (pmax != 0) prv_wait(timeoutP, pmax);
         }
     }
+}
+
+void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeoutP)
+{
+    /* 제출과 평가 callback이 서로의 사본/sequence를 변경하거나 재귀 평가하지 못하게 한다. */
+    if (contextP->pendingObserve != NULL || contextP->observeStepActive) { prv_wait(timeoutP, 1); return; }
+    contextP->observeStepActive = true;
+    prv_evaluateObservers(contextP, currentTime, timeoutP);
+    contextP->observeStepActive = false;
 }
 #endif

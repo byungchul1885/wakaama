@@ -17,6 +17,7 @@ set(TEST_SOURCES
     core_management_deferred_tests.c
     core_message_size_test.c
     core_observe_tests.c
+    core_observe_submission_tests.c
     core_notify_tests.c
     core_notify_values_tests.c
     core_registration_retry_tests.c

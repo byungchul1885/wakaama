@@ -1071,6 +1071,10 @@ struct _lwm2m_context_
     /* callback 후 transient 관찰 pointer 재사용을 차단한다. */
     uint64_t observeEpoch;
     size_t observeSnapshotBytes;
+    /* 초기 응답 제출까지 보관하는 비공개 후보 하나. borrowed server/session은 보관하지 않는다. */
+    struct _lwm2m_pending_observe_ *pendingObserve;
+    uint64_t observePreparationId;
+    bool observeStepActive;
     lwm2m_registration_object_filter_t registrationObjectFilter;
     void *               registrationObjectFilterUserData;
 #ifndef LWM2M_VERSION_1_0

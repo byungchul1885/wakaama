@@ -191,6 +191,7 @@ static void prv_deleteBootstrapServerList(lwm2m_context_t * context)
 
 static void prv_deleteObservedList(lwm2m_context_t * contextP)
 {
+    observe_discardPrepared(contextP);
     while (NULL != contextP->observedList)
     {
         lwm2m_observed_t * targetP;

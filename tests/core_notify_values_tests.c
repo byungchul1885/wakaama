@@ -90,6 +90,8 @@ static uint8_t start(value_fixture_t *f, lwm2m_media_type_t format) {
     coap_set_header_observe(&request, 0); coap_set_header_token(&request, &token, 1);
     coap_set_header_accept(&request, format);
     result = dm_handleRequest(&f->context, &f->path, &f->server, &request, &response);
+    if (result == COAP_205_CONTENT)
+        observe_completeRequest(&f->context, f->context.observePreparationId, &f->server, COAP_NO_ERROR);
     lwm2m_free(response.payload); coap_free_header(&request); coap_free_header(&response);
     return result;
 }
@@ -234,6 +236,7 @@ static void retained_byte_quota_reobserve_cancel_rst_forget_close(void) {
     CU_ASSERT_PTR_EQUAL(old->valueSnapshot, oldBytes);
     --value.value.asBuffer.length; bytes[0] = 0;
     CU_ASSERT_EQUAL(direct_observe(&f, &f.server, 63, 0, &value), COAP_205_CONTENT);
+    old = f.context.observedList->watcherList;
     CU_ASSERT_EQUAL(old->valueSnapshot[0], 0);
     CU_ASSERT_EQUAL(f.context.observeSnapshotBytes, LWM2M_OBSERVE_SNAPSHOT_LIMIT);
     CU_ASSERT_EQUAL(direct_observe(&f, &f.server, 0, 1, &value), COAP_205_CONTENT);

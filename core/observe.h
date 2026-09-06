@@ -21,6 +21,20 @@
 
 uint8_t observe_handleRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP, int size,
                               lwm2m_data_t *dataP, coap_packet_t *message, coap_packet_t *response);
+/* DM Observe=0은 prepare→packet 최종 응답 확인→transport 제출→complete 순서다.
+ * 입력은 borrowed이며 후보/사본은 context가 소유한다. 동시에 한 후보만 허용한다.
+ * 후보 동안 Notify를 평가하지 않으며 Notify 평가/제출 callback의 재진입 준비도 거절한다.
+ * 기존 관계/사본을 유지하며 추가 보관은 최대 64 KiB다.
+ * 직접 observe_handleRequest()를 쓰는 내부 호출자는 제출 성공이 확정된 동기 경로만 사용한다. */
+uint8_t observe_prepareRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP,
+                               int size, lwm2m_data_t *dataP, coap_packet_t *message, coap_packet_t *response);
+/* packet 후처리 오류면 후보를 회수하고 Observe 옵션을 지운다. 반환 ID는 pointer가 아니다. */
+uint64_t observe_responsePending(lwm2m_context_t *contextP, void *session,
+                                 const coap_packet_t *request, coap_packet_t *response);
+/* server는 제출 후 owner에서 다시 찾은 현재 borrowed 값이다. 실패/불일치는 후보만 회수한다.
+ * 성공 공개에는 추가 할당/callback이 없다. 이미 취소된 ID는 아무것도 되살리지 않는다. */
+void observe_completeRequest(lwm2m_context_t *contextP, uint64_t id, lwm2m_server_t *server, uint8_t sendResult);
+void observe_discardPrepared(lwm2m_context_t *contextP);
 void observe_cancel(lwm2m_context_t *contextP, uint16_t mid, void *fromSessionH);
 /* server 해제 전에 borrowed watcher를 제거한다. SSID 설정은 보존한다. */
 void observe_forgetServer(lwm2m_context_t *contextP, lwm2m_server_t *serverP);

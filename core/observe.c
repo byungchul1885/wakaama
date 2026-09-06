@@ -53,6 +53,40 @@
 #include "management.h"
 #include <math.h>
 #ifdef LWM2M_CLIENT_MODE
+typedef struct _lwm2m_pending_observe_ {
+    lwm2m_observed_t *observed;
+    lwm2m_watcher_t *watcher;
+    uint64_t id;
+    uint64_t sessionGeneration;
+    uint16_t serverId;
+    uint16_t requestMid;
+} pending_observe_t;
+
+static bool prv_contains(const lwm2m_uri_t *root, const lwm2m_uri_t *child);
+
+static uint64_t prv_sessionGeneration(const lwm2m_server_t *server)
+{
+#ifndef LWM2M_VERSION_1_0
+    return server->sessionGeneration;
+#else
+    /* 1.0에는 세대 필드가 없다. 기존 계정/세션 해제 경계를 유지한다. */
+    (void)server;
+    return 0;
+#endif
+}
+
+void observe_discardPrepared(lwm2m_context_t *contextP)
+{
+    pending_observe_t *pending = contextP->pendingObserve;
+    contextP->pendingObserve = NULL;
+    if (pending == NULL) return;
+    /* 후보 사본은 공개 보관량에 포함되지 않으므로 freeWatcher를 사용하지 않는다. */
+    lwm2m_free(pending->watcher->valueSnapshot);
+    lwm2m_free(pending->watcher);
+    lwm2m_free(pending->observed);
+    lwm2m_free(pending);
+}
+
 void observe_changedLifetime(lwm2m_context_t *contextP)
 {
     if (contextP->observeEpoch != UINT64_MAX) ++contextP->observeEpoch;
@@ -108,53 +142,139 @@ static lwm2m_watcher_t * prv_findWatcher(lwm2m_observed_t * observedP,
     return targetP;
 }
 
-static lwm2m_watcher_t * prv_getWatcher(lwm2m_context_t * contextP,
-                                        lwm2m_uri_t * uriP,
-                                        lwm2m_server_t * serverP,
-                                        const coap_packet_t *message)
+uint8_t observe_prepareRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm2m_server_t *serverP,
+                               int size, lwm2m_data_t *dataP, coap_packet_t *message, coap_packet_t *response)
 {
-    lwm2m_observed_t * observedP;
-    bool allocatedObserver;
-    lwm2m_watcher_t * watcherP;
-
-    allocatedObserver = false;
-
-    observedP = prv_findObserved(contextP, uriP);
-    if (observedP == NULL)
+    lwm2m_observed_t *observed;
+    lwm2m_watcher_t *old;
+    lwm2m_observe_value_t value;
+    pending_observe_t *pending;
+    uint8_t *snapshot = NULL;
+    size_t snapshotLength = 0;
+    uint32_t count = 2;
+    if (!coap_get_header_observe(message, &count) || count != 0 || message->token_len > COAP_TOKEN_LEN ||
+        (!LWM2M_URI_IS_SET_INSTANCE(uriP) && LWM2M_URI_IS_SET_RESOURCE(uriP))) return COAP_400_BAD_REQUEST;
+    if (contextP->pendingObserve != NULL || contextP->observeStepActive || contextP->observeEpoch == UINT64_MAX ||
+        contextP->observePreparationId == UINT64_MAX) return COAP_503_SERVICE_UNAVAILABLE;
+    observed = prv_findObserved(contextP, uriP);
+    old = observed != NULL ? prv_findWatcher(observed, serverP, message) : NULL;
+    if (!observe_captureValue(uriP, size, dataP, &value)) return COAP_500_INTERNAL_SERVER_ERROR;
+    if (old == NULL)
     {
-        observedP = (lwm2m_observed_t *)lwm2m_malloc(sizeof(lwm2m_observed_t));
-        if (observedP == NULL) return NULL;
-        allocatedObserver = true;
-        memset(observedP, 0, sizeof(lwm2m_observed_t));
-        memcpy(&(observedP->uri), uriP, sizeof(lwm2m_uri_t));
-    }
-
-    watcherP = prv_findWatcher(observedP, serverP, message);
-    if (watcherP == NULL)
-    {
-        watcherP = (lwm2m_watcher_t *)lwm2m_malloc(sizeof(lwm2m_watcher_t));
-        if (watcherP == NULL)
+        size_t total = 0, perServer = 0;
+        for (observed = contextP->observedList; observed != NULL; observed = observed->next)
         {
-            if (allocatedObserver == true)
-            {
-                lwm2m_free(observedP);
-            }
-            return NULL;
+            lwm2m_watcher_t *watcher;
+            for (watcher = observed->watcherList; watcher != NULL; watcher = watcher->next)
+            { ++total; if (watcher->server == serverP) ++perServer; }
         }
-        memset(watcherP, 0, sizeof(lwm2m_watcher_t));
-        watcherP->active = false;
-        watcherP->server = serverP;
-        watcherP->next = observedP->watcherList;
-        observedP->watcherList = watcherP;
+        if (total >= LWM2M_OBSERVER_LIMIT || perServer >= LWM2M_OBSERVER_SERVER_LIMIT)
+            return COAP_503_SERVICE_UNAVAILABLE;
     }
-
-    /* watcher 준비가 실패한 노드는 owner 목록에 공개하지 않는다. */
-    if (allocatedObserver)
+    if (!observe_numericValue(&value))
     {
-        observedP->next = contextP->observedList;
-        contextP->observedList = observedP;
+        uint8_t result = observe_prepareSnapshot(uriP, size, dataP,
+            (lwm2m_media_type_t)response->content_type, &snapshot, &snapshotLength);
+        if (result != COAP_NO_ERROR) return result;
+        if (!observe_snapshotFits(contextP, old, snapshotLength))
+        { lwm2m_free(snapshot); return COAP_503_SERVICE_UNAVAILABLE; }
     }
-    return watcherP;
+    pending = lwm2m_malloc(sizeof(*pending));
+    if (pending == NULL) { lwm2m_free(snapshot); return COAP_500_INTERNAL_SERVER_ERROR; }
+    memset(pending, 0, sizeof(*pending));
+    pending->observed = lwm2m_malloc(sizeof(*pending->observed));
+    pending->watcher = lwm2m_malloc(sizeof(*pending->watcher));
+    if (pending->observed == NULL || pending->watcher == NULL)
+    {
+        lwm2m_free(pending->observed); lwm2m_free(pending->watcher);
+        lwm2m_free(pending); lwm2m_free(snapshot); return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+    memset(pending->observed, 0, sizeof(*pending->observed));
+    memset(pending->watcher, 0, sizeof(*pending->watcher));
+    pending->observed->uri = *uriP;
+    pending->id = ++contextP->observePreparationId;
+    pending->serverId = serverP->shortID;
+    pending->sessionGeneration = prv_sessionGeneration(serverP);
+    pending->requestMid = message->mid;
+    pending->watcher->valueSnapshot = snapshot;
+    pending->watcher->valueSnapshotLength = snapshotLength;
+    pending->watcher->tokenLen = message->token_len;
+    memcpy(pending->watcher->token, message->token, message->token_len);
+    pending->watcher->lastValue = value;
+    pending->watcher->evaluatedValue = value;
+    pending->watcher->lastMid = response->mid;
+    pending->watcher->format = (lwm2m_media_type_t)response->content_type;
+    count = old != NULL ? old->counter : 0;
+    coap_set_header_observe(response, count & 0x00ffffffU);
+    pending->watcher->counter = (count + 1U) & 0x00ffffffU;
+    contextP->pendingObserve = pending;
+    return COAP_205_CONTENT;
+}
+
+uint64_t observe_responsePending(lwm2m_context_t *contextP, void *session,
+                                 const coap_packet_t *request, coap_packet_t *response)
+{
+    pending_observe_t *pending = contextP->pendingObserve;
+    lwm2m_server_t *server = utils_findServer(contextP, session);
+    if (response->code >= COAP_400_BAD_REQUEST)
+    {
+        /* Block2 후처리의 UTF-8 오류 설명을 앞선 SenML 표현으로 표시하지 않는다. */
+        if (IS_OPTION(response, COAP_OPTION_OBSERVE))
+            response->options[COAP_OPTION_CONTENT_TYPE / OPTION_MAP_SIZE] &= ~(1 << (COAP_OPTION_CONTENT_TYPE % OPTION_MAP_SIZE));
+        response->options[COAP_OPTION_OBSERVE / OPTION_MAP_SIZE] &= ~(1 << (COAP_OPTION_OBSERVE % OPTION_MAP_SIZE));
+    }
+    if (pending == NULL || pending->requestMid != request->mid || request->token_len > COAP_TOKEN_LEN ||
+        pending->watcher->tokenLen != request->token_len ||
+        memcmp(pending->watcher->token, request->token, request->token_len) != 0) return 0;
+    if (server == NULL || server->shortID != pending->serverId ||
+        prv_sessionGeneration(server) != pending->sessionGeneration || response->code != COAP_205_CONTENT ||
+        !IS_OPTION(response, COAP_OPTION_OBSERVE))
+    { observe_discardPrepared(contextP); return 0; }
+    return pending->id;
+}
+
+void observe_completeRequest(lwm2m_context_t *contextP, uint64_t id, lwm2m_server_t *server, uint8_t sendResult)
+{
+    pending_observe_t *pending = contextP->pendingObserve;
+    lwm2m_observed_t *observed;
+    lwm2m_watcher_t **link;
+    if (pending == NULL || pending->id != id) return;
+    if (sendResult != COAP_NO_ERROR || server == NULL || server->shortID != pending->serverId ||
+        prv_sessionGeneration(server) != pending->sessionGeneration || contextP->observeEpoch == UINT64_MAX)
+    { observe_discardPrepared(contextP); return; }
+    observed = prv_findObserved(contextP, &pending->observed->uri);
+    if (observed == NULL)
+    {
+        observed = pending->observed; pending->observed = NULL;
+        observed->next = contextP->observedList; contextP->observedList = observed;
+    }
+    for (link = &observed->watcherList; *link != NULL; link = &(*link)->next)
+        if ((*link)->server == server && (*link)->tokenLen == pending->watcher->tokenLen &&
+            memcmp((*link)->token, pending->watcher->token, (*link)->tokenLen) == 0) break;
+    pending->watcher->server = server;
+    pending->watcher->active = true;
+    pending->watcher->lastTime = lwm2m_gettime();
+    pending->watcher->lastEvaluation = pending->watcher->lastTime;
+    /* 제출 callback 동안의 값 변경도 다음 평가에서 현재 값과 대조한다. */
+    pending->watcher->update = true;
+    if (*link != NULL)
+    {
+        lwm2m_watcher_t *old = *link;
+        pending->watcher->next = old->next;
+        observe_replaceSnapshot(contextP, old, NULL, 0);
+        *old = *pending->watcher;
+        lwm2m_free(pending->watcher);
+        pending->watcher = old;
+    }
+    else
+    {
+        pending->watcher->next = observed->watcherList;
+        observed->watcherList = pending->watcher;
+    }
+    contextP->observeSnapshotBytes += pending->watcher->valueSnapshotLength;
+    contextP->pendingObserve = NULL;
+    lwm2m_free(pending->observed); lwm2m_free(pending);
+    observe_changedLifetime(contextP);
 }
 
 uint8_t observe_handleRequest(lwm2m_context_t * contextP,
@@ -167,9 +287,6 @@ uint8_t observe_handleRequest(lwm2m_context_t * contextP,
 {
     lwm2m_observed_t * observedP;
     lwm2m_watcher_t * watcherP;
-    lwm2m_observe_value_t initialValue;
-    uint8_t *initialSnapshot = NULL;
-    size_t initialSnapshotLength = 0;
     uint32_t count;
 
     LOG_ARG_DBG("Code: %02X, server status: %s", message->code, STR_STATUS(serverP->status));
@@ -180,60 +297,23 @@ uint8_t observe_handleRequest(lwm2m_context_t * contextP,
     switch (count)
     {
     case 0:
-        if (!LWM2M_URI_IS_SET_INSTANCE(uriP) && LWM2M_URI_IS_SET_RESOURCE(uriP)) return COAP_400_BAD_REQUEST;
-        if (message->token_len > COAP_TOKEN_LEN) return COAP_400_BAD_REQUEST;
-        if (contextP->observeEpoch == UINT64_MAX) return COAP_503_SERVICE_UNAVAILABLE;
-        if (!observe_captureValue(uriP, size, dataP, &initialValue)) return COAP_500_INTERNAL_SERVER_ERROR;
-
-        observedP = prv_findObserved(contextP, uriP);
-        watcherP = observedP != NULL ? prv_findWatcher(observedP, serverP, message) : NULL;
-        if (watcherP == NULL)
         {
-            size_t total = 0, perServer = 0;
-            for (observedP = contextP->observedList; observedP != NULL; observedP = observedP->next)
-                for (watcherP = observedP->watcherList; watcherP != NULL; watcherP = watcherP->next)
-                {
-                    ++total;
-                    if (watcherP->server == serverP) ++perServer;
-                }
-            if (total >= LWM2M_OBSERVER_LIMIT || perServer >= LWM2M_OBSERVER_SERVER_LIMIT)
-                return COAP_503_SERVICE_UNAVAILABLE;
+            uint8_t result = observe_prepareRequest(contextP, uriP, serverP, size, dataP, message, response);
+            if (result == COAP_205_CONTENT)
+                observe_completeRequest(contextP, contextP->observePreparationId, serverP, COAP_NO_ERROR);
+            return result;
         }
-
-        if (!observe_numericValue(&initialValue))
-        {
-            uint8_t result = observe_prepareSnapshot(uriP, size, dataP,
-                (lwm2m_media_type_t)response->content_type, &initialSnapshot, &initialSnapshotLength);
-            if (result != COAP_NO_ERROR) return result;
-            if (!observe_snapshotFits(contextP, watcherP, initialSnapshotLength))
-            { lwm2m_free(initialSnapshot); return COAP_503_SERVICE_UNAVAILABLE; }
-        }
-        watcherP = prv_getWatcher(contextP, uriP, serverP, message);
-        if (watcherP == NULL) { lwm2m_free(initialSnapshot); return COAP_500_INTERNAL_SERVER_ERROR; }
-        observe_replaceSnapshot(contextP, watcherP, initialSnapshot, initialSnapshotLength);
-
-        watcherP->tokenLen = message->token_len;
-        memcpy(watcherP->token, message->token, message->token_len);
-        watcherP->active = true;
-        watcherP->lastTime = lwm2m_gettime();
-        watcherP->lastEvaluation = watcherP->lastTime;
-        watcherP->notifyPending = false;
-        watcherP->terminalCode = 0;
-        watcherP->update = false;
-        watcherP->lastValue = initialValue;
-        watcherP->evaluatedValue = initialValue;
-        observe_changedLifetime(contextP);
-        watcherP->lastMid = response->mid;
-        watcherP->format = (lwm2m_media_type_t)response->content_type;
-
-
-        coap_set_header_observe(response, watcherP->counter & 0x00ffffffU);
-        watcherP->counter = (watcherP->counter + 1U) & 0x00ffffffU;
-
-        return COAP_205_CONTENT;
 
     case 1:
         if (message->token_len > COAP_TOKEN_LEN) return COAP_400_BAD_REQUEST;
+        if (contextP->pendingObserve != NULL)
+        {
+            pending_observe_t *pending = contextP->pendingObserve;
+            if (pending->serverId == serverP->shortID && prv_contains(uriP, &pending->observed->uri) &&
+                prv_contains(&pending->observed->uri, uriP) && pending->watcher->tokenLen == message->token_len &&
+                memcmp(pending->watcher->token, message->token, message->token_len) == 0)
+                observe_discardPrepared(contextP);
+        }
         /* URI/서버/Token이 일치한 관계만 취소한다. 같은 MID의 다른 관찰은 보존한다. */
         observedP = prv_findObserved(contextP, uriP);
         if (observedP)
@@ -298,6 +378,12 @@ void observe_cancel(lwm2m_context_t *contextP, uint16_t mid, void *fromSessionH)
 {
     lwm2m_observed_t *observed;
     if (fromSessionH == NULL) return;
+    if (contextP->pendingObserve != NULL)
+    {
+        lwm2m_server_t *server = utils_findServer(contextP, fromSessionH);
+        if (server != NULL && server->shortID == contextP->pendingObserve->serverId &&
+            mid == contextP->pendingObserve->watcher->lastMid) observe_discardPrepared(contextP);
+    }
     for (observed = contextP->observedList; observed != NULL; observed = observed->next)
     {
         lwm2m_watcher_t **link;
@@ -317,6 +403,8 @@ void observe_cancel(lwm2m_context_t *contextP, uint16_t mid, void *fromSessionH)
 void observe_forgetServer(lwm2m_context_t *contextP, lwm2m_server_t *serverP)
 {
     lwm2m_observed_t **link = &contextP->observedList;
+    if (contextP->pendingObserve != NULL && contextP->pendingObserve->serverId == serverP->shortID)
+        observe_discardPrepared(contextP);
     observe_changedLifetime(contextP);
     /* 진행 중인 Attribute Read 검증도 삭제된 server를 뒤늦게 다시 연결하지 못하게 한다. */
     if (contextP->attributeEpoch != UINT64_MAX) ++contextP->attributeEpoch;
@@ -357,6 +445,8 @@ static bool prv_contains(const lwm2m_uri_t *root, const lwm2m_uri_t *child)
 void observe_markDeleted(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
 {
     lwm2m_observed_t **link = &contextP->observedList;
+    if (contextP->pendingObserve != NULL && prv_contains(uriP, &contextP->pendingObserve->observed->uri))
+        observe_discardPrepared(contextP);
     observe_changedLifetime(contextP);
     observe_clearParameters(contextP, uriP);
     while (*link != NULL)
@@ -381,6 +471,8 @@ void observe_markDeleted(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
 void observe_clear(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
 {
     lwm2m_observed_t **link = &contextP->observedList;
+    if (contextP->pendingObserve != NULL && prv_contains(uriP, &contextP->pendingObserve->observed->uri))
+        observe_discardPrepared(contextP);
     observe_changedLifetime(contextP);
     observe_clearParameters(contextP, uriP);
     while (*link != NULL)

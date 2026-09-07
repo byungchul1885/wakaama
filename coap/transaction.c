@@ -285,7 +285,7 @@ error:
     return NULL;
 }
 
-void transaction_free(lwm2m_transaction_t * transacP)
+static void prv_destroy(lwm2m_transaction_t *transacP)
 {
     LOG_ARG_DBG("Entering. transaction=%p", (void *)transacP);
     if (transacP->message)
@@ -308,41 +308,74 @@ void transaction_free(lwm2m_transaction_t * transacP)
     lwm2m_free(transacP);
 }
 
+void transaction_free(lwm2m_transaction_t *transacP)
+{
+    if (transacP == NULL) return;
+    transacP->retired = true;
+    if (transacP->holdCount == 0) prv_destroy(transacP);
+}
+
+static void prv_hold(lwm2m_transaction_t *transacP)
+{
+    ++transacP->holdCount;
+}
+
+static void prv_release(lwm2m_transaction_t *transacP)
+{
+    --transacP->holdCount;
+    if (transacP->holdCount == 0 && transacP->retired) prv_destroy(transacP);
+}
+
 void transaction_remove(lwm2m_context_t * contextP,
                         lwm2m_transaction_t * transacP)
 {
+    lwm2m_transaction_t **link;
+    if (contextP == NULL || transacP == NULL) return;
     LOG_ARG_DBG("Entering. transaction=%p", (void *)transacP);
-    contextP->transactionList = (lwm2m_transaction_t *) LWM2M_LIST_RM(contextP->transactionList, transacP->mID, NULL);
+    /* MID는 다른 session/새 교환에서 재사용될 수 있으므로 정확한 owner 항목만 분리한다. */
+    link = &contextP->transactionList;
+    while (*link != NULL && *link != transacP) link = &(*link)->next;
+    if (*link != NULL) {
+        *link = transacP->next;
+        transacP->next = NULL;
+    }
     transaction_free(transacP);
+}
+
+void transaction_complete(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP, void *message)
+{
+    if (transacP->retired || transacP->completing) return;
+    prv_hold(transacP);
+    transacP->completing = true;
+    if (transacP->callback != NULL) transacP->callback(contextP, transacP, message);
+    transaction_remove(contextP, transacP);
+    prv_release(transacP);
 }
 
 size_t transaction_abort_session(lwm2m_context_t *contextP, void *sessionH)
 {
     size_t aborted = 0U;
+    lwm2m_transaction_t *transactionP;
 
     if (contextP == NULL || sessionH == NULL)
         return 0U;
+    /* 진입 당시 대상만 표시한다. 콜백에서 새로 만든 같은 session 요청은 재귀적으로 쫓지 않는다. */
+    for (transactionP = contextP->transactionList; transactionP != NULL; transactionP = transactionP->next) {
+        if (!transactionP->completing &&
+            lwm2m_session_is_equal(transactionP->peerH, sessionH, contextP->userData))
+            transactionP->abortRequested = true;
+    }
     while (true)
     {
-        lwm2m_transaction_t **cursorP = &contextP->transactionList;
-        lwm2m_transaction_t *transactionP;
-        lwm2m_transaction_callback_t callback;
-
-        while (*cursorP != NULL
-               && !lwm2m_session_is_equal((*cursorP)->peerH,
-                                          sessionH,
-                                          contextP->userData))
-            cursorP = &(*cursorP)->next;
-        transactionP = *cursorP;
+        transactionP = contextP->transactionList;
+        while (transactionP != NULL && (!transactionP->abortRequested || transactionP->completing ||
+               !lwm2m_session_is_equal(transactionP->peerH, sessionH, contextP->userData)))
+            transactionP = transactionP->next;
         if (transactionP == NULL)
             break;
 
-        *cursorP = transactionP->next;
-        transactionP->next = NULL;
-        callback = transactionP->callback;
-        if (callback != NULL)
-            callback(contextP, transactionP, NULL);
-        transaction_free(transactionP);
+        transactionP->abortRequested = false;
+        transaction_complete(contextP, transactionP, NULL);
         aborted++;
     }
     return aborted;
@@ -362,7 +395,8 @@ bool transaction_handleResponse(lwm2m_context_t * contextP,
 
     while (NULL != transacP)
     {
-        if (lwm2m_session_is_equal(fromSessionH, transacP->peerH, contextP->userData) == true)
+        if (!transacP->completing &&
+            lwm2m_session_is_equal(fromSessionH, transacP->peerH, contextP->userData) == true)
         {
             if (!transacP->ack_received)
             {
@@ -379,6 +413,8 @@ bool transaction_handleResponse(lwm2m_context_t * contextP,
 
             if (reset || prv_checkFinished(transacP, message))
             {
+                /* 별도 CON 응답의 ACK 송신에서도 transport 콜백이 항목을 취소할 수 있다. */
+                prv_hold(transacP);
                 // HACK: If a message is sent from the monitor callback,
                 // it will arrive before the registration ACK.
                 // So we resend transaction that were denied for authentication reason.
@@ -388,20 +424,22 @@ bool transaction_handleResponse(lwm2m_context_t * contextP,
                     {
                         coap_init_message(response, COAP_TYPE_ACK, 0, message->mid);
                         message_send(contextP, response, fromSessionH);
+                        if (transacP->retired) {
+                            prv_release(transacP);
+                            return true;
+                        }
                     }
 
                     if ((COAP_401_UNAUTHORIZED == message->code) && (COAP_MAX_RETRANSMIT > transacP->retrans_counter))
                     {
                         transacP->ack_received = false;
                         transacP->retrans_time += COAP_RESPONSE_TIMEOUT;
+                        prv_release(transacP);
                         return true;
                     }
                 }
-                if (transacP->callback != NULL)
-                {
-                    transacP->callback(contextP, transacP, message);
-                }
-                transaction_remove(contextP, transacP);
+                transaction_complete(contextP, transacP, message);
+                prv_release(transacP);
                 return true;
             }
             // if we found our guy, exit
@@ -436,7 +474,8 @@ bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t 
 
     while (NULL != transacP)
     {
-        if (lwm2m_session_is_equal(fromSessionH, transacP->peerH, contextP->userData) == true
+        if (!transacP->completing &&
+            lwm2m_session_is_equal(fromSessionH, transacP->peerH, contextP->userData) == true
          && transacP->mID == mid)
         {
             if (transacP->callback != NULL)
@@ -450,10 +489,10 @@ bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t 
                     coap_set_header_token(&message, transactionMessage->token, transactionMessage->token_len);
                 }
 
-                transacP->callback(contextP, transacP, &message);
+                transaction_complete(contextP, transacP, &message);
                 coap_free_header(&message);
             }
-            transaction_remove(contextP, transacP);
+            else transaction_remove(contextP, transacP);
             return true;
         }
 
@@ -462,8 +501,7 @@ bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t 
     return false;
 }
 
-int transaction_send(lwm2m_context_t * contextP,
-                     lwm2m_transaction_t * transacP)
+static int prv_send(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP)
 {
     bool maxRetriesReached = false;
 
@@ -473,22 +511,14 @@ int transaction_send(lwm2m_context_t * contextP,
         transacP->buffer_len = coap_serialize_get_size(transacP->message);
         if (transacP->buffer_len == 0)
         {
-           if (transacP->callback != NULL)
-           {
-               transacP->callback(contextP, transacP, NULL);
-           }
-           transaction_remove(contextP, transacP);
+           transaction_complete(contextP, transacP, NULL);
            return COAP_500_INTERNAL_SERVER_ERROR;
         }
 
         transacP->buffer = (uint8_t*)lwm2m_malloc(transacP->buffer_len);
         if (transacP->buffer == NULL)
         {
-           if (transacP->callback != NULL)
-           {
-               transacP->callback(contextP, transacP, NULL);
-           }
-           transaction_remove(contextP, transacP);
+           transaction_complete(contextP, transacP, NULL);
            return COAP_500_INTERNAL_SERVER_ERROR;
         }
 
@@ -497,11 +527,7 @@ int transaction_send(lwm2m_context_t * contextP,
         {
             lwm2m_free(transacP->buffer);
             transacP->buffer = NULL;
-            if (transacP->callback != NULL)
-            {
-                transacP->callback(contextP, transacP, NULL);
-            }
-            transaction_remove(contextP, transacP);
+            transaction_complete(contextP, transacP, NULL);
             return COAP_500_INTERNAL_SERVER_ERROR;
         }
     }
@@ -523,17 +549,17 @@ int transaction_send(lwm2m_context_t * contextP,
                 maxRetriesReached = true;
             }
         }
-        else
+        else if (COAP_MAX_RETRANSMIT + 1 >= transacP->retrans_counter)
         {
             timeout = COAP_RESPONSE_TIMEOUT << (transacP->retrans_counter - 1);
         }
 
-        if (COAP_MAX_RETRANSMIT + 1 >= transacP->retrans_counter)
+        if (!maxRetriesReached && COAP_MAX_RETRANSMIT + 1 >= transacP->retrans_counter)
         {
-            (void)lwm2m_buffer_send(transacP->peerH, transacP->buffer, transacP->buffer_len, contextP->userData);
-
+            /* 재진입한 ACK/취소가 최신 전송 상태를 보게 하며 transport 반환 뒤에는 재차 덮어쓰지 않는다. */
             transacP->retrans_time += timeout;
             transacP->retrans_counter += 1;
+            (void)lwm2m_buffer_send(transacP->peerH, transacP->buffer, transacP->buffer_len, contextP->userData);
         }
         else
         {
@@ -552,13 +578,21 @@ int transaction_send(lwm2m_context_t * contextP,
 
     return 0;
 error:
-    if (transacP->callback)
-    {
-        LOG_ARG_DBG("transaction %p expired..calling callback", (void *)transacP);
-        transacP->callback(contextP, transacP, NULL);
-    }
-    transaction_remove(contextP, transacP);
+    transaction_complete(contextP, transacP, NULL);
     return -1;
+}
+
+int transaction_send(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP)
+{
+    int result;
+    if (contextP == NULL || transacP == NULL || transacP->retired || transacP->completing) return -1;
+    if (transacP->sending) return COAP_503_SERVICE_UNAVAILABLE;
+    prv_hold(transacP);
+    transacP->sending = true;
+    result = prv_send(contextP, transacP);
+    transacP->sending = false;
+    prv_release(transacP);
+    return result;
 }
 
 void transaction_step(lwm2m_context_t * contextP,
@@ -568,42 +602,36 @@ void transaction_step(lwm2m_context_t * contextP,
     lwm2m_transaction_t * transacP;
 
     LOG_DBG("Entering");
+    if (contextP->transactionStepActive) {
+        if (*timeoutP > 1) *timeoutP = 1;
+        return;
+    }
+    contextP->transactionStepActive = true;
+    /* 진입 당시 목록 전체를 borrow한다. 콜백에서 next를 삭제해도 별도 연결/메모리는 유효하다.
+     * 새 요청은 이 pass에 합류시키지 않아 재진입/오래된 currentTime의 중복 재전송을 막는다. */
+    for (transacP = contextP->transactionList; transacP != NULL; transacP = transacP->next) {
+        prv_hold(transacP);
+        transacP->stepNext = transacP->next;
+    }
     transacP = contextP->transactionList;
     while (transacP != NULL)
     {
-        // transaction_send() may remove transaction from the linked list
-        lwm2m_transaction_t * nextP = transacP->next;
-        int removed = 0;
+        lwm2m_transaction_t *nextP = transacP->stepNext;
 
-        if (transacP->retrans_time <= currentTime)
+        if (!transacP->retired && transacP->retrans_time <= currentTime)
         {
-            removed = transaction_send(contextP, transacP);
+            (void)transaction_send(contextP, transacP);
         }
-
-        if (0 == removed)
-        {
-            time_t interval;
-
-            if (transacP->retrans_time > currentTime)
-            {
-                interval = transacP->retrans_time - currentTime;
-            }
-            else
-            {
-                interval = 1;
-            }
-
-            if (*timeoutP > interval)
-            {
-                *timeoutP = interval;
-            }
-        }
-        else
-        {
-            *timeoutP = 1;
-        }
-
+        if (transacP->retired && *timeoutP > 1) *timeoutP = 1;
+        transacP->stepNext = NULL;
+        prv_release(transacP);
         transacP = nextP;
+    }
+    contextP->transactionStepActive = false;
+    /* callback이 추가한 요청까지 최신 owner에서 다음 wake-up을 계산한다. */
+    for (transacP = contextP->transactionList; transacP != NULL; transacP = transacP->next) {
+        time_t interval = transacP->retrans_time > currentTime ? transacP->retrans_time - currentTime : 1;
+        if (*timeoutP > interval) *timeoutP = interval;
     }
 }
 

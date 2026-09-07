@@ -218,11 +218,7 @@ void prv_deleteTransactionList(lwm2m_context_t * context)
         lwm2m_transaction_t * transaction;
 
         transaction = context->transactionList;
-        context->transactionList = context->transactionList->next;
-        if (transaction->callback) {
-            transaction->callback(context, transaction, NULL);
-        }
-        transaction_free(transaction);
+        transaction_complete(context, transaction, NULL);
     }
 }
 

@@ -76,4 +76,5 @@ size_t test_get_close_connection_count(void);
 #endif
 CU_ErrorCode create_utils_suit(void);
 CU_ErrorCode create_transaction_test_suit(void);
+CU_ErrorCode create_transaction_lifecycle_test_suit(void);
 #endif /* TESTS_H_ */

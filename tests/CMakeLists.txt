@@ -27,6 +27,7 @@ set(TEST_SOURCES
     core_registration_tests.c
     core_reporting_tests.c
     core_transaction_tests.c
+    core_transaction_lifecycle_tests.c
     core_uritests.c
     core_utils_tests.c
     data_senml_cbor_tests.c

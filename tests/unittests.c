@@ -167,6 +167,8 @@ int main(int argc, char **argv) {
    if (CUE_SUCCESS != create_utils_suit())
        goto exit;
 
+   if (CUE_SUCCESS != create_transaction_lifecycle_test_suit())
+       goto exit;
    if (CUE_SUCCESS != create_transaction_test_suit())
        goto exit;
 

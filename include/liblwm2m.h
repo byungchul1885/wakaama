@@ -845,6 +845,13 @@ struct _lwm2m_transaction_
     uint8_t *payload; // carries the entire payload across multiple transactions in case of a block 1 transfer
     lwm2m_transaction_callback_t callback;
     void * userData;
+    /* transaction owner 전용. 콜백/송신/step 중에는 해제를 지연하며 raw next와 분리한다. */
+    unsigned holdCount;
+    bool retired;
+    bool completing;
+    bool sending;
+    bool abortRequested;
+    lwm2m_transaction_t *stepNext;
 };
 
 /*
@@ -1146,6 +1153,7 @@ struct _lwm2m_context_
 #endif
     uint16_t                nextMID;
     lwm2m_transaction_t *   transactionList;
+    bool                   transactionStepActive;
     void *                  userData;
 };
 

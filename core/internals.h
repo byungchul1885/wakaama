@@ -266,7 +266,12 @@ void transaction_generate_server_token(uint8_t token[COAP_TOKEN_LEN], uint8_t to
 lwm2m_transaction_t * transaction_new(void * sessionH, coap_method_t method, char * altPath, lwm2m_uri_t * uriP, uint16_t mID, uint8_t token_len, uint8_t* token);
 int transaction_send(lwm2m_context_t * contextP, lwm2m_transaction_t * transacP);
 void transaction_free(lwm2m_transaction_t * transacP);
+/* context는 활성 API/콜백이 모두 반환할 때까지 살아 있어야 한다. callback의 transaction,
+ * message/payload는 borrowed다. 등록된 항목은 remove로 해제하며 free는 분리된 항목에만 쓴다.
+ * remove는 즉시 unlink하지만 활성 송신/콜백/step의 마지막 borrow까지 메모리를 보존한다.
+ * 콜백에서 자신/다른 항목 remove·session abort는 허용한다. userData 소유권은 변경하지 않는다. */
 void transaction_remove(lwm2m_context_t * contextP, lwm2m_transaction_t * transacP);
+void transaction_complete(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP, void *message);
 size_t transaction_abort_session(lwm2m_context_t *contextP, void *sessionH);
 bool transaction_handleResponse(lwm2m_context_t * contextP, void * fromSessionH, coap_packet_t * message, coap_packet_t * response);
 bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t mid, uint8_t code);

@@ -1584,7 +1584,8 @@ size_t coap_set_payload(void *packet, const void *payload, size_t length)
   coap_packet_t *const coap_pkt = (coap_packet_t *) packet;
 
   coap_pkt->payload = (uint8_t *) payload;
-  coap_pkt->payload_len = (uint16_t)(length);
+  /* 전체 표현은 Block 분할 전 64 KiB 이상일 수 있다. wire 조각 제한과 분리한다. */
+  coap_pkt->payload_len = length;
 
   return coap_pkt->payload_len;
 }

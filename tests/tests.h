@@ -71,6 +71,8 @@ CU_ErrorCode create_notify_defaults_test_suit(void);
 CU_ErrorCode create_value_payload_test_suit(void);
 CU_ErrorCode create_send_scope_test_suit(void);
 CU_ErrorCode create_notify_values_test_suit(void);
+CU_ErrorCode create_notification_block_test_suit(void);
+CU_ErrorCode create_notification_leaf_test_suit(void);
 void test_reset_close_connection_count(void);
 size_t test_get_close_connection_count(void);
 #endif

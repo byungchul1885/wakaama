@@ -849,6 +849,10 @@ struct _lwm2m_transaction_
     uint8_t *payload; // carries the entire payload across multiple transactions in case of a block 1 transfer
     lwm2m_transaction_callback_t callback;
     void * userData;
+    /* 선택적 재전송 준비 훅. transaction은 호출 동안 borrowed이며 owner 해제는 지연된다.
+     * Notify는 현재 sequence를 갱신한다. 제품 IO/Store 정책은 넣지 않는다. */
+    lwm2m_transaction_callback_t prepareRetry;
+    bool reportSendErrors; /* true면 최초 제출의 실제 transport 오류를 caller에게도 반환한다. */
     /* transaction owner 전용. 콜백/송신/step 중에는 해제를 지연하며 raw next와 분리한다. */
     unsigned holdCount;
     bool retired;
@@ -893,6 +897,13 @@ typedef struct _lwm2m_watcher_
     uint8_t terminalCode;
     uint8_t defaultsError; /* 같은 기본 주기 조회 실패의 반복 로그를 억제한다. */
     uint64_t changeSequence;
+    uint64_t observationId; /* context 수명 동안 재사용하지 않는 관계 ID */
+    uint64_t notificationSnapshotId;
+    bool notificationPending;
+    uint16_t notificationMid;
+    uint16_t notificationBlockSize;
+    struct _lwm2m_observe_leaves_ *leaves;
+    bool structurePending;
     lwm2m_observe_value_t lastValue;
     lwm2m_observe_value_t evaluatedValue;
     /* 마지막 성공 보고의 정규화 bytes를 소유한다. 관찰 owner만 교체/해제한다. */
@@ -1099,8 +1110,11 @@ struct _lwm2m_context_
     /* callback 후 transient 관찰 pointer 재사용을 차단한다. */
     uint64_t observeEpoch;
     size_t observeSnapshotBytes;
+    size_t observeLeafBytes;
     /* 초기 응답 제출까지 보관하는 비공개 후보 하나. borrowed server/session은 보관하지 않는다. */
     struct _lwm2m_pending_observe_ *pendingObserve;
+    struct _lwm2m_notification_snapshot_ *notificationSnapshots;
+    uint64_t nextNotificationSnapshotId;
     uint64_t observePreparationId;
     bool observeStepActive;
     lwm2m_registration_object_filter_t registrationObjectFilter;

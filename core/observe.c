@@ -80,8 +80,12 @@ void observe_discardPrepared(lwm2m_context_t *contextP)
     pending_observe_t *pending = contextP->pendingObserve;
     contextP->pendingObserve = NULL;
     if (pending == NULL) return;
+    observe_releaseBlocks(contextP, pending->id);
     /* 후보 사본은 공개 보관량에 포함되지 않으므로 freeWatcher를 사용하지 않는다. */
     lwm2m_free(pending->watcher->valueSnapshot);
+#ifndef LWM2M_VERSION_1_0
+    observe_freeLeaves(pending->watcher->leaves);
+#endif
     lwm2m_free(pending->watcher);
     lwm2m_free(pending->observed);
     lwm2m_free(pending);
@@ -193,6 +197,7 @@ uint8_t observe_prepareRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm
     memset(pending->watcher, 0, sizeof(*pending->watcher));
     pending->observed->uri = *uriP;
     pending->id = ++contextP->observePreparationId;
+    pending->watcher->observationId = pending->id;
     pending->serverId = serverP->shortID;
     pending->sessionGeneration = prv_sessionGeneration(serverP);
     pending->requestMid = message->mid;
@@ -208,6 +213,31 @@ uint8_t observe_prepareRequest(lwm2m_context_t *contextP, lwm2m_uri_t *uriP, lwm
     coap_set_header_observe(response, count & 0x00ffffffU);
     pending->watcher->counter = (count + 1U) & 0x00ffffffU;
     contextP->pendingObserve = pending;
+#ifndef LWM2M_VERSION_1_0
+    if (!LWM2M_URI_IS_SET_RESOURCE(uriP) || value.type == LWM2M_TYPE_MULTIPLE_RESOURCE)
+    {
+        uint8_t result = observe_prepareLeaves(uriP, size, dataP, lwm2m_gettime(), &pending->watcher->leaves);
+        if (result == NO_ERROR && !observe_leavesFit(contextP, old, pending->watcher->leaves))
+            result = COAP_503_SERVICE_UNAVAILABLE;
+        if (result != NO_ERROR) { observe_discardPrepared(contextP); return result; }
+    }
+#endif
+    pending->watcher->notificationBlockSize = lwm2m_get_coap_block_size();
+    if (IS_OPTION(message, COAP_OPTION_BLOCK2))
+    {
+        if (message->block2_num != 0) { observe_discardPrepared(contextP); return COAP_402_BAD_OPTION; }
+        pending->watcher->notificationBlockSize = MIN(message->block2_size, lwm2m_get_coap_block_size());
+    }
+    if (response->payload_len != 0)
+    {
+        uint8_t result;
+        /* 준비 함수 호출 동안만 server를 빌린다. 비공개 후보에 pointer를 보관하지 않는다. */
+        pending->watcher->server = serverP;
+        result = observe_prepareBlock(contextP, uriP, pending->watcher, response,
+                                      IS_OPTION(message, COAP_OPTION_BLOCK2));
+        pending->watcher->server = NULL;
+        if (result != NO_ERROR) { observe_discardPrepared(contextP); return result; }
+    }
     return COAP_205_CONTENT;
 }
 
@@ -261,7 +291,11 @@ void observe_completeRequest(lwm2m_context_t *contextP, uint64_t id, lwm2m_serve
     {
         lwm2m_watcher_t *old = *link;
         pending->watcher->next = old->next;
+        observe_releaseDelivery(contextP, old);
         observe_replaceSnapshot(contextP, old, NULL, 0);
+#ifndef LWM2M_VERSION_1_0
+        observe_replaceLeaves(contextP, old, NULL);
+#endif
         *old = *pending->watcher;
         lwm2m_free(pending->watcher);
         pending->watcher = old;
@@ -272,6 +306,10 @@ void observe_completeRequest(lwm2m_context_t *contextP, uint64_t id, lwm2m_serve
         observed->watcherList = pending->watcher;
     }
     contextP->observeSnapshotBytes += pending->watcher->valueSnapshotLength;
+#ifndef LWM2M_VERSION_1_0
+    contextP->observeLeafBytes += observe_leafBytes(pending->watcher->leaves);
+#endif
+    observe_publishBlock(contextP, pending->watcher->notificationSnapshotId);
     contextP->pendingObserve = NULL;
     lwm2m_free(pending->observed); lwm2m_free(pending);
     observe_changedLifetime(contextP);
@@ -358,12 +396,27 @@ void observe_terminate(lwm2m_context_t *contextP, lwm2m_observed_t *observed,
     uint16_t serverId = watcher->server->shortID;
     bool deleted = watcher->terminalCode == COAP_404_NOT_FOUND;
     uint8_t result;
-    coap_init_message(&response, COAP_TYPE_NON, code, contextP->nextMID++);
+    lwm2m_transaction_t *transaction = NULL, *item;
+    size_t queued = 0;
+    unsigned attempts;
+    for (item = contextP->transactionList; item != NULL; item = item->next) ++queued;
+    coap_init_message(&response, COAP_TYPE_CON, code, contextP->nextMID++);
+    for (attempts = 0; attempts < 65536U && LWM2M_LIST_FIND(contextP->transactionList, response.mid) != NULL; ++attempts)
+        response.mid = contextP->nextMID++;
     coap_set_header_token(&response, watcher->token, watcher->tokenLen);
+    if (queued < LWM2M_OBSERVER_LIMIT && attempts < 65536U)
+        transaction = transaction_new(session, (coap_method_t)code, NULL, NULL, response.mid,
+                                       (uint8_t)response.token_len, response.token);
     while (*link != watcher) link = &(*link)->next;
     /* message의 Token은 사본이다. callback 전에 borrowed 관찰의 수명을 끝낸다. */
     prv_removeWatcher(contextP, observed, link);
-    result = message_send(contextP, &response, session);
+    if (transaction == NULL) result = COAP_503_SERVICE_UNAVAILABLE;
+    else
+    {
+        transaction->reportSendErrors = true;
+        contextP->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transaction);
+        result = (uint8_t)transaction_send(contextP, transaction);
+    }
     coap_free_header(&response);
     if (deleted && result == COAP_NO_ERROR)
         LOG_ARG_DBG("Observe ended /%u/%u/%u server=%u code=%u", uri.objectId,
@@ -452,12 +505,20 @@ void observe_markDeleted(lwm2m_context_t *contextP, lwm2m_uri_t *uriP)
     while (*link != NULL)
     {
         lwm2m_observed_t *observed = *link;
+        /* 상위 OID 관찰의 고정 사본도 삭제된 IID/RID의 값을 계속 공개하지 않는다. */
+        if (prv_contains(&observed->uri, uriP))
+        {
+            lwm2m_watcher_t *watcher;
+            for (watcher = observed->watcherList; watcher != NULL; watcher = watcher->next)
+                observe_releaseDelivery(contextP, watcher);
+        }
         if (prv_contains(uriP, &observed->uri))
         {
             lwm2m_watcher_t *watcher;
             for (watcher = observed->watcherList; watcher != NULL; watcher = watcher->next)
             {
                 watcher->terminalCode = COAP_404_NOT_FOUND;
+                observe_releaseDelivery(contextP, watcher);
                 observe_replaceSnapshot(contextP, watcher, NULL, 0);
             }
             if (observed->watcherList == NULL)

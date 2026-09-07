@@ -1232,7 +1232,9 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
                             coap_set_header_content_type(response, format);
                             if (observe == 0)
                             {
+                                coap_set_payload(response, buffer, length);
                                 result = observe_prepareRequest(contextP, uriP, serverP, size, dataP, message, response);
+                                if (result == COAP_205_CONTENT) length = response->payload_len;
                             }
                         }
                     }
@@ -1250,6 +1252,8 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
             }
             else
             {
+                result = observe_readBlock(contextP, serverP, uriP, message, response);
+                if (result != COAP_IGNORE) break;
 #ifndef LWM2M_VERSION_1_0
                 lwm2m_object_t *object = (lwm2m_object_t *)LWM2M_LIST_FIND(contextP->objectList, uriP->objectId);
                 if (object != NULL && (object->flags & LWM2M_OBJECT_FLAG_SNAPSHOT_READ) != 0)
@@ -1316,6 +1320,7 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
             else
             {
                 lwm2m_free(buffer);
+                coap_set_payload(response, NULL, 0);
             }
         }
         break;

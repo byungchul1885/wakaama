@@ -37,6 +37,7 @@ static void setup(submission_fixture_t *f) {
     f->value = "before";
     CU_ASSERT_TRUE(lwm2m_stringToUri("/3303/0/0", 9, &f->uri) > 0);
     test_clock_set(100); test_reset_response_history(); test_set_send_callback(NULL);
+    test_auto_ack_notifications(&f->context);
 }
 
 static void cleanup(submission_fixture_t *f) {
@@ -47,6 +48,7 @@ static void cleanup(submission_fixture_t *f) {
     CU_ASSERT_EQUAL(f->context.observeSnapshotBytes, 0);
     CU_ASSERT_FALSE(f->context.observeStepActive);
     test_clock_reset();
+    test_auto_ack_notifications(NULL);
 }
 
 static size_t packet(uint8_t *bytes, lwm2m_media_type_t format, int block, bool non) {
@@ -82,8 +84,8 @@ static void response(size_t index, uint8_t code, bool observing, lwm2m_media_typ
     if (observing) CU_ASSERT_EQUAL(message.content_type, format);
     if (code == COAP_402_BAD_OPTION) {
         CU_ASSERT_FALSE(IS_OPTION(&message, COAP_OPTION_CONTENT_TYPE));
-        CU_ASSERT_EQUAL_FATAL(message.payload_len, 15);
-        CU_ASSERT_EQUAL(memcmp(message.payload, "BlockOutOfScope", 15), 0);
+        /* 초기 Observe의 잘못된 NUM은 snapshot 생성 전에 빈 4.02로 거절한다. */
+        CU_ASSERT_EQUAL(message.payload_len, 0);
     }
     coap_free_header(&message);
 }

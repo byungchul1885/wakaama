@@ -52,6 +52,7 @@ static void init(fixture_t *f) {
     CU_ASSERT_TRUE(lwm2m_stringToUri("/3303/0/0", 9, &f->path) > 0);
     lwm2m_data_encode_int(42, &f->value);
     test_clock_set(100); test_reset_response_history();
+    test_auto_ack_notifications(&f->context);
 }
 
 static void clear(fixture_t *f) {
@@ -60,6 +61,7 @@ static void clear(fixture_t *f) {
     observe_clear(&f->context, &root);
     CU_ASSERT_PTR_NULL(f->context.observedList); CU_ASSERT_PTR_NULL(f->context.attributeList);
     test_clock_reset(); test_set_send_callback(NULL);
+    test_auto_ack_notifications(NULL);
 }
 
 static void observe(fixture_t *f, unsigned server, lwm2m_media_type_t format) {
@@ -102,7 +104,7 @@ static void response_value(size_t index, lwm2m_media_type_t format, int64_t expe
     int64_t value = 0;
     CU_ASSERT_PTR_NOT_NULL(session);
     CU_ASSERT_EQUAL(coap_parse_message(&message, (uint8_t *)bytes, (uint16_t)length), NO_ERROR);
-    CU_ASSERT_EQUAL(message.type, COAP_TYPE_NON); CU_ASSERT_EQUAL(message.code, COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(message.type, COAP_TYPE_CON); CU_ASSERT_EQUAL(message.code, COAP_205_CONTENT);
     CU_ASSERT_EQUAL(message.content_type, format); CU_ASSERT_TRUE(IS_OPTION(&message, COAP_OPTION_OBSERVE));
     CU_ASSERT_EQUAL(message.token_len, 1); CU_ASSERT_EQUAL(message.token[0], token);
     LWM2M_URI_RESET(&path); CU_ASSERT_TRUE(lwm2m_stringToUri("/3303/0/0", 9, &path) > 0);
@@ -454,6 +456,84 @@ static void new_registration_clears_only_target_observers(void) {
     clear(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
 }
 
+static void notification_ack(fixture_t *f, void *session, uint16_t mid, bool reset)
+{
+    coap_packet_t message = {0};
+    coap_init_message(&message, reset ? COAP_TYPE_RST : COAP_TYPE_ACK, COAP_EMPTY_MESSAGE_CODE, mid);
+    (void)transaction_handleResponse(&f->context, session, &message, NULL);
+    coap_free_header(&message);
+}
+
+static void con_retry_ack_and_latest(void)
+{
+    fixture_t f;
+    size_t baseline = test_malloc_live_allocations(), length;
+    uint16_t mid;
+    uint32_t sequence;
+    coap_packet_t first = {0}, retry = {0};
+    uint8_t payload[128];
+    time_t timeout = 60;
+    init(&f); test_auto_ack_notifications(NULL); observe(&f, 0, LWM2M_CONTENT_SENML_CBOR);
+    change(&f, 43); tick(&f, 101, 1);
+    uint8_t *firstWire = test_get_response_buffer(&length);
+    CU_ASSERT_EQUAL(coap_parse_message(&first, firstWire, (uint16_t)length), NO_ERROR);
+    mid = first.mid; sequence = first.observe; length = first.payload_len;
+    CU_ASSERT_TRUE(length <= sizeof(payload)); memcpy(payload, first.payload, length);
+    CU_ASSERT_TRUE(f.context.observedList->watcherList->notificationPending);
+    notification_ack(&f, f.servers + 1, mid, false);
+    CU_ASSERT_PTR_NOT_NULL(f.context.transactionList);
+    change(&f, 44); tick(&f, 102, 0);
+    test_clock_set(103); transaction_step(&f.context, 103, &timeout);
+    size_t wireLength; uint8_t *wire = test_get_response_buffer(&wireLength);
+    CU_ASSERT_EQUAL(coap_parse_message(&retry, wire, (uint16_t)wireLength), NO_ERROR);
+    CU_ASSERT_EQUAL(retry.mid, mid); CU_ASSERT_TRUE(retry.observe > sequence);
+    CU_ASSERT_EQUAL(retry.payload_len, length); CU_ASSERT_EQUAL(memcmp(retry.payload, payload, length), 0);
+    notification_ack(&f, f.servers, mid, false);
+    CU_ASSERT_PTR_NULL(f.context.transactionList);
+    tick(&f, 104, 1); response_value(0, LWM2M_CONTENT_SENML_CBOR, 44, 1);
+    notification_ack(&f, f.servers, f.context.observedList->watcherList->lastMid, true);
+    CU_ASSERT_PTR_NULL(f.context.observedList); CU_ASSERT_PTR_NULL(f.context.transactionList);
+    coap_free_header(&first); coap_free_header(&retry); clear(&f);
+    CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
+static void con_timeout_and_cancel(void)
+{
+    fixture_t f;
+    size_t baseline = test_malloc_live_allocations();
+    unsigned tries;
+    init(&f); test_auto_ack_notifications(NULL); observe(&f, 0, LWM2M_CONTENT_SENML_CBOR);
+    change(&f, 43); tick(&f, 101, 1);
+    for (tries = 0; f.context.transactionList != NULL && tries < 8; ++tries)
+    {
+        time_t now = f.context.transactionList->retrans_time, timeout = 60;
+        test_clock_set(now); transaction_step(&f.context, now, &timeout);
+    }
+    CU_ASSERT_PTR_NULL(f.context.transactionList); CU_ASSERT_PTR_NULL(f.context.observedList);
+    observe(&f, 0, LWM2M_CONTENT_SENML_CBOR); change(&f, 44); tick(&f, 200, 1);
+    uint16_t mid = f.context.observedList->watcherList->lastMid;
+    observe_clear(&f.context, &f.path);
+    CU_ASSERT_PTR_NULL(f.context.transactionList);
+    notification_ack(&f, f.servers, mid, false);
+    tick(&f, 210, 0); clear(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
+static void con_peer_nstart(void)
+{
+    fixture_t f;
+    size_t baseline = test_malloc_live_allocations();
+    init(&f); test_auto_ack_notifications(NULL);
+    f.servers[1].sessionH = f.servers[0].sessionH;
+    observe(&f, 0, LWM2M_CONTENT_SENML_CBOR); observe(&f, 1, LWM2M_CONTENT_SENML_JSON);
+    change(&f, 43); tick(&f, 101, 1);
+    CU_ASSERT_PTR_NOT_NULL(f.context.transactionList); CU_ASSERT_PTR_NULL(f.context.transactionList->next);
+    notification_ack(&f, f.servers, f.context.transactionList->mID, false);
+    tick(&f, 102, 1);
+    CU_ASSERT_PTR_NOT_NULL(f.context.transactionList); CU_ASSERT_PTR_NULL(f.context.transactionList->next);
+    notification_ack(&f, f.servers, f.context.transactionList->mID, false);
+    tick(&f, 103, 0); clear(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+}
+
 CU_ErrorCode create_notify_test_suit(void) {
     struct TestTable table[] = {
         {"Q09 pmin AND and pending latest value", pmin_and_pending},
@@ -468,6 +548,9 @@ CU_ErrorCode create_notify_test_suit(void) {
         {"Q12 every Notify allocation failure retains retry", all_notify_allocation_failures_keep_retry},
         {"Q05 Q01 pure read purpose and current role", read_purpose_isolation_and_role_recheck},
         {"Q13 new Register versus reconnect and Update", new_registration_clears_only_target_observers},
+        {"R4 CON retry ACK latest and RST", con_retry_ack_and_latest},
+        {"R4 CON timeout Cancel late ACK cleanup", con_timeout_and_cancel},
+        {"R4 NSTART across same peer observations", con_peer_nstart},
         {NULL, NULL}
     };
     CU_pSuite suite = CU_add_suite("notify timing", NULL, NULL);

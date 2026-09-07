@@ -147,6 +147,8 @@ int main(int argc, char **argv) {
    if (CUE_SUCCESS != create_observe_test_suit())
        goto exit;
 #ifdef WAKAAMA_TEST_FAULTS
+   if (CUE_SUCCESS != create_notification_block_test_suit()) return CU_get_error();
+   if (CUE_SUCCESS != create_notification_leaf_test_suit()) return CU_get_error();
    if (CUE_SUCCESS != create_notify_test_suit())
        goto exit;
    if (CUE_SUCCESS != create_notify_defaults_test_suit())

@@ -96,6 +96,7 @@ static void init(fixture_t *f)
     LWM2M_URI_RESET(&f->path);
     CU_ASSERT_TRUE(lwm2m_stringToUri("/3303/0/0", 9, &f->path) > 0);
     test_clock_set(100); test_reset_response_history();
+    test_auto_ack_notifications(&f->context);
 }
 
 static void observe(fixture_t *f, unsigned server)
@@ -122,6 +123,7 @@ static void clear(fixture_t *f)
     CU_ASSERT_EQUAL(f->context.observeSnapshotBytes, 0);
     CU_ASSERT_FALSE(f->context.observeStepActive);
     test_clock_reset(); test_malloc_fault_disable();
+    test_auto_ack_notifications(NULL);
 }
 
 static void change(fixture_t *f)

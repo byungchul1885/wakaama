@@ -21,6 +21,8 @@ set(TEST_SOURCES
     core_notify_tests.c
     core_notify_defaults_tests.c
     core_notify_values_tests.c
+    core_notification_block_tests.c
+    core_notification_leaf_tests.c
     core_value_payload_tests.c
     core_send_scope_tests.c
     core_registration_retry_tests.c

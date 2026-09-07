@@ -72,14 +72,17 @@ static void setup(value_fixture_t *f, bool tree) {
     LWM2M_URI_RESET(&f->path); f->path.objectId = 3303; f->path.instanceId = 0;
     if (!tree) f->path.resourceId = 0;
     test_clock_set(100); test_reset_response_history();
+    test_auto_ack_notifications(&f->context);
 }
 
 static void cleanup(value_fixture_t *f) {
     test_set_send_callback(NULL);
     observe_clear(&f->context, &f->path);
+    while (f->context.transactionList != NULL) transaction_remove(&f->context, f->context.transactionList);
     CU_ASSERT_EQUAL(f->context.observeSnapshotBytes, 0);
     CU_ASSERT_PTR_NULL(f->context.observedList);
     test_clock_reset();
+    test_auto_ack_notifications(NULL);
 }
 
 static uint8_t start(value_fixture_t *f, lwm2m_media_type_t format) {
@@ -355,7 +358,7 @@ static void terminal_packet(uint8_t code, uint8_t token) {
     size_t length;
     const uint8_t *raw = test_get_response_buffer(&length);
     CU_ASSERT_EQUAL(coap_parse_message(&response, (uint8_t *)raw, (uint16_t)length), NO_ERROR);
-    CU_ASSERT_EQUAL(response.type, COAP_TYPE_NON); CU_ASSERT_EQUAL(response.code, code);
+    CU_ASSERT_EQUAL(response.type, COAP_TYPE_CON); CU_ASSERT_EQUAL(response.code, code);
     CU_ASSERT_EQUAL(response.token_len, 1); CU_ASSERT_EQUAL(response.token[0], token);
     CU_ASSERT_FALSE(IS_OPTION(&response, COAP_OPTION_OBSERVE));
     CU_ASSERT_FALSE(IS_OPTION(&response, COAP_OPTION_CONTENT_TYPE));

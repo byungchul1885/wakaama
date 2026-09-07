@@ -54,6 +54,43 @@ bool observe_snapshotFits(const lwm2m_context_t *contextP, const lwm2m_watcher_t
 void observe_replaceSnapshot(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher, uint8_t *buffer, size_t length);
 /* watcher와 사본을 해제한다. 호출자가 owner 목록에서 먼저 분리해야 한다. */
 void observe_freeWatcher(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher);
+/* 전달 owner는 watcher pointer를 transaction 밖에 저장하지 않는다. release는 IO/callback 없이 분리한다. */
+bool observe_deliveryBusy(lwm2m_context_t *contextP, const lwm2m_watcher_t *watcher);
+uint8_t observe_sendNotification(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher, coap_packet_t *message);
+void observe_releaseDelivery(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher);
+void observe_abortNotification(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher);
+/* 큰 응답은 전체 payload를 복사한 뒤 borrowed 응답을 첫 조각으로 좁힌다. 원본 할당의 owner는 불변이다.
+ * snapshot ID는 재사용하지 않는다. 실패하면 기존 사본/응답/관계를 보존한다. */
+uint8_t observe_prepareBlock(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP, lwm2m_watcher_t *watcher,
+                            coap_packet_t *response, bool requested);
+void observe_publishBlock(lwm2m_context_t *contextP, uint64_t id);
+void observe_releaseBlocks(lwm2m_context_t *contextP, uint64_t observationId);
+void observe_discardBlock(lwm2m_context_t *contextP, uint64_t id);
+void observe_expireBlocks(lwm2m_context_t *contextP, time_t now);
+bool observe_blockBusy(lwm2m_context_t *contextP, uint64_t id);
+/* 후속 GET만 처리한다. COAP_IGNORE는 이 owner 대상이 아니며 일반 Read로 진행한다. */
+uint8_t observe_readBlock(lwm2m_context_t *contextP, lwm2m_server_t *serverP, const lwm2m_uri_t *uriP,
+                         coap_packet_t *request, coap_packet_t *response);
+/* 성공한 전송 bytes의 범위만 표시한다. callback 뒤에는 ID로 최신 owner를 다시 찾는다. */
+void observe_blockSubmitted(lwm2m_context_t *contextP, uint16_t serverId, uint64_t generation,
+                            const coap_packet_t *response);
+#ifndef LWM2M_VERSION_1_0
+/* 집합 관찰의 마지막 보고 leaf를 독립 소유한다. 준비 실패는 NULL/기존 상태 불변이며,
+ * 전체 4 MiB, 한 사본 4096 leaf와 값 bytes 64 KiB로 제한한다. */
+typedef struct _lwm2m_observe_leaves_ observe_leaves_t;
+uint8_t observe_prepareLeaves(const lwm2m_uri_t *uri, int count, const lwm2m_data_t *data, time_t now,
+                              observe_leaves_t **output);
+void observe_freeLeaves(observe_leaves_t *leaves);
+size_t observe_leafBytes(const observe_leaves_t *leaves);
+bool observe_leavesFit(const lwm2m_context_t *context, const lwm2m_watcher_t *watcher, const observe_leaves_t *leaves);
+void observe_replaceLeaves(lwm2m_context_t *context, lwm2m_watcher_t *watcher, observe_leaves_t *leaves);
+bool observe_leavesDue(lwm2m_context_t *context, lwm2m_watcher_t *watcher, const lwm2m_attributes_t *defaults,
+                       time_t now, time_t *timeout);
+bool observe_evaluateLeaves(lwm2m_context_t *context, lwm2m_watcher_t *watcher, observe_leaves_t *candidate,
+                            const lwm2m_attributes_t *defaults, time_t now, time_t *timeout, bool *allEvaluated);
+bool observe_valueCondition(const lwm2m_attributes_t *attr, const lwm2m_observe_value_t *current,
+                            const lwm2m_observe_value_t *evaluated, const lwm2m_observe_value_t *reported, bool changed);
+#endif
 /* uri가 NULL이면 모든 설정, 아니면 해당 경로와 자손을 해제한다. */
 void observe_clearParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP);
 /* 새 값이 있는 필드만 caller 소유 사본에 합친다. 입력/출력 주소는 같아도 된다. */

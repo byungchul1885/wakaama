@@ -33,6 +33,8 @@ static size_t response_lengths[8];
 static void *response_sessions[8];
 static size_t response_count;
 static void (*send_callback)(void);
+static lwm2m_context_t *auto_ack_context;
+void test_auto_ack_notifications(lwm2m_context_t *context) { auto_ack_context = context; }
 
 bool lwm2m_session_is_equal(void *session1, void *session2, void *userData) { return session1 == session2; }
 
@@ -66,6 +68,12 @@ uint8_t lwm2m_buffer_send(void *sessionH, uint8_t *buffer, size_t length, void *
     }
 
     if (send_callback != NULL) send_callback();
+
+    if (auto_ack_context != NULL && length >= 4 && (buffer[0] & 0x30) == 0 && buffer[1] >= COAP_201_CREATED)
+    {
+        uint8_t ack[] = {0x60, 0, buffer[2], buffer[3]};
+        lwm2m_handle_packet(auto_ack_context, ack, sizeof(ack), sessionH);
+    }
 
     return COAP_NO_ERROR;
 }

@@ -589,6 +589,30 @@ int transaction_prepare(lwm2m_transaction_t *transacP)
 static int prv_send(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP)
 {
     bool maxRetriesReached = false;
+    coap_packet_t *outgoing = transacP->message;
+    /* NSTART=1: 요청 송신과 별개인 CoAP server의 미확인 CON 응답/Notify를 직렬화한다. */
+    if (transacP->retrans_counter == 0 && outgoing != NULL && outgoing->type == COAP_TYPE_CON &&
+        outgoing->code >= COAP_201_CREATED)
+    {
+        lwm2m_transaction_t *other;
+        for (other = contextP->transactionList; other != NULL; other = other->next)
+        {
+            coap_packet_t *packet = other->message;
+            if (other != transacP && !other->retired && !other->completing && !other->ack_received &&
+                other->retrans_counter != 0 && packet != NULL && packet->type == COAP_TYPE_CON &&
+                packet->code >= COAP_201_CREATED &&
+                lwm2m_session_is_equal(other->peerH, transacP->peerH, contextP->userData))
+            {
+                transacP->retrans_time = lwm2m_gettime(); /* step의 최소 wake-up 1초를 사용하여 덧셈 overflow를 피한다. */
+                return NO_ERROR;
+            }
+        }
+    }
+    if (transacP->retrans_counter != 0 && !transacP->ack_received && transacP->prepareRetry != NULL)
+    {
+        transacP->prepareRetry(contextP, transacP, NULL);
+        if (transacP->retired || transacP->completing) return -1;
+    }
     if (transaction_prepare(transacP) != NO_ERROR) {
         transaction_complete(contextP, transacP, NULL);
         return COAP_500_INTERNAL_SERVER_ERROR;
@@ -621,7 +645,8 @@ static int prv_send(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP)
             /* 재진입한 ACK/취소가 최신 전송 상태를 보게 하며 transport 반환 뒤에는 재차 덮어쓰지 않는다. */
             transacP->retrans_time += timeout;
             transacP->retrans_counter += 1;
-            (void)lwm2m_buffer_send(transacP->peerH, transacP->buffer, transacP->buffer_len, contextP->userData);
+            uint8_t sent = lwm2m_buffer_send(transacP->peerH, transacP->buffer, transacP->buffer_len, contextP->userData);
+            if (transacP->reportSendErrors && sent != NO_ERROR) return sent;
         }
         else
         {

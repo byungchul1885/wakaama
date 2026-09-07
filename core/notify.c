@@ -174,7 +174,11 @@ void observe_replaceSnapshot(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher
 
 void observe_freeWatcher(lwm2m_context_t *contextP, lwm2m_watcher_t *watcher)
 {
+    observe_releaseDelivery(contextP, watcher);
     observe_replaceSnapshot(contextP, watcher, NULL, 0);
+#ifndef LWM2M_VERSION_1_0
+    observe_replaceLeaves(contextP, watcher, NULL);
+#endif
     lwm2m_free(watcher);
 }
 
@@ -272,7 +276,7 @@ static bool prv_step(const lwm2m_observe_value_t *current, const lwm2m_observe_v
     return distance > 0 && distance >= step;
 }
 
-static bool prv_condition(const lwm2m_attributes_t *attr, const lwm2m_observe_value_t *current,
+bool observe_valueCondition(const lwm2m_attributes_t *attr, const lwm2m_observe_value_t *current,
                            const lwm2m_observe_value_t *evaluated, const lwm2m_observe_value_t *reported,
                            bool changed)
 {
@@ -403,6 +407,11 @@ restart:
             size_t snapshotLength = 0;
             int count = 0, length;
             uint8_t result;
+#ifndef LWM2M_VERSION_1_0
+            observe_leaves_t *leaves = NULL;
+            bool aggregate = !LWM2M_URI_IS_SET_RESOURCE(&uri) ||
+                watcher->lastValue.type == LWM2M_TYPE_MULTIPLE_RESOURCE;
+#endif
             if (!watcher->active || !prv_connected(watcher->server)) continue;
             if (watcher->terminalCode != 0)
             {
@@ -442,6 +451,13 @@ restart:
                 prv_wait(timeoutP, sinceEvaluation < epmax ? epmax - sinceEvaluation : 1);
             if (changed && sinceEvaluation < epmin) prv_wait(timeoutP, epmin - sinceEvaluation);
             if (watcher->notifyPending && sinceReport < pmin) prv_wait(timeoutP, pmin - sinceReport);
+#ifndef LWM2M_VERSION_1_0
+            if (aggregate)
+            {
+                if (!observe_leavesDue(contextP, watcher, &attr, currentTime, timeoutP)) continue;
+            }
+            else
+#endif
             if (!evaluate && !maxDue && !sendPending) continue;
 
 #ifndef LWM2M_VERSION_1_0
@@ -499,17 +515,46 @@ restart:
                 valueChanged = snapshotLength != watcher->valueSnapshotLength ||
                     (snapshotLength != 0 && memcmp(buffer, watcher->valueSnapshot, snapshotLength) != 0);
             }
+#ifndef LWM2M_VERSION_1_0
+            if (aggregate)
+            {
+                bool allEvaluated;
+                result = observe_prepareLeaves(&uri, count, data, currentTime, &leaves);
+                if (result != NO_ERROR || !observe_leavesFit(contextP, watcher, leaves))
+                {
+                    observe_freeLeaves(leaves); lwm2m_free(buffer); lwm2m_data_free(count, data);
+                    LOG_ARG_WARN("Observe leaf comparison unavailable /%u/%u/%u code=%u", uri.objectId,
+                        uri.instanceId, uri.resourceId, result != NO_ERROR ? result : COAP_503_SERVICE_UNAVAILABLE);
+                    prv_wait(timeoutP, 1); continue;
+                }
+                sendPending = observe_evaluateLeaves(contextP, watcher, leaves, &attr,
+                                                      currentTime, timeoutP, &allEvaluated);
+                if (allEvaluated)
+                {
+                    watcher->lastEvaluation = currentTime;
+                    if (change == watcher->changeSequence && change != UINT64_MAX) watcher->update = false;
+                }
+            }
+            else
+#endif
             if (evaluate)
             {
-                if (prv_condition(&attr, &current, &watcher->evaluatedValue, &watcher->lastValue, valueChanged))
+                if (observe_valueCondition(&attr, &current, &watcher->evaluatedValue, &watcher->lastValue, valueChanged))
                     watcher->notifyPending = true;
                 watcher->evaluatedValue = current;
                 watcher->lastEvaluation = currentTime;
                 if (change == watcher->changeSequence && change != UINT64_MAX) watcher->update = false;
             }
-            if (!maxDue && (!watcher->notifyPending || sinceReport < pmin))
+            if (
+#ifndef LWM2M_VERSION_1_0
+                aggregate ? !sendPending :
+#endif
+                !maxDue && (!watcher->notifyPending || sinceReport < pmin))
             {
-                if (watcher->notifyPending) prv_wait(timeoutP, pmin - sinceReport);
+#ifndef LWM2M_VERSION_1_0
+                observe_freeLeaves(leaves);
+#endif
+                if (watcher->notifyPending && sinceReport < pmin) prv_wait(timeoutP, pmin - sinceReport);
                 lwm2m_free(buffer);
                 lwm2m_data_free(count, data);
                 continue;
@@ -520,22 +565,51 @@ restart:
             lwm2m_data_free(count, data);
             if (length < 0 || format != watcher->format)
             {
+#ifndef LWM2M_VERSION_1_0
+                observe_freeLeaves(leaves);
+#endif
                 lwm2m_free(buffer);
                 watcher->notifyPending = true;
                 prv_wait(timeoutP, 1);
                 LOG_ARG_WARN("Observe serialization failed /%u/%u/%u", uri.objectId, uri.instanceId, uri.resourceId);
                 continue;
             }
-            coap_init_message(&message, COAP_TYPE_NON, COAP_205_CONTENT, contextP->nextMID++);
+            coap_init_message(&message, COAP_TYPE_CON, COAP_205_CONTENT, contextP->nextMID++);
             coap_set_header_content_type(&message, format);
             coap_set_header_token(&message, watcher->token, watcher->tokenLen);
             coap_set_header_observe(&message, watcher->counter & 0x00ffffffU);
             coap_set_payload(&message, buffer, (size_t)length);
-            result = message_send(contextP, &message, watcher->server->sessionH);
+            if (observe_deliveryBusy(contextP, watcher))
+            {
+#ifndef LWM2M_VERSION_1_0
+                observe_freeLeaves(leaves);
+#endif
+                watcher->notifyPending = true;
+                coap_free_header(&message); lwm2m_free(buffer); prv_wait(timeoutP, 1); continue;
+            }
+            else
+            {
+                result = observe_prepareBlock(contextP, &uri, watcher, &message, false);
+                if (result == NO_ERROR)
+                {
+                    result = observe_sendNotification(contextP, watcher, &message);
+                    if (epoch == contextP->observeEpoch && result != NO_ERROR)
+                        observe_abortNotification(contextP, watcher);
+                }
+            }
             coap_free_header(&message);
-            if (epoch != contextP->observeEpoch) { lwm2m_free(buffer); prv_wait(timeoutP, 1); return; }
+            if (epoch != contextP->observeEpoch)
+            {
+#ifndef LWM2M_VERSION_1_0
+                observe_freeLeaves(leaves);
+#endif
+                lwm2m_free(buffer); prv_wait(timeoutP, 1); return;
+            }
             if (result != COAP_NO_ERROR)
             {
+#ifndef LWM2M_VERSION_1_0
+                observe_freeLeaves(leaves);
+#endif
                 lwm2m_free(buffer);
                 watcher->notifyPending = true;
                 prv_wait(timeoutP, 1);
@@ -543,6 +617,9 @@ restart:
                 continue;
             }
             observe_replaceSnapshot(contextP, watcher, numeric ? NULL : buffer, numeric ? 0 : snapshotLength);
+#ifndef LWM2M_VERSION_1_0
+            observe_replaceLeaves(contextP, watcher, leaves);
+#endif
             if (numeric) lwm2m_free(buffer);
             watcher->lastTime = currentTime;
             watcher->lastMid = message.mid;
@@ -561,6 +638,7 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
     /* 제출과 평가 callback이 서로의 사본/sequence를 변경하거나 재귀 평가하지 못하게 한다. */
     if (contextP->pendingObserve != NULL || contextP->observeStepActive) { prv_wait(timeoutP, 1); return; }
     contextP->observeStepActive = true;
+    observe_expireBlocks(contextP, currentTime);
     if (contextP->observedList != NULL && lwm2m_sync_attributes(contextP) != COAP_NO_ERROR)
     {
         prv_wait(timeoutP, 1);

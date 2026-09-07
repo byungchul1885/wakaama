@@ -1139,6 +1139,14 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                         observingServer->status != STATE_REG_FULL_UPDATE_NEEDED &&
                         observingServer->status != STATE_REG_UPDATE_PENDING) observingServer = NULL;
                     observe_completeRequest(contextP, observationId, observingServer, coap_error_code);
+                    if (coap_error_code == NO_ERROR && observingServer != NULL)
+                    {
+                        uint64_t generation = 0;
+#ifndef LWM2M_VERSION_1_0
+                        generation = observingServer->sessionGeneration;
+#endif
+                        observe_blockSubmitted(contextP, observingServer->shortID, generation, response);
+                    }
                 }
 #endif
                 if (coap_error_code == NO_ERROR && block1Uri != NULL)

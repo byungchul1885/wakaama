@@ -62,6 +62,7 @@ static void setup(payload_fixture_t *f, bool multiple)
     LWM2M_URI_RESET(&f->path); f->path.objectId = 3303; f->path.instanceId = 0;
     if (multiple) f->path.resourceId = 7;
     test_clock_set(100); test_reset_response_history();
+    test_auto_ack_notifications(&f->context);
 }
 
 static void cleanup(payload_fixture_t *f)
@@ -71,6 +72,7 @@ static void cleanup(payload_fixture_t *f)
     CU_ASSERT_EQUAL(f->context.observeSnapshotBytes, 0);
     CU_ASSERT_PTR_NULL(f->context.pendingObserve);
     test_clock_reset(); test_reset_response_history();
+    test_auto_ack_notifications(NULL);
 }
 
 /* 기대값은 제품 serializer/parser에서 추출하지 않은 고정 SenML bytes다. */

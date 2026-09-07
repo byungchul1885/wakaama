@@ -17,6 +17,10 @@
  *******************************************************************************/
 
 #include <stdint.h>
+#include "liblwm2m.h"
+
+/* 조건 평가 시험의 독립 ACK peer. 전송 수명 시험에서는 NULL로 끈다. */
+void test_auto_ack_notifications(lwm2m_context_t *context);
 
 uint8_t *test_get_response_buffer(size_t *len);
 void test_reset_response_buffer(void);

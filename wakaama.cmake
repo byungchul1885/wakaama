@@ -323,6 +323,9 @@ function(target_sources_wakaama target)
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/observe.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/attributes.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/notify.c
+                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/notification.c
+                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/notification_block.c
+                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/notification_leaf.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/packet.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/registration.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/uri.c

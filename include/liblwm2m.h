@@ -1091,6 +1091,11 @@ struct _lwm2m_context_
     lwm2m_attribute_entry_t *attributeList;
     /* 설정/대상 수명 변경을 Read callback 전후에 검출한다. wrap하지 않는다. */
     uint64_t attributeEpoch;
+    uint8_t (*attributeSyncCallback)(lwm2m_context_t *, void *);
+    uint8_t (*attributeWriteCallback)(lwm2m_context_t *, const lwm2m_uri_t *, uint16_t,
+                                      const lwm2m_attributes_t *, uint8_t, void *);
+    void *attributeUserData;
+    bool attributeSyncActive;
     /* callback 후 transient 관찰 pointer 재사용을 차단한다. */
     uint64_t observeEpoch;
     size_t observeSnapshotBytes;
@@ -1191,6 +1196,16 @@ int lwm2m_configure(lwm2m_context_t * contextP, const char * endpointName, const
 // platform connection. Repeated calls for an already closed session are no-op.
 void lwm2m_close_server_session(lwm2m_context_t *contextP, lwm2m_server_t *serverP);
 int lwm2m_add_object(lwm2m_context_t * contextP, lwm2m_object_t * objectP);
+/* callback/userData는 context보다 오래 유효해야 한다. write callback은 원본 부분 변경과
+ * 현재 검증 결과를 받으며 영속 교환 재생/공개를 소유한다. core는 이후 과거 후보를 적용하지 않는다.
+ * 모든 callback은 동기식이며 context/server를 해제하거나 재귀 DM 처리를 시작하면 안 된다. */
+void lwm2m_set_attribute_callbacks(lwm2m_context_t *contextP,
+    uint8_t (*sync)(lwm2m_context_t *, void *),
+    uint8_t (*write)(lwm2m_context_t *, const lwm2m_uri_t *, uint16_t,
+                     const lwm2m_attributes_t *, uint8_t, void *), void *userData);
+uint8_t lwm2m_sync_attributes(lwm2m_context_t *contextP);
+/* 입력 목록은 borrowed다. 전체 검증/복사가 끝난 뒤 교체하며 실패 시 기존 목록은 불변이다. */
+uint8_t lwm2m_replace_attributes(lwm2m_context_t *contextP, const lwm2m_attribute_entry_t *entries);
 #ifndef LWM2M_VERSION_1_0
 /*
  * 현재 non-raw Execute Object callback의 Device Management 응답을 지연한다.

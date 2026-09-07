@@ -196,8 +196,8 @@ void observe_getParameters(lwm2m_context_t *contextP, const lwm2m_uri_t *uriP,
     prv_resolveParameters(contextP, uriP, serverP->shortID, inherited, NULL, NULL, output);
 }
 
-uint8_t observe_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
-                              lwm2m_server_t *serverP, lwm2m_attributes_t *attrP)
+static uint8_t prv_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
+                              lwm2m_server_t *serverP, lwm2m_attributes_t *attrP, bool publish)
 {
     const uint8_t supported = LWM2M_ATTR_FLAG_MIN_PERIOD | LWM2M_ATTR_FLAG_MAX_PERIOD | ATTR_FLAG_NUMERIC
 #ifndef LWM2M_VERSION_1_0
@@ -250,6 +250,7 @@ uint8_t observe_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     if (result != COAP_205_CONTENT) return result;
     /* callback 후 빌린 entry/server pointer를 사용하지 않고 epoch와 최신 owner를 확인한다. */
     if (epoch != contextP->attributeEpoch) return COAP_503_SERVICE_UNAVAILABLE;
+    if (!publish) return COAP_204_CHANGED;
     link = prv_findEntry(contextP, shortID, uriP);
     entry = *link;
     if (candidate.toSet == 0)
@@ -283,5 +284,93 @@ uint8_t observe_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
     entry->values = candidate;
     ++contextP->attributeEpoch;
     return COAP_204_CHANGED;
+}
+
+void lwm2m_set_attribute_callbacks(lwm2m_context_t *contextP,
+    uint8_t (*sync)(lwm2m_context_t *, void *),
+    uint8_t (*write)(lwm2m_context_t *, const lwm2m_uri_t *, uint16_t,
+                     const lwm2m_attributes_t *, uint8_t, void *), void *userData)
+{
+    if (contextP == NULL) return;
+    contextP->attributeSyncCallback = sync;
+    contextP->attributeWriteCallback = write;
+    contextP->attributeUserData = userData;
+}
+
+uint8_t lwm2m_sync_attributes(lwm2m_context_t *contextP)
+{
+    uint8_t result;
+    if (contextP == NULL || contextP->attributeSyncActive) return COAP_503_SERVICE_UNAVAILABLE;
+    if (contextP->attributeSyncCallback == NULL) return COAP_NO_ERROR;
+    contextP->attributeSyncActive = true;
+    result = contextP->attributeSyncCallback(contextP, contextP->attributeUserData);
+    contextP->attributeSyncActive = false;
+    return result;
+}
+
+uint8_t observe_setParameters(lwm2m_context_t *contextP, lwm2m_uri_t *uriP,
+                              lwm2m_server_t *serverP, lwm2m_attributes_t *attrP)
+{
+    uint8_t result;
+    uint16_t shortID;
+    if (contextP == NULL || uriP == NULL || serverP == NULL || attrP == NULL) return COAP_400_BAD_REQUEST;
+    shortID = serverP->shortID;
+    result = lwm2m_sync_attributes(contextP);
+    if (result != COAP_NO_ERROR) return result;
+    if (contextP->attributeWriteCallback == NULL) return prv_setParameters(contextP, uriP, serverP, attrP, true);
+    result = prv_setParameters(contextP, uriP, serverP, attrP, false);
+    return contextP->attributeWriteCallback(contextP, uriP, shortID, attrP, result, contextP->attributeUserData);
+}
+
+uint8_t lwm2m_replace_attributes(lwm2m_context_t *contextP, const lwm2m_attribute_entry_t *entries)
+{
+    lwm2m_context_t candidate;
+    lwm2m_attribute_entry_t *entry, *other;
+    size_t count = 0;
+    uint8_t result = COAP_400_BAD_REQUEST;
+    if (contextP == NULL || contextP->attributeEpoch == UINT64_MAX) return COAP_503_SERVICE_UNAVAILABLE;
+    memset(&candidate, 0, sizeof(candidate));
+    for (; entries != NULL; entries = entries->next)
+    {
+        size_t perServer = 0;
+        const lwm2m_uri_t *uri = &entries->uri;
+        const lwm2m_attributes_t *values = &entries->values;
+        if (++count > LWM2M_ATTRIBUTE_ENTRY_LIMIT) goto fail;
+        if (entries->shortServerID == 0 || entries->shortServerID == UINT16_MAX ||
+            !LWM2M_URI_IS_SET_OBJECT(uri) ||
+            (!LWM2M_URI_IS_SET_INSTANCE(uri) && LWM2M_URI_IS_SET_RESOURCE(uri)) ||
+            values->toSet == 0 || (values->toSet & ~0x7f) != 0 || values->toClear != 0 ||
+            ((values->toSet & ATTR_FLAG_NUMERIC) != 0 && !LWM2M_URI_IS_SET_RESOURCE(uri)) ||
+            !observe_attributesCoherent(values)) goto fail;
+#ifndef LWM2M_VERSION_1_0
+        if (!LWM2M_URI_IS_SET_RESOURCE(uri) && LWM2M_URI_IS_SET_RESOURCE_INSTANCE(uri)) goto fail;
+#else
+        if ((values->toSet & (LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD | LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD)) != 0) goto fail;
+#endif
+        for (other = candidate.attributeList; other != NULL; other = other->next)
+        {
+            if (other->shortServerID != entries->shortServerID) continue;
+            if (prv_uriEqual(&other->uri, uri)) goto fail;
+            ++perServer;
+        }
+        if (perServer >= LWM2M_ATTRIBUTE_SERVER_LIMIT) goto fail;
+        entry = lwm2m_malloc(sizeof(*entry));
+        if (entry == NULL) { result = COAP_500_INTERNAL_SERVER_ERROR; goto fail; }
+        *entry = *entries;
+        entry->next = candidate.attributeList;
+        candidate.attributeList = entry;
+    }
+    for (entry = candidate.attributeList; entry != NULL; entry = entry->next)
+    {
+        lwm2m_attributes_t effective;
+        prv_resolveParameters(&candidate, &entry->uri, entry->shortServerID, true, NULL, NULL, &effective);
+        if (!observe_attributesCoherent(&effective)) goto fail;
+    }
+    observe_clearParameters(contextP, NULL);
+    contextP->attributeList = candidate.attributeList;
+    return COAP_NO_ERROR;
+fail:
+    observe_clearParameters(&candidate, NULL);
+    return result;
 }
 #endif

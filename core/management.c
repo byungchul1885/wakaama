@@ -1190,6 +1190,11 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
 
                 (void)coap_get_header_observe(message, &observe);
                 if (observe > 1) { result = COAP_400_BAD_REQUEST; break; }
+                if (observe == 0)
+                {
+                    result = lwm2m_sync_attributes(contextP);
+                    if (result != COAP_NO_ERROR) break;
+                }
                 /* 취소는 후속 Read 실패와 무관하게 먼저 완료한다. Attribute는 보존한다. */
                 if (observe == 1)
                 {
@@ -1239,6 +1244,8 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
                   && message->accept[0] == APPLICATION_LINK_FORMAT)
             {
                 format = LWM2M_CONTENT_LINK;
+                result = lwm2m_sync_attributes(contextP);
+                if (result != COAP_NO_ERROR) break;
                 result = object_discover(contextP, uriP, serverP, &buffer, &length);
             }
             else

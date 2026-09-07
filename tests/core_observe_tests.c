@@ -606,9 +606,83 @@ static void allocation_failure_never_publishes_freed_or_partial_nodes(void) {
 }
 #endif
 
+static void durable_snapshot_replace_is_atomic_and_does_not_create_observers(void) {
+    fixture_t f; lwm2m_attribute_entry_t first={0},second={0},*saved;
+    uint64_t epoch;
+    init(&f);uri("/3303",&first.uri);uri("/3303/0/0",&second.uri);
+    first.shortServerID=second.shortServerID=1;first.next=&second;
+    first.values.toSet=LWM2M_ATTR_FLAG_MIN_EVAL_PERIOD;first.values.minEvalPeriod=2;
+    second.values.toSet=LWM2M_ATTR_FLAG_MAX_EVAL_PERIOD;second.values.maxEvalPeriod=4;
+    CU_ASSERT_EQUAL(lwm2m_replace_attributes(&f.context,&first),COAP_NO_ERROR);
+    CU_ASSERT_PTR_NULL(f.context.observedList);
+    CU_ASSERT_PTR_NOT_EQUAL(f.context.attributeList,&first);
+    saved=f.context.attributeList;epoch=f.context.attributeEpoch;
+    second.values.maxEvalPeriod=2;
+    CU_ASSERT_EQUAL(lwm2m_replace_attributes(&f.context,&first),COAP_400_BAD_REQUEST);
+    CU_ASSERT_PTR_EQUAL(f.context.attributeList,saved);CU_ASSERT_EQUAL(f.context.attributeEpoch,epoch);
+    second.values.maxEvalPeriod=4;second.uri=first.uri;
+    CU_ASSERT_EQUAL(lwm2m_replace_attributes(&f.context,&first),COAP_400_BAD_REQUEST);
+    CU_ASSERT_PTR_EQUAL(f.context.attributeList,saved);
+    uri("/3303/0/0",&second.uri);
+#ifdef WAKAAMA_TEST_FAULTS
+    {
+        size_t i,baseline=test_malloc_live_allocations();
+        for(i=0;i<2;i++) {
+            test_malloc_fail_after(i);
+            CU_ASSERT_EQUAL(lwm2m_replace_attributes(&f.context,&first),COAP_500_INTERNAL_SERVER_ERROR);
+            test_malloc_fault_disable();
+            CU_ASSERT_PTR_EQUAL(f.context.attributeList,saved);
+            CU_ASSERT_EQUAL(test_malloc_live_allocations(),baseline);
+            CU_ASSERT_EQUAL(f.context.attributeEpoch,epoch);
+        }
+    }
+#endif
+    CU_ASSERT_EQUAL(lwm2m_replace_attributes(&f.context,NULL),COAP_NO_ERROR);
+    CU_ASSERT_PTR_NULL(f.context.attributeList);clear(&f);
+}
+
+static unsigned durable_writes;
+static uint8_t durable_validation;
+static uint8_t durable_sync_result;
+static uint8_t durable_sync(lwm2m_context_t *context,void *data) {
+    (void)data;
+    CU_ASSERT_EQUAL(lwm2m_sync_attributes(context),COAP_503_SERVICE_UNAVAILABLE);
+    return durable_sync_result;
+}
+static uint8_t durable_write(lwm2m_context_t *context,const lwm2m_uri_t *path,uint16_t sid,
+    const lwm2m_attributes_t *delta,uint8_t validation,void *data) {
+    lwm2m_attribute_entry_t snapshot={0};(void)data;
+    durable_writes++;durable_validation=validation;
+    CU_ASSERT_EQUAL(delta->toSet,LWM2M_ATTR_FLAG_MIN_PERIOD);
+    CU_ASSERT_EQUAL(delta->minPeriod,2);
+    snapshot.shortServerID=sid;snapshot.uri=*path;
+    snapshot.values.toSet=LWM2M_ATTR_FLAG_MIN_PERIOD;snapshot.values.minPeriod=9;
+    CU_ASSERT_EQUAL(lwm2m_replace_attributes(context,&snapshot),COAP_NO_ERROR);
+    return COAP_204_CHANGED;
+}
+static void durable_callback_owns_latest_and_failed_sync_blocks_mutation(void) {
+    fixture_t f;lwm2m_uri_t path;lwm2m_attributes_t delta={0};
+    init(&f);uri("/3303/0/0",&path);durable_writes=0;durable_sync_result=COAP_NO_ERROR;
+    lwm2m_set_attribute_callbacks(&f.context,durable_sync,durable_write,NULL);
+    delta.toSet=LWM2M_ATTR_FLAG_MIN_PERIOD;delta.minPeriod=2;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context,&path,f.servers,&delta),COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(durable_writes,1);CU_ASSERT_EQUAL(durable_validation,COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(params(&f,"/3303/0/0",0)->minPeriod,9);
+    /* 현재 리소스가 사라져도 영속 owner가 과거 교환 응답을 반환할 수 있다. */
+    f.object.readFunc=NULL;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context,&path,f.servers,&delta),COAP_204_CHANGED);
+    CU_ASSERT_NOT_EQUAL(durable_validation,COAP_204_CHANGED);CU_ASSERT_EQUAL(durable_writes,2);
+    durable_sync_result=COAP_503_SERVICE_UNAVAILABLE;
+    CU_ASSERT_EQUAL(observe_setParameters(&f.context,&path,f.servers,&delta),COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_EQUAL(durable_writes,2);CU_ASSERT_EQUAL(params(&f,"/3303/0/0",0)->minPeriod,9);
+    clear(&f);
+}
+
 CU_ErrorCode create_observe_test_suit(void) {
     struct TestTable table[] = {
         {"Q09 exact levels and server isolation", exact_levels_and_server_isolation},
+        {"Q09 durable snapshot all-or-nothing", durable_snapshot_replace_is_atomic_and_does_not_create_observers},
+        {"Q09 durable owner replay and sync failure", durable_callback_owns_latest_and_failed_sync_blocks_mutation},
         {"Q09 merge unset and invalid atomicity", merge_unset_and_invalid_are_atomic},
         {"Q09 numeric type and coherence", numeric_type_and_incoherent_request_never_allocate_watcher},
         {"Q09 bounded query and period overflow", query_lengths_and_period_overflow},

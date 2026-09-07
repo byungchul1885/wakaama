@@ -561,6 +561,12 @@ void observe_step(lwm2m_context_t *contextP, time_t currentTime, time_t *timeout
     /* 제출과 평가 callback이 서로의 사본/sequence를 변경하거나 재귀 평가하지 못하게 한다. */
     if (contextP->pendingObserve != NULL || contextP->observeStepActive) { prv_wait(timeoutP, 1); return; }
     contextP->observeStepActive = true;
+    if (contextP->observedList != NULL && lwm2m_sync_attributes(contextP) != COAP_NO_ERROR)
+    {
+        prv_wait(timeoutP, 1);
+        contextP->observeStepActive = false;
+        return;
+    }
     prv_evaluateObservers(contextP, currentTime, timeoutP);
     contextP->observeStepActive = false;
 }

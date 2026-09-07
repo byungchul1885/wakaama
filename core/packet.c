@@ -569,6 +569,14 @@ static int prv_send_get_block2(lwm2m_context_t * contextP,
     lwm2m_transaction_t * transaction;
     lwm2m_transaction_t * next;
     uint16_t nextMID;
+    uint16_t selectedSize = MIN(block2_size, lwm2m_get_coap_block_size());
+    uint64_t selectedNum;
+
+    if (selectedSize < 16 || selectedSize > 1024 || (selectedSize & (selectedSize - 1)) != 0)
+        return COAP_400_BAD_REQUEST;
+    /* 늦은 SZX 축소에서도 이미 받은 byte offset을 유지한다. */
+    selectedNum = (uint64_t)block2_num * block2_size / selectedSize;
+    if (selectedNum > 0x0fffffU) return COAP_400_BAD_REQUEST;
 
     // get current transaction
     transaction = prv_get_transaction(contextP, sessionH, currentMID);
@@ -596,7 +604,7 @@ static int prv_send_get_block2(lwm2m_context_t * contextP,
     }
 
     // set block2 header
-    coap_set_header_block2(next->message, block2_num, 0, MIN(block2_size, lwm2m_get_coap_block_size()));
+    coap_set_header_block2(next->message, (uint32_t)selectedNum, 0, selectedSize);
 
     if (transaction_prepare(next) != NO_ERROR) {
         transaction_free(next);
@@ -620,6 +628,46 @@ static int prv_send_get_next_block2(lwm2m_context_t * contextP,
                                     )
 {
     return prv_send_get_block2(contextP, sessionH, blockDataHead, currentMID, block2_num + 1, block2_size);
+}
+
+/* 순수 Block2와 마지막 Block1에 붙은 Block2가 같은 완료/회수 경계를 사용한다. */
+static void prv_handle_block2_ack(lwm2m_context_t *contextP, void *sessionH, coap_packet_t *message)
+{
+    uint8_t result, *complete = NULL;
+    size_t length = 0;
+#ifdef LWM2M_CLIENT_MODE
+    lwm2m_server_t *peerP = utils_findServer(contextP, sessionH);
+#ifdef LWM2M_BOOTSTRAP
+    if (peerP == NULL) peerP = utils_findBootstrapServer(contextP, sessionH);
+#endif
+#else
+    lwm2m_client_t *peerP = utils_findClient(contextP, sessionH);
+#endif
+    if (peerP == NULL) {
+        (void)transaction_fail(contextP, sessionH, message->mid, COAP_500_INTERNAL_SERVER_ERROR);
+        return;
+    }
+    result = coap_block2_handler(&peerP->blockData, message->mid, message->payload, message->payload_len,
+        message->block2_size, message->block2_num, message->block2_more, &complete, &length);
+    if (result == NO_ERROR) {
+        lwm2m_block_data_t *completed = block2_take(&peerP->blockData, message->mid);
+        message->payload = complete;
+        message->payload_len = length;
+        transaction_handleResponse(contextP, sessionH, message, NULL);
+        free_block_data(completed);
+        return;
+    }
+    if (result == COAP_231_CONTINUE) {
+        result = prv_send_get_next_block2(contextP, sessionH, peerP->blockData,
+            message->mid, message->block2_num, message->block2_size);
+        /* 인계 성공 뒤 callback이 peer를 해제했을 수 있으므로 이전 owner를 다시 읽지 않는다. */
+        if (result < COAP_400_BAD_REQUEST) return;
+    }
+    if (result >= COAP_400_BAD_REQUEST) {
+        block2_delete(&peerP->blockData, message->mid);
+        (void)transaction_fail(contextP, sessionH, message->mid, result);
+    }
+    /* 정확한 중복은 오류 ACK나 완료 callback을 만들지 않는다. */
 }
 
 static bool is_message_too_large(const coap_packet_t *message, const size_t packet_size) {
@@ -1146,6 +1194,19 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 /* Block 상태/후속 요청을 만들기 전에 원래 요청의 session·MID·Token을 확인한다. */
                 if ((IS_OPTION(message, COAP_OPTION_BLOCK1) || IS_OPTION(message, COAP_OPTION_BLOCK2)) &&
                     !prv_block_response_matches(contextP, fromSessionH, message)) break;
+                if (IS_OPTION(message, COAP_OPTION_BLOCK1) && IS_OPTION(message, COAP_OPTION_BLOCK2) &&
+                    (message->code >> 5) == 2) {
+                    lwm2m_transaction_t *transaction = prv_get_transaction(contextP, fromSessionH, message->mid);
+                    const coap_packet_t *request = transaction->message;
+                    if (!IS_OPTION(request, COAP_OPTION_BLOCK1) || message->block1_more ||
+                        message->code == COAP_231_CONTINUE || message->block1_num != request->block1_num) {
+                        (void)transaction_fail(contextP, fromSessionH, message->mid, COAP_400_BAD_REQUEST);
+                    } else if (request->block1_more) {
+                        /* 조각별 적용 결과를 매번 수신하는 비원자 조합은 전체 완료로 오인하지 않는다. */
+                        (void)transaction_fail(contextP, fromSessionH, message->mid, COAP_501_NOT_IMPLEMENTED);
+                    } else prv_handle_block2_ack(contextP, fromSessionH, message);
+                    break;
+                }
                 if (message->payload_len > lwm2m_get_coap_block_size()) {
 #ifdef LWM2M_CLIENT_MODE
                     // get server
@@ -1208,75 +1269,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                         } else transaction_handleResponse(contextP, fromSessionH, message, NULL);
                     }
                 } else if (IS_OPTION(message, COAP_OPTION_BLOCK2)) {
-#ifdef LWM2M_CLIENT_MODE
-                    // get server
-                    lwm2m_server_t * peerP;
-                    peerP = utils_findServer(contextP, fromSessionH);
-#ifdef LWM2M_BOOTSTRAP
-                    if (peerP == NULL)
-                    {
-                        peerP = utils_findBootstrapServer(contextP, fromSessionH);
-                    }
-#endif
-#else
-                    lwm2m_client_t * peerP;
-                    peerP = utils_findClient(contextP, fromSessionH);
-#endif
-
-                    if (peerP == NULL)
-                    {
-                        coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
-                        (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
-                    }
-                    else
-                    {
-                        uint32_t block2_num;
-                        uint8_t  block2_more;
-                        uint16_t block2_size;
-                        uint8_t * complete_buffer = NULL;
-                        size_t complete_buffer_size;
-
-                        // parse block2 header
-                        coap_get_header_block2(message, &block2_num, &block2_more, &block2_size, NULL);
-                        LOG_ARG_DBG("Blockwise: block2 response NUM %u (SZX %u/ SZX Max%u) MORE %u", block2_num,
-                                    block2_size, lwm2m_get_coap_block_size(), block2_more);
-
-                        // handle block 2
-                        coap_error_code = coap_block2_handler(&peerP->blockData, message->mid, message->payload, message->payload_len, block2_size, block2_num, block2_more, &complete_buffer, &complete_buffer_size);
-
-                        // if payload is complete, replace it in the coap message.
-                        if (coap_error_code == NO_ERROR)
-                        {
-                            /* 완료 본문을 peer owner에서 먼저 분리한다. callback의 peer 해제와 수명을 공유하지 않는다. */
-                            lwm2m_block_data_t *completed = block2_take(&peerP->blockData, message->mid);
-                            message->payload = complete_buffer;
-                            message->payload_len = complete_buffer_size;
-                            transaction_handleResponse(contextP, fromSessionH, message, NULL);
-                            free_block_data(completed);
-                        }
-                        else if (coap_error_code == COAP_231_CONTINUE)
-                        {
-                            coap_error_code = prv_send_get_next_block2(contextP, fromSessionH, peerP->blockData,
-                                message->mid, block2_num, block2_size);
-                            if (coap_error_code >= COAP_400_BAD_REQUEST) {
-                                /* 준비 실패에는 callback 전이므로 현재 peer의 부분 본문을 먼저 회수한다. */
-                                block2_delete(&peerP->blockData, message->mid);
-                                (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
-                            }
-                            coap_error_code = NO_ERROR;
-                        }
-                        else if (coap_error_code >= COAP_400_BAD_REQUEST)
-                        {
-                            block2_delete(&peerP->blockData, message->mid);
-                            (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
-                            coap_error_code = NO_ERROR;
-                        }
-                        else if (coap_error_code == COAP_RETRANSMISSION)
-                        {
-                            /* 동일 조각은 완료/오류 ACK 없이 무시하고 대기 중인 다음 요청을 유지한다. */
-                            coap_error_code = NO_ERROR;
-                        }
-                    }
+                    prv_handle_block2_ack(contextP, fromSessionH, message);
                 } else if (message->code == COAP_413_ENTITY_TOO_LARGE) {
                     /*
                     All our responses are piggyback so this must be the result of request being too large (not a separate CON)

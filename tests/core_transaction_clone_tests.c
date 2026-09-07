@@ -350,23 +350,96 @@ static void prepare_first_ack(lwm2m_context_t *context, unsigned kind, coap_pack
         context->serverList->sessionH = (void *)(uintptr_t)1;
         context->serverList->status = STATE_REGISTERED;
     }
-    source = request(context, kind == 0 ? COAP_POST : COAP_GET, kind == 0 ? 35 : 0, false);
+    source = request(context, kind == 1 ? COAP_GET : COAP_POST,
+        kind == 0 || kind == 3 ? 35 : kind == 1 ? 0 : 1, false);
     CU_ASSERT_PTR_NOT_NULL_FATAL(source);
+    if (kind == 2) coap_set_header_block1(source->message, 0, false, 16);
     CU_ASSERT_EQUAL(transaction_send(context, source), 0);
     message = source->message;
-    coap_init_message(ack, COAP_TYPE_ACK, kind == 0 ? COAP_231_CONTINUE : COAP_205_CONTENT, source->mID);
+    coap_init_message(ack, COAP_TYPE_ACK, kind == 0 ? COAP_231_CONTINUE :
+        kind == 1 ? COAP_205_CONTENT : COAP_204_CHANGED, source->mID);
     coap_set_header_token(ack, message->token, message->token_len);
     if (kind == 0) coap_set_header_block1(ack, 0, true, 16);
     else {
+        if (kind >= 2) coap_set_header_block1(ack, 0, false, 16);
         coap_set_header_block2(ack, 0, true, 16);
         coap_set_payload(ack, body, sizeof(body));
+    }
+}
+
+static void packet_combined_block1_block2_completes_once(void)
+{
+    const coap_method_t methods[] = {COAP_POST, COAP_FETCH, COAP_IPATCH};
+    size_t method;
+    for (method = 0; method < 6; ++method) {
+        lwm2m_context_t context;
+        lwm2m_transaction_t *source;
+        unsigned step, i;
+        uint16_t firstSize = method < 3 ? 16 : 32;
+        unsigned steps = firstSize == 16 ? 5 : 4;
+        coap_method_t selectedMethod = methods[method % 3];
+        uint8_t finalCode = selectedMethod == COAP_FETCH ? COAP_205_CONTENT : COAP_204_CHANGED;
+        start(&context);
+        CU_ASSERT_TRUE(lwm2m_set_coap_block_size(16));
+        context.serverList = lwm2m_malloc(sizeof(*context.serverList));
+        CU_ASSERT_PTR_NOT_NULL_FATAL(context.serverList);
+        memset(context.serverList, 0, sizeof(*context.serverList));
+        context.serverList->sessionH = (void *)(uintptr_t)1;
+        context.serverList->status = STATE_REGISTERED;
+        source = request(&context, selectedMethod, 35, false);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(source);
+        coap_set_header_content_type(source->message, LWM2M_CONTENT_SENML_CBOR);
+        if (firstSize == 16) coap_set_header_block2(source->message, 0, false, 16);
+        CU_ASSERT_EQUAL(transaction_send(&context, source), 0);
+        for (step = 0; step < steps; ++step) {
+            coap_packet_t sent, ack;
+            uint8_t body[32];
+            size_t length;
+            uint8_t *wire = test_get_response_buffer(&length);
+            CU_ASSERT_PTR_NOT_NULL_FATAL(context.transactionList);
+            CU_ASSERT_EQUAL(coap_parse_message(&sent, wire, (uint16_t)length), NO_ERROR);
+            check_path_and_query(&sent);
+            CU_ASSERT_EQUAL(sent.code, selectedMethod);
+            CU_ASSERT_EQUAL(sent.content_type, LWM2M_CONTENT_SENML_CBOR);
+            coap_init_message(&ack, COAP_TYPE_ACK, step < 2 ? COAP_231_CONTINUE : finalCode, sent.mid);
+            coap_set_header_token(&ack, sent.token, sent.token_len);
+            if (step < 3) {
+                CU_ASSERT_TRUE(IS_OPTION(&sent, COAP_OPTION_BLOCK1));
+                CU_ASSERT_EQUAL(sent.block1_num, step);
+                CU_ASSERT_EQUAL(sent.block1_more, step < 2);
+                CU_ASSERT_EQUAL(sent.payload_len, step < 2 ? 16 : 3);
+                for (i = 0; i < sent.payload_len; ++i) CU_ASSERT_EQUAL(sent.payload[i], (uint8_t)((step * 16 + i) ^ 0xa7));
+                coap_set_header_block1(&ack, step, step < 2, 16);
+            } else {
+                CU_ASSERT_FALSE(IS_OPTION(&sent, COAP_OPTION_BLOCK1));
+                CU_ASSERT_EQUAL(sent.payload_len, 0);
+                CU_ASSERT_EQUAL(sent.block2_num, firstSize / 16 + step - 3);
+                CU_ASSERT_EQUAL(sent.block2_size, 16);
+            }
+            if (step >= 2) {
+                unsigned offset = step == 2 ? 0 : firstSize + (step - 3) * 16;
+                uint16_t size = step == 2 ? firstSize : 16;
+                for (i = 0; i < sizeof(body); ++i) body[i] = (uint8_t)(offset + i);
+                coap_set_header_block2(&ack, offset / size, step + 1 < steps, size);
+                coap_set_payload(&ack, body, step + 1 < steps ? size : 3);
+            }
+            coap_free_header(&sent);
+            removePeer = step + 1 == steps;
+            deliver(&context, &ack);
+            CU_ASSERT_EQUAL(callbackCount, step + 1 == steps ? 1 : 0);
+        }
+        CU_ASSERT_EQUAL(callbackCode, finalCode); CU_ASSERT_EQUAL(receivedLength, 35);
+        for (i = 0; i < 35; ++i) CU_ASSERT_EQUAL(received[i], i);
+        CU_ASSERT_PTR_NULL(context.transactionList); CU_ASSERT_PTR_NULL(context.serverList);
+        CU_ASSERT_EQUAL(test_response_count(), steps);
+        finish(&context);
     }
 }
 
 static void packet_handoff_allocation_failure_is_single_terminal_result(void)
 {
     unsigned kind;
-    for (kind = 0; kind < 2; ++kind) {
+    for (kind = 0; kind < 3; ++kind) {
         lwm2m_context_t context;
         coap_packet_t ack;
         size_t allocations, fail;
@@ -388,6 +461,27 @@ static void packet_handoff_allocation_failure_is_single_terminal_result(void)
             CU_ASSERT_EQUAL(test_response_count(), 1);
             finish(&context);
         }
+    }
+}
+
+static void packet_combined_wrong_ack_never_completes_partial(void)
+{
+    unsigned kind;
+    for (kind = 0; kind < 4; ++kind) {
+        lwm2m_context_t context;
+        coap_packet_t ack;
+        prepare_first_ack(&context, kind == 3 ? 3 : 2, &ack);
+        if (kind == 0) coap_set_header_block1(&ack, 0, true, 16);
+        if (kind == 1) coap_set_header_block1(&ack, 1, false, 16);
+        if (kind == 2) ack.code = COAP_231_CONTINUE;
+        removePeer = true;
+        deliver(&context, &ack);
+        CU_ASSERT_EQUAL(callbackCount, 1);
+        CU_ASSERT_EQUAL(callbackCode, kind == 3 ? COAP_501_NOT_IMPLEMENTED : COAP_400_BAD_REQUEST);
+        CU_ASSERT_EQUAL(receivedLength, 0);
+        CU_ASSERT_PTR_NULL(context.transactionList); CU_ASSERT_PTR_NULL(context.serverList);
+        CU_ASSERT_EQUAL(test_response_count(), 1);
+        finish(&context);
     }
 }
 
@@ -450,7 +544,7 @@ static void abort_during_next_send(void)
 static void packet_handoff_transport_abort_does_not_complete_old_request_twice(void)
 {
     unsigned kind;
-    for (kind = 0; kind < 2; ++kind) {
+    for (kind = 0; kind < 3; ++kind) {
         lwm2m_context_t context;
         coap_packet_t ack;
         prepare_first_ack(&context, kind, &ack);
@@ -485,6 +579,8 @@ CU_ErrorCode create_transaction_clone_test_suit(void)
         {"packet Block2 final allocation failure", packet_block2_final_allocation_failure},
         {"packet Block2 final gap", packet_block2_final_gap},
         {"packet Block2 duplicate without error ACK", packet_block2_duplicate_does_not_send_error_ack},
+        {"packet combined Block1 Block2 single completion", packet_combined_block1_block2_completes_once},
+        {"packet combined invalid or per-block result", packet_combined_wrong_ack_never_completes_partial},
         {NULL, NULL}
     };
     if (suite == NULL) return CU_get_error();

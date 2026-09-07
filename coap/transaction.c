@@ -304,6 +304,7 @@ static void prv_destroy(lwm2m_transaction_t *transacP)
         lwm2m_free(transacP->buffer);
         transacP->buffer = NULL;
     }
+    lwm2m_free(transacP->optionBuffer);
 
     lwm2m_free(transacP);
 }
@@ -313,6 +314,35 @@ void transaction_free(lwm2m_transaction_t *transacP)
     if (transacP == NULL) return;
     transacP->retired = true;
     if (transacP->holdCount == 0) prv_destroy(transacP);
+}
+
+lwm2m_transaction_t *transaction_clone(const lwm2m_transaction_t *source, uint16_t mid)
+{
+    lwm2m_transaction_t *copy;
+    coap_packet_t *message;
+    if (source == NULL || source->retired || source->buffer == NULL || source->buffer_len < COAP_HEADER_LEN ||
+        (source->payload_len != 0 && source->payload == NULL)) return NULL;
+    copy = transaction_new(source->peerH, COAP_GET, NULL, NULL, mid, 0, NULL);
+    if (copy == NULL) return NULL;
+    /* parser의 옵션 문자열/분할 본문은 이 사본을 빌린다. 원본의 다음 해제/재시도를 참조하지 않는다. */
+    copy->optionBuffer = lwm2m_malloc(source->buffer_len);
+    if (copy->optionBuffer == NULL) goto failed;
+    memcpy(copy->optionBuffer, source->buffer, source->buffer_len);
+    message = copy->message;
+    if (coap_parse_message(message, copy->optionBuffer, source->buffer_len) != NO_ERROR) goto failed;
+    message->mid = mid;
+    if (source->payload_len != 0) {
+        copy->payload = lwm2m_malloc(source->payload_len);
+        if (copy->payload == NULL) goto failed;
+        memcpy(copy->payload, source->payload, source->payload_len);
+        copy->payload_len = source->payload_len;
+    }
+    copy->callback = source->callback;
+    copy->userData = source->userData;
+    return copy;
+failed:
+    transaction_free(copy);
+    return NULL;
 }
 
 static void prv_hold(lwm2m_transaction_t *transacP)
@@ -501,24 +531,20 @@ bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t 
     return false;
 }
 
-static int prv_send(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP)
+int transaction_prepare(lwm2m_transaction_t *transacP)
 {
-    bool maxRetriesReached = false;
-
-    LOG_ARG_DBG("Entering: transaction=%p", (void *)transacP);
+    if (transacP == NULL || transacP->retired || transacP->message == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
     if (transacP->buffer == NULL)
     {
-        transacP->buffer_len = coap_serialize_get_size(transacP->message);
-        if (transacP->buffer_len == 0)
+        size_t length = coap_serialize_get_size(transacP->message);
+        if (length == 0 || length > UINT16_MAX)
         {
-           transaction_complete(contextP, transacP, NULL);
            return COAP_500_INTERNAL_SERVER_ERROR;
         }
-
+        transacP->buffer_len = (uint16_t)length;
         transacP->buffer = (uint8_t*)lwm2m_malloc(transacP->buffer_len);
         if (transacP->buffer == NULL)
         {
-           transaction_complete(contextP, transacP, NULL);
            return COAP_500_INTERNAL_SERVER_ERROR;
         }
 
@@ -527,9 +553,18 @@ static int prv_send(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP)
         {
             lwm2m_free(transacP->buffer);
             transacP->buffer = NULL;
-            transaction_complete(contextP, transacP, NULL);
             return COAP_500_INTERNAL_SERVER_ERROR;
         }
+    }
+    return NO_ERROR;
+}
+
+static int prv_send(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP)
+{
+    bool maxRetriesReached = false;
+    if (transaction_prepare(transacP) != NO_ERROR) {
+        transaction_complete(contextP, transacP, NULL);
+        return COAP_500_INTERNAL_SERVER_ERROR;
     }
 
     if (!transacP->ack_received)

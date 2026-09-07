@@ -690,6 +690,20 @@ lwm2m_block_data_t *block2_create(lwm2m_block_data_t **blockDataHeadP, uint16_t 
     return prv_block_insert(blockDataHeadP, identifier, BLOCK_2);
 }
 
+lwm2m_block_data_t *block2_take(lwm2m_block_data_t **head, uint16_t mid)
+{
+    lwm2m_block_data_t *entry;
+    if (head == NULL) return NULL;
+    while (*head != NULL && ((*head)->blockType != BLOCK_2 || (*head)->identifier.mid != mid))
+        head = &(*head)->next;
+    entry = *head;
+    if (entry != NULL) {
+        *head = entry->next;
+        entry->next = NULL;
+    }
+    return entry;
+}
+
 void block2_delete(lwm2m_block_data_t **blockDataHeadP, uint16_t mid)
 {
     block_data_identifier_t identifier = {0};

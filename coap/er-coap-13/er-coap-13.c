@@ -710,6 +710,15 @@ coap_serialize_message(void *packet, uint8_t *buffer)
   return (option - buffer) + coap_pkt->payload_len; /* packet length */
 }
 /*-----------------------------------------------------------------------------------*/
+/* 옵션 노드 할당 실패를 잘린 경로/조건의 정상 요청으로 취급하지 않는다. */
+static bool coap_add_parsed_option(multi_option_t **list, uint8_t *data, size_t length)
+{
+  multi_option_t **tail = list;
+  while (*tail != NULL) tail = &(*tail)->next;
+  coap_add_multi_option(list, data, length, 1);
+  return *tail != NULL;
+}
+
 coap_status_t
 coap_parse_message(void *packet, uint8_t *data, uint16_t data_len)
 {
@@ -907,18 +916,18 @@ coap_parse_message(void *packet, uint8_t *data, uint16_t data_len)
       case COAP_OPTION_URI_PATH:
         /* coap_merge_multi_option() operates in-place on the IPBUF, but final packet field should be const string -> cast to string */
         // coap_merge_multi_option( (char **) &(coap_pkt->uri_path), &(coap_pkt->uri_path_len), current_option, option_length, 0);
-        coap_add_multi_option( &(coap_pkt->uri_path), current_option, option_length, 1);
+        if (!coap_add_parsed_option(&coap_pkt->uri_path, current_option, option_length)) goto exit_memory_error;
         PRINTF("Uri-Path [%.*s]\n", option_length, current_option);
         break;
       case COAP_OPTION_URI_QUERY:
         /* coap_merge_multi_option() operates in-place on the IPBUF, but final packet field should be const string -> cast to string */
         // coap_merge_multi_option( (char **) &(coap_pkt->uri_query), &(coap_pkt->uri_query_len), current_option, option_length, '&');
-        coap_add_multi_option( &(coap_pkt->uri_query), current_option, option_length, 1);
+        if (!coap_add_parsed_option(&coap_pkt->uri_query, current_option, option_length)) goto exit_memory_error;
         PRINTF("Uri-Query [%.*s]\n", option_length, current_option);
         break;
 
       case COAP_OPTION_LOCATION_PATH:
-        coap_add_multi_option( &(coap_pkt->location_path), current_option, option_length, 1);
+        if (!coap_add_parsed_option(&coap_pkt->location_path, current_option, option_length)) goto exit_memory_error;
         break;
       case COAP_OPTION_LOCATION_QUERY:
         /* coap_merge_multi_option() operates in-place on the IPBUF, but final packet field should be const string -> cast to string */
@@ -977,6 +986,11 @@ coap_parse_message(void *packet, uint8_t *data, uint16_t data_len)
 
 
   return NO_ERROR;
+
+exit_memory_error:
+  coap_free_header(coap_pkt);
+  coap_error_message = "CoAP option allocation failed";
+  return INTERNAL_SERVER_ERROR_5_00;
 
 exit_parse_error:
   coap_free_header(coap_pkt);

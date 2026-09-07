@@ -439,115 +439,16 @@ static lwm2m_transaction_t * prv_get_transaction(lwm2m_context_t * contextP, voi
     return NULL;
 }
 
-static void prv_remove_transaction_by_mid(lwm2m_context_t * contextP, void * sessionH, uint16_t mid)
+static bool prv_block_response_matches(lwm2m_context_t *contextP, void *sessionH, const coap_packet_t *response)
 {
-    lwm2m_transaction_t *transaction;
-
-    transaction = prv_get_transaction(contextP, sessionH, mid);
-    if (transaction != NULL)
-    {
-        transaction_remove(contextP, transaction);
-    }
+    lwm2m_transaction_t *transaction = prv_get_transaction(contextP, sessionH, response->mid);
+    const coap_packet_t *request;
+    if (transaction == NULL || transaction->completing) return false;
+    request = transaction->message;
+    return request->token_len == response->token_len &&
+           memcmp(request->token, response->token, request->token_len) == 0;
 }
 
-// limited clone of transaction to be used by block transfers
-static lwm2m_transaction_t * prv_create_next_block_transaction(lwm2m_transaction_t * transaction, uint16_t nextMID){
-    static coap_packet_t message[1];
-    if (0 != coap_parse_message(message, transaction->buffer, transaction->buffer_len)){
-        return NULL;
-    }
-
-    lwm2m_transaction_t * clone = transaction_new(transaction->peerH, (coap_method_t) message->code, NULL, NULL, nextMID, message->token_len, message->token);
-    if (clone == NULL) return NULL;
-
-    coap_set_header_content_type(clone->message, message->type);
-
-    if (message->proxy_uri != NULL)
-    {
-        ((coap_packet_t *)clone->message)->proxy_uri = message->proxy_uri;
-        ((coap_packet_t *)clone->message)->proxy_uri_len = message->proxy_uri_len;
-        SET_OPTION((coap_packet_t *)clone->message, COAP_OPTION_PROXY_URI);
-    }
-
-    if (IS_OPTION(message, COAP_OPTION_ETAG))
-    {
-        coap_set_header_etag(clone->message, message->etag, message->etag_len);
-    }
-
-    if (message->uri_host != NULL)
-    {
-        ((coap_packet_t *)clone->message)->uri_host = message->uri_host;
-        ((coap_packet_t *)clone->message)->uri_host_len = message->uri_host_len;
-        SET_OPTION((coap_packet_t *)clone->message, COAP_OPTION_URI_HOST);
-    }
-
-    if (IS_OPTION(message, COAP_OPTION_URI_PORT))
-    {
-        coap_set_header_uri_port(clone->message, message->uri_port);
-    }
-
-    if(IS_OPTION(message, COAP_OPTION_LOCATION_PATH))
-    {
-        ((coap_packet_t *)clone->message)->location_path = message->location_path;
-        SET_OPTION((coap_packet_t *)clone->message, COAP_OPTION_LOCATION_PATH);
-    }
-
-    if (message->location_query != NULL)
-    {
-        ((coap_packet_t *)clone->message)->location_query = message->location_query;
-        ((coap_packet_t *)clone->message)->location_query_len = message->location_query_len;
-        SET_OPTION((coap_packet_t *)clone->message, COAP_OPTION_LOCATION_QUERY);
-    }
-
-    if(IS_OPTION(message, COAP_OPTION_CONTENT_TYPE))
-    {
-        ((coap_packet_t *)clone->message)->content_type = message->content_type;
-        SET_OPTION((coap_packet_t *)clone->message, COAP_OPTION_CONTENT_TYPE);
-    }
-
-    if(IS_OPTION(message, COAP_OPTION_URI_PATH))
-    {
-        ((coap_packet_t *)clone->message)->uri_path = message->uri_path;
-        SET_OPTION((coap_packet_t *)clone->message, COAP_OPTION_URI_PATH);
-    }
-
-    if (IS_OPTION(message, COAP_OPTION_OBSERVE))
-    {
-        coap_set_header_observe(clone->message, message->observe);
-    }
-
-    for (int i = 0; i < message->accept_num; i++) {
-        coap_set_header_accept(clone->message, message->accept[i]);
-    }
-
-    if (IS_OPTION(message, COAP_OPTION_IF_MATCH))
-    {
-        coap_set_header_if_match(clone->message, message->if_match, message->if_match_len);
-    }
-
-    if(IS_OPTION(message, COAP_OPTION_URI_QUERY))
-    {
-        ((coap_packet_t *)clone->message)->uri_query = message->uri_query;
-        SET_OPTION((coap_packet_t *)clone->message, COAP_OPTION_URI_QUERY);
-    }
-
-    if (IS_OPTION(message, COAP_OPTION_IF_NONE_MATCH))
-    {
-        coap_set_header_if_none_match(clone->message);
-    }
-
-    uint8_t *cloned_transaction_payload = (uint8_t *)lwm2m_malloc(transaction->payload_len);
-    if (cloned_transaction_payload == NULL) {
-        return NULL;
-    }
-    memcpy(cloned_transaction_payload, transaction->payload, transaction->payload_len);
-
-    clone->payload = cloned_transaction_payload;
-    clone->payload_len = transaction->payload_len;
-    clone->callback = transaction->callback;
-    clone->userData = transaction->userData;
-    return clone;
-}
 static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t * previous, uint32_t block_num, uint16_t block_size)
 {
     lwm2m_transaction_t * next;
@@ -566,9 +467,9 @@ static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t *
 
     // Done sending block
     if (block_offset >= previous->payload_len)
-        return 0;
+        return COAP_IGNORE;
 
-    next = prv_create_next_block_transaction(previous, contextP->nextMID++);
+    next = transaction_clone(previous, contextP->nextMID++);
     if (next == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
 
     size_t remaining_payload_length = next->payload_len - block_offset;
@@ -577,8 +478,15 @@ static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t *
     coap_set_header_block1(next->message, block_num, remaining_payload_length > block_size, block_size);
     coap_set_payload(next->message, new_block_start, MIN(block_size, remaining_payload_length));
 
+    if (transaction_prepare(next) != NO_ERROR) {
+        transaction_free(next);
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
+    /* 준비 실패에는 기존 항목을 유지한다. 공개 뒤에는 후속 항목만 callback/userData를 인계한다. */
     contextP->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, next);
-    return transaction_send(contextP, next);
+    transaction_remove(contextP, previous);
+    (void)transaction_send(contextP, next);
+    return NO_ERROR;
 }
 
 static int prv_send_next_block1(lwm2m_context_t * contextP, void * sessionH, uint16_t mid, uint16_t block_size)
@@ -672,17 +580,35 @@ static int prv_send_get_block2(lwm2m_context_t * contextP,
 
     // create new transaction
     nextMID = contextP->nextMID++;
-    next = prv_create_next_block_transaction(transaction, nextMID);
+    next = transaction_clone(transaction, nextMID);
     if (next == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
+
+    if (block2_num != 0) {
+        coap_packet_t *request = next->message;
+        /* RFC 7959 §3.3: 후속 응답 블록은 원래 쓰기/조회 본문을 다시 실행하지 않는다. */
+        coap_set_payload(request, NULL, 0);
+        request->options[COAP_OPTION_BLOCK1 / OPTION_MAP_SIZE] &=
+            ~(1 << (COAP_OPTION_BLOCK1 % OPTION_MAP_SIZE));
+        request->block1_num = 0;
+        request->block1_more = 0;
+        request->block1_size = 0;
+        request->block1_offset = 0;
+    }
 
     // set block2 header
     coap_set_header_block2(next->message, block2_num, 0, MIN(block2_size, lwm2m_get_coap_block_size()));
 
+    if (transaction_prepare(next) != NO_ERROR) {
+        transaction_free(next);
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
     //  update block2data to nect expected mid
     coap_block2_set_expected_mid(blockDataHead, currentMID, nextMID);
 
     contextP->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, next);
-    return transaction_send(contextP, next);
+    transaction_remove(contextP, transaction);
+    (void)transaction_send(contextP, next);
+    return NO_ERROR;
 }
 
 static int prv_send_get_next_block2(lwm2m_context_t * contextP,
@@ -1217,6 +1143,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 break;
 
             case COAP_TYPE_ACK:
+                /* Block 상태/후속 요청을 만들기 전에 원래 요청의 session·MID·Token을 확인한다. */
+                if ((IS_OPTION(message, COAP_OPTION_BLOCK1) || IS_OPTION(message, COAP_OPTION_BLOCK2)) &&
+                    !prv_block_response_matches(contextP, fromSessionH, message)) break;
                 if (message->payload_len > lwm2m_get_coap_block_size()) {
 #ifdef LWM2M_CLIENT_MODE
                     // get server
@@ -1250,12 +1179,12 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                         case COAP_201_CREATED:
                         case COAP_204_CHANGED:
                             coap_error_code = prv_send_next_block1(contextP, fromSessionH, message->mid, block_size);
+                            wait_for_next_block_response = coap_error_code == NO_ERROR;
                             break;
                         case COAP_231_CONTINUE:
                             coap_error_code = prv_send_next_block1(contextP, fromSessionH, message->mid, block_size);
                             if (coap_error_code == NO_ERROR)
                             {
-                                prv_remove_transaction_by_mid(contextP, fromSessionH, message->mid);
                                 wait_for_next_block_response = true;
                             }
                             break;
@@ -1265,7 +1194,6 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                             coap_error_code = prv_retry_block1(contextP, fromSessionH, message->mid, block_size);
                             if (coap_error_code == NO_ERROR)
                             {
-                                prv_remove_transaction_by_mid(contextP, fromSessionH, message->mid);
                                 wait_for_next_block_response = true;
                             }
                         default:
@@ -1274,7 +1202,10 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 
                     if (!wait_for_next_block_response)
                     {
-                        transaction_handleResponse(contextP, fromSessionH, message, NULL);
+                        if (coap_error_code >= COAP_400_BAD_REQUEST) {
+                            (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
+                            coap_error_code = NO_ERROR;
+                        } else transaction_handleResponse(contextP, fromSessionH, message, NULL);
                     }
                 } else if (IS_OPTION(message, COAP_OPTION_BLOCK2)) {
 #ifdef LWM2M_CLIENT_MODE
@@ -1316,21 +1247,29 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                         // if payload is complete, replace it in the coap message.
                         if (coap_error_code == NO_ERROR)
                         {
+                            /* 완료 본문을 peer owner에서 먼저 분리한다. callback의 peer 해제와 수명을 공유하지 않는다. */
+                            lwm2m_block_data_t *completed = block2_take(&peerP->blockData, message->mid);
                             message->payload = complete_buffer;
                             message->payload_len = complete_buffer_size;
                             transaction_handleResponse(contextP, fromSessionH, message, NULL);
-                            block2_delete(&peerP->blockData, message->mid);
+                            free_block_data(completed);
                         }
                         else if (coap_error_code == COAP_231_CONTINUE)
                         {
-                            prv_send_get_next_block2(contextP, fromSessionH, peerP->blockData, message->mid, block2_num, block2_size);
-                            transaction_handleResponse(contextP, fromSessionH, message, NULL);
+                            coap_error_code = prv_send_get_next_block2(contextP, fromSessionH, peerP->blockData,
+                                message->mid, block2_num, block2_size);
+                            if (coap_error_code >= COAP_400_BAD_REQUEST) {
+                                /* 준비 실패에는 callback 전이므로 현재 peer의 부분 본문을 먼저 회수한다. */
+                                block2_delete(&peerP->blockData, message->mid);
+                                (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
+                            }
                             coap_error_code = NO_ERROR;
                         }
                         else if (coap_error_code >= COAP_400_BAD_REQUEST)
                         {
                             block2_delete(&peerP->blockData, message->mid);
                             (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
+                            coap_error_code = NO_ERROR;
                         }
                     }
                 } else if (message->code == COAP_413_ENTITY_TOO_LARGE) {
@@ -1339,11 +1278,10 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     switch to a block1 request.
                     */
                     coap_error_code = prv_change_to_block1(contextP, fromSessionH, message->mid, message->size);
-                    if (coap_error_code == NO_ERROR)
-                    {
-                        prv_remove_transaction_by_mid(contextP, fromSessionH, message->mid);
-                    }
-                    else
+                    if (coap_error_code >= COAP_400_BAD_REQUEST) {
+                        (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
+                        coap_error_code = NO_ERROR;
+                    } else if (coap_error_code != NO_ERROR)
                     {
                         transaction_handleResponse(contextP, fromSessionH, message, NULL);
                     }

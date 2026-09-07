@@ -264,6 +264,12 @@ typedef bool (*senml_convertValue)(const senml_record_t *recordP, lwm2m_data_t *
 void transaction_generate_device_token(uint8_t token[COAP_TOKEN_LEN]);
 void transaction_generate_server_token(uint8_t token[COAP_TOKEN_LEN], uint8_t token_len);
 lwm2m_transaction_t * transaction_new(void * sessionH, coap_method_t method, char * altPath, lwm2m_uri_t * uriP, uint16_t mID, uint8_t token_len, uint8_t* token);
+/* 이미 직렬화한 원본을 변경하지 않고 후속 Block용 독립 요청을 만든다. 반환 항목은 caller 소유며
+ * 아직 context에 등록되지 않았다. 옵션 backing bytes/전체 payload는 사본, callback/userData는
+ * 기존 공유 계약이다. 실패 시 원본은 보존하며 부분 생성물은 모두 회수한다. */
+lwm2m_transaction_t *transaction_clone(const lwm2m_transaction_t *source, uint16_t mid);
+/* 송신/callback 없이 wire buffer를 준비한다. 실패 시 요청은 caller 소유로 남는다. */
+int transaction_prepare(lwm2m_transaction_t *transaction);
 int transaction_send(lwm2m_context_t * contextP, lwm2m_transaction_t * transacP);
 void transaction_free(lwm2m_transaction_t * transacP);
 /* context는 활성 API/콜백이 모두 반환할 때까지 살아 있어야 한다. callback의 transaction,
@@ -435,6 +441,9 @@ uint8_t coap_block2_handler(lwm2m_block_data_t **blockData, uint16_t mid, const 
                             size_t *outputLength);
 void coap_block2_set_expected_mid(lwm2m_block_data_t *blockDataHead, uint16_t currentMid, uint16_t expectedMid);
 void free_block_data(lwm2m_block_data_t * blockData);
+/* 해당 Block2 항목을 목록에서 분리한다. 반환 항목/본문은 caller 소유며 callback 뒤
+ * free_block_data로 해제한다. NULL이면 소유권 이전/목록 변경이 없다. */
+lwm2m_block_data_t *block2_take(lwm2m_block_data_t **head, uint16_t mid);
 void block2_delete(lwm2m_block_data_t ** pBlockDataHead, uint16_t mid);
 
 #endif

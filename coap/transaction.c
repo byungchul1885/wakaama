@@ -623,7 +623,8 @@ bool transaction_set_payload(lwm2m_transaction_t *transaction, uint8_t *buffer, 
         coap_set_header_block1(transaction->message, 0, true, lwm2m_coap_block_size);
     }
 
-    coap_set_payload(transaction->message, buffer, MIN(length, lwm2m_coap_block_size));
+    /* 첫 전송도 transaction 소유 사본을 참조한다. caller 버퍼는 이 함수 반환 뒤 해제 가능하다. */
+    coap_set_payload(transaction->message, transaction_payload, MIN(length, lwm2m_coap_block_size));
     return true;
 }
 

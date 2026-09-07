@@ -153,6 +153,8 @@ int main(int argc, char **argv) {
        goto exit;
    if (CUE_SUCCESS != create_value_payload_test_suit())
        goto exit;
+   if (CUE_SUCCESS != create_send_scope_test_suit())
+       goto exit;
    if (CUE_SUCCESS != create_notify_values_test_suit())
        goto exit;
 #endif

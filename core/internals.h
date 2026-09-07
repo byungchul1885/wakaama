@@ -273,6 +273,8 @@ bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t 
 void transaction_step(lwm2m_context_t * contextP, time_t currentTime, time_t * timeoutP);
 bool transaction_free_userData(lwm2m_context_t * context, lwm2m_transaction_t * transaction);
 void transaction_remove_client(lwm2m_context_t *contextP, lwm2m_client_t *clientP);
+/* 성공 시 payload 사본은 transaction 소유다. 첫 message/Block1도 그 사본을 참조하므로
+ * caller는 반환 직후 원본을 수정/해제할 수 있다. transaction_free가 사본을 해제한다. */
 bool transaction_set_payload(lwm2m_transaction_t *transaction, uint8_t *buffer, size_t length);
 
 #ifdef LWM2M_SUPPORT_TLV

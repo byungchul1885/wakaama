@@ -454,6 +454,30 @@ uint8_t dm_readNotification(lwm2m_context_t *contextP, lwm2m_server_t *serverP,
     prv_endDmRequestScope(contextP, &scope);
     return result;
 }
+
+uint8_t dm_readSend(lwm2m_context_t *contextP, lwm2m_server_t *serverP,
+                     lwm2m_uri_t *urisP, size_t numUris, int *sizeP, lwm2m_data_t **dataP)
+{
+    dm_request_scope_t scope;
+    coap_packet_t request;
+    uint64_t readId;
+    uint8_t result;
+    if (sizeP == NULL || dataP == NULL) return COAP_400_BAD_REQUEST;
+    *sizeP = 0; *dataP = NULL;
+    if (contextP == NULL || serverP == NULL || urisP == NULL || numUris == 0)
+        return COAP_400_BAD_REQUEST;
+    readId = contextP->currentCompositeReadId;
+    coap_init_message(&request, COAP_TYPE_NON, COAP_GET, 0);
+    result = (uint8_t)prv_beginDmRequestScope(contextP, serverP, urisP, &request,
+                                              LWM2M_CONTENT_SENML_CBOR, 0, &scope);
+    if (result != NO_ERROR) return result;
+    contextP->currentDmOperation = LWM2M_DM_OPERATION_SEND;
+    contextP->currentCompositeReadId = 0;
+    result = object_readCompositeData(contextP, urisP, numUris, sizeP, dataP);
+    contextP->currentCompositeReadId = readId;
+    prv_endDmRequestScope(contextP, &scope);
+    return result;
+}
 #endif
 
 static int prv_readAttributePeriod(const uint8_t *data, size_t length, uint32_t *value)

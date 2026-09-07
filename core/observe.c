@@ -624,128 +624,149 @@ static int prv_prepareSendToken(lwm2m_context_t *contextP,
 }
 #endif
 
+#if defined(LWM2M_SUPPORT_SENML_CBOR) || defined(LWM2M_SUPPORT_SENML_JSON)
+typedef struct {
+    uint16_t shortId;
+    uint16_t instanceId;
+    uint64_t generation;
+} send_target_t;
+
+static lwm2m_server_t *prv_sendTarget(lwm2m_context_t *contextP, const send_target_t *target)
+{
+    lwm2m_server_t *server;
+    for (server = contextP->serverList; server != NULL; server = server->next)
+        if (server->shortID == target->shortId && server->servObjInstID == target->instanceId &&
+            server->sessionGeneration == target->generation) return server;
+    return NULL;
+}
+
+static bool prv_sendReady(const lwm2m_server_t *server)
+{
+    return server != NULL && server->sessionH != NULL &&
+        (server->status == STATE_REGISTERED || server->status == STATE_REG_UPDATE_PENDING ||
+         server->status == STATE_REG_UPDATE_NEEDED || server->status == STATE_REG_FULL_UPDATE_NEEDED);
+}
+#endif
+
 static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
                           const uint8_t *token, size_t tokenLen, lwm2m_transaction_callback_t callback,
                           void *userData) {
 #if defined(LWM2M_SUPPORT_SENML_CBOR) || defined(LWM2M_SUPPORT_SENML_JSON)
-    lwm2m_transaction_t *transactionP;
-    lwm2m_server_t *targetP;
-    lwm2m_data_t *dataP = NULL;
-#ifdef LWM2M_SUPPORT_SENML_CBOR
-    lwm2m_media_type_t format = LWM2M_CONTENT_SENML_CBOR;
-#else
-    lwm2m_media_type_t format = LWM2M_CONTENT_SENML_JSON;
-#endif
-    lwm2m_uri_t uri;
+    lwm2m_server_t *server;
+    send_target_t *targets;
+    size_t count = 0, i;
     int ret;
-    int size = 0;
-    uint8_t *buffer = NULL;
-    int length;
-    size_t i;
     bool oneGood = false;
     uint8_t preparedToken[COAP_TOKEN_LEN];
     size_t preparedTokenLen;
 
-    LOG_ARG_DBG("shortServerID: %d", shortServerID);
-    for (i = 0; i < numUris; i++) {
-        LOG_ARG_DBG("%s", LOG_URI_TO_STRING(urisP + i));
-    }
-
-    for (i = 0; i < numUris; i++) {
-        if (!LWM2M_URI_IS_SET_OBJECT(urisP + i))
-            return COAP_400_BAD_REQUEST;
-        if (!LWM2M_URI_IS_SET_INSTANCE(urisP + i) && LWM2M_URI_IS_SET_RESOURCE(urisP + i))
+    if (contextP == NULL || (urisP == NULL && numUris != 0) ||
+        (tokenLen > 0 && token == NULL)) return COAP_400_BAD_REQUEST;
+    for (i = 0; i < numUris; ++i) {
+        if (!LWM2M_URI_IS_SET_OBJECT(urisP + i) ||
+            (!LWM2M_URI_IS_SET_INSTANCE(urisP + i) && LWM2M_URI_IS_SET_RESOURCE(urisP + i)) ||
+            (!LWM2M_URI_IS_SET_RESOURCE(urisP + i) && LWM2M_URI_IS_SET_RESOURCE_INSTANCE(urisP + i)))
             return COAP_400_BAD_REQUEST;
     }
-
-    if (tokenLen > 0 && token == NULL)
-        return COAP_400_BAD_REQUEST;
+    if (numUris == 0) return COAP_404_NOT_FOUND;
     ret = prv_prepareSendToken(contextP, token, tokenLen, preparedToken, &preparedTokenLen);
-    if (ret != NO_ERROR)
-        return ret;
+    if (ret != NO_ERROR) return ret;
 
-    {
-        lwm2m_dm_operation_t previous = contextP->currentDmOperation;
-        contextP->currentDmOperation = LWM2M_DM_OPERATION_SEND;
-        ret = object_readCompositeData(contextP, urisP, numUris, &size, &dataP);
-        contextP->currentDmOperation = previous;
+    /* broadcast 대상은 호출 시작 때 고정한다. callback 이후 server/next pointer를 재사용하지 않는다.
+     * 계정/session 교체 owner는 기존 sessionGeneration 계약에 따라 세대를 전진시켜야 한다. */
+    for (server = contextP->serverList; server != NULL; server = server->next) {
+        if (shortServerID != 0 && shortServerID != server->shortID) continue;
+        if (++count > UINT16_MAX) return COAP_500_INTERNAL_SERVER_ERROR;
     }
-    if (ret != COAP_205_CONTENT)
-        return ret;
-
-    LWM2M_URI_RESET(&uri);
-    if (size == 1) {
-        uri.objectId = dataP->id;
-        if (dataP->value.asChildren.count == 1) {
-            uri.instanceId = dataP->value.asChildren.array->id;
-        }
-    }
-    ret = data_serialize_values(&uri, size, dataP, &format, &buffer);
-    lwm2m_data_free(size, dataP);
-    if (ret < 0) {
-        return COAP_500_INTERNAL_SERVER_ERROR;
-    } else {
-        length = ret;
-    }
-
-    if (shortServerID == 0 && contextP->serverList != NULL && contextP->serverList->next == NULL) {
-        // Only 1 server
-        shortServerID = contextP->serverList->shortID;
+    if (count == 0) return COAP_404_NOT_FOUND;
+    targets = lwm2m_malloc(count * sizeof(*targets));
+    if (targets == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
+    for (server = contextP->serverList, i = 0; server != NULL; server = server->next) {
+        if (shortServerID != 0 && shortServerID != server->shortID) continue;
+        targets[i].shortId = server->shortID;
+        targets[i].instanceId = server->servObjInstID;
+        targets[i++].generation = server->sessionGeneration;
     }
 
     ret = COAP_404_NOT_FOUND;
-    for (targetP = contextP->serverList; targetP != NULL; targetP = targetP->next) {
-        if (shortServerID != 0 && shortServerID != targetP->shortID)
-            continue;
-        if (targetP->sessionH == NULL ||
-            (targetP->status != STATE_REGISTERED && targetP->status != STATE_REG_UPDATE_PENDING &&
-             targetP->status != STATE_REG_UPDATE_NEEDED && targetP->status != STATE_REG_FULL_UPDATE_NEEDED)) {
-            if (ret == COAP_404_NOT_FOUND)
-                ret = COAP_405_METHOD_NOT_ALLOWED;
-            if (shortServerID == 0)
-                continue;
-            break;
-        }
-
-        LWM2M_URI_RESET(&uri);
-        transactionP = transaction_new(targetP->sessionH, COAP_POST, NULL, &uri, contextP->nextMID++,
-                                       (uint8_t)preparedTokenLen, preparedToken);
-        if (transactionP == NULL) {
-            ret = COAP_500_INTERNAL_SERVER_ERROR;
-            // Going to the next server likely won't fix this, just get out.
-            break;
-        }
-
-        coap_set_header_uri_path(transactionP->message, "/" URI_SEND_SEGMENT);
-        coap_set_header_content_type(transactionP->message, format);
-        if (!transaction_set_payload(transactionP, buffer, (size_t)length)) {
-            transaction_free(transactionP);
-            ret = COAP_500_INTERNAL_SERVER_ERROR;
-            break;
-        }
-
-        transactionP->callback = callback;
-        transactionP->userData = userData;
-
-        contextP->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transactionP);
-
-        ret = transaction_send(contextP, transactionP);
-        if (ret == NO_ERROR) {
-            oneGood = true;
-        } else {
-            LOG_ARG_DBG("transaction_send failed for %d: 0x%02X!", targetP->shortID, ret);
-        }
-        if (shortServerID != 0)
-            break;
-    }
-    if (buffer) {
-        lwm2m_free(buffer);
-    }
-    if (oneGood)
-        ret = NO_ERROR;
-    return ret;
+    for (i = 0; i < count; ++i) {
+        lwm2m_data_t *data = NULL;
+        lwm2m_transaction_t *transaction;
+        coap_packet_t *message;
+        lwm2m_uri_t uri;
+        uint8_t *buffer = NULL;
+        int size = 0, length;
+#ifdef LWM2M_SUPPORT_SENML_CBOR
+        lwm2m_media_type_t format = LWM2M_CONTENT_SENML_CBOR;
 #else
-    /* Unused parameters */
+        lwm2m_media_type_t format = LWM2M_CONTENT_SENML_JSON;
+#endif
+        server = prv_sendTarget(contextP, targets + i);
+        if (!prv_sendReady(server)) {
+            ret = COAP_405_METHOD_NOT_ALLOWED;
+            continue;
+        }
+        /* 각 대상의 Read 권한/역할과 순수 조회 범위로 각각 읽는다. 다른 대상 bytes를 공유하지 않는다. */
+        ret = dm_readSend(contextP, server, urisP, numUris, &size, &data);
+        if (ret != COAP_205_CONTENT) {
+            lwm2m_data_free(size, data);
+            continue;
+        }
+        server = prv_sendTarget(contextP, targets + i);
+        if (!prv_sendReady(server)) {
+            lwm2m_data_free(size, data);
+            ret = COAP_503_SERVICE_UNAVAILABLE;
+            continue;
+        }
+        LWM2M_URI_RESET(&uri);
+        if (size == 1) {
+            uri.objectId = data->id;
+            if (data->value.asChildren.count == 1)
+                uri.instanceId = data->value.asChildren.array->id;
+        }
+        length = data_serialize_values(&uri, size, data, &format, &buffer);
+        lwm2m_data_free(size, data);
+        if (length <= 0 || buffer == NULL) {
+            lwm2m_free(buffer);
+            ret = COAP_500_INTERNAL_SERVER_ERROR;
+            break;
+        }
+        LWM2M_URI_RESET(&uri);
+        transaction = transaction_new(server->sessionH, COAP_POST, NULL, &uri, contextP->nextMID++,
+                                       (uint8_t)preparedTokenLen, preparedToken);
+        if (transaction == NULL) {
+            lwm2m_free(buffer);
+            ret = COAP_500_INTERNAL_SERVER_ERROR;
+            break;
+        }
+        coap_set_header_uri_path(transaction->message, "/" URI_SEND_SEGMENT);
+        message = transaction->message;
+        if (message->uri_path == NULL || message->uri_path->data == NULL ||
+            message->uri_path->len != strlen(URI_SEND_SEGMENT) ||
+            memcmp(message->uri_path->data, URI_SEND_SEGMENT, strlen(URI_SEND_SEGMENT)) != 0) {
+            lwm2m_free(buffer);
+            transaction_free(transaction);
+            ret = COAP_500_INTERNAL_SERVER_ERROR;
+            break;
+        }
+        coap_set_header_content_type(transaction->message, format);
+        if (!transaction_set_payload(transaction, buffer, (size_t)length)) {
+            lwm2m_free(buffer);
+            transaction_free(transaction);
+            ret = COAP_500_INTERNAL_SERVER_ERROR;
+            break;
+        }
+        lwm2m_free(buffer);
+        transaction->callback = callback;
+        transaction->userData = userData;
+        contextP->transactionList = (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transaction);
+        ret = transaction_send(contextP, transaction);
+        /* callback 이후 transaction/server는 다시 참조하지 않는다. */
+        if (ret == NO_ERROR) oneGood = true;
+    }
+    lwm2m_free(targets);
+    return oneGood ? NO_ERROR : ret;
+#else
     (void)contextP;
     (void)shortServerID;
     (void)urisP;

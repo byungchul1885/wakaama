@@ -23,6 +23,9 @@ static void transaction_payload_is_owned_and_starts_block1(void)
     CU_ASSERT_EQUAL(transaction.payload[0], 0xA5);
     payload[0] = 0;
     CU_ASSERT_EQUAL(transaction.payload[0], 0xA5);
+    CU_ASSERT_PTR_EQUAL(message.payload, transaction.payload);
+    CU_ASSERT_PTR_NOT_EQUAL(message.payload, payload);
+    CU_ASSERT_EQUAL(message.payload[0], 0xA5);
     CU_ASSERT_TRUE(coap_get_header_block1(&message, &block_num, &block_more, &block_size, NULL));
     CU_ASSERT_EQUAL(block_num, 0);
     CU_ASSERT_TRUE(block_more);

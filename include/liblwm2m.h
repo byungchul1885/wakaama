@@ -1223,6 +1223,10 @@ int lwm2m_request_bootstrap(lwm2m_context_t *contextP);
 // send resources specified by URIs to the server specified by the server short
 // identifier or all if the ID is 0. NO_ERROR is returned if sending to any
 // server is successful.
+/* URI 배열은 호출 종료까지 caller 소유의 변경 불가 입력이다. tree 조회는 대상별 순수 Send
+ * 범위/Read 권한으로 수행하며 대상끼리 payload를 공유하지 않는다. broadcast 대상의 계정 ID와
+ * session generation은 호출 시작 때 고정하며 callback 뒤 최신 owner 목록에서 확인한다.
+ * 반환 성공은 transaction 제출 기준이며 서버의 최종 ACK/업무 수신 확인은 callback의 책임이다. */
 int lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
                lwm2m_transaction_callback_t callback, void *userData);
 int lwm2m_send_with_token(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,

@@ -1662,6 +1662,7 @@ static int prv_makeOperationWithToken(lwm2m_context_t *contextP,
     else if (buffer != NULL)
     {
         coap_set_header_content_type(transaction->message, format);
+        if (method == COAP_FETCH) coap_set_header_accept(transaction->message, format);
         if (!transaction_set_payload(transaction, buffer, length)) {
             transaction_free(transaction);
             return COAP_500_INTERNAL_SERVER_ERROR;
@@ -1742,6 +1743,22 @@ int lwm2m_dm_read(lwm2m_context_t * contextP,
 {
     return prv_lwm2m_dm_read(contextP, clientID, uriP, callback, userData);
 }
+
+#ifndef LWM2M_VERSION_1_0
+int lwm2m_dm_composite(lwm2m_context_t *contextP, uint16_t clientID, bool writing,
+                       lwm2m_media_type_t format, const uint8_t *buffer, size_t length,
+                       lwm2m_result_callback_t callback, void *userData)
+{
+    lwm2m_uri_t root;
+    if (contextP == NULL || buffer == NULL || length == 0) return COAP_400_BAD_REQUEST;
+    if (format != LWM2M_CONTENT_SENML_JSON && format != LWM2M_CONTENT_SENML_CBOR)
+        return COAP_415_UNSUPPORTED_CONTENT_FORMAT;
+    if (length > LWM2M_COMPOSITE_MAX_REQUEST_SIZE) return COAP_413_ENTITY_TOO_LARGE;
+    LWM2M_URI_RESET(&root);
+    return prv_makeOperation(contextP, clientID, &root, writing ? COAP_IPATCH : COAP_FETCH,
+                             format, (uint8_t *)buffer, length, callback, userData);
+}
+#endif
 
 static int prv_lwm2m_dm_write(lwm2m_context_t *contextP, uint16_t clientID, lwm2m_uri_t *uriP,
                               lwm2m_media_type_t format, uint8_t *buffer, size_t length, bool partialUpdate,

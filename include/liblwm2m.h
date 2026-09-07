@@ -1332,6 +1332,15 @@ void lwm2m_set_monitoring_callback(lwm2m_context_t * contextP, lwm2m_result_call
 
 // Device Management APIs
 int lwm2m_dm_read(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_uri_t * uriP, lwm2m_result_callback_t callback, void * userData);
+#ifndef LWM2M_VERSION_1_0
+/* SenML 경로/값 payload는 caller 소유이며 호출 중 transaction이 복사한다.
+ * URI는 root이고 FETCH는 요청/응답에 같은 format을 사용한다. Write는 원자 iPATCH다.
+ * 이 요청 API의 보관 상한은 64 KiB다. 더 큰 제품 원본 전송의 별도 API를 대체하지 않는다.
+ * callback/userData의 수명은 기존 DM 요청과 같으며 codec의 의미 검증은 수신 client 책임이다. */
+int lwm2m_dm_composite(lwm2m_context_t *contextP, uint16_t clientID, bool writing,
+                       lwm2m_media_type_t format, const uint8_t *buffer, size_t length,
+                       lwm2m_result_callback_t callback, void *userData);
+#endif
 int lwm2m_dm_discover(lwm2m_context_t * contextP, uint16_t clientID, lwm2m_uri_t * uriP, lwm2m_result_callback_t callback, void * userData);
 int lwm2m_dm_write(lwm2m_context_t *contextP, uint16_t clientID, lwm2m_uri_t *uriP, lwm2m_media_type_t format,
                    uint8_t *buffer, size_t length, bool partialUpdate, lwm2m_result_callback_t callback,

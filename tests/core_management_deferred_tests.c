@@ -1410,6 +1410,48 @@ static void delete_replay_preserves_new_instance_observation_and_owned_list_life
     lwm2m_close(ctx);
 }
 
+#ifdef LWM2M_SERVER_MODE
+static void composite_server_method_format_root_and_owned_payload(void)
+{
+    unsigned form, writing;
+    for (form = 0; form < 2; ++form) for (writing = 0; writing < 2; ++writing)
+    {
+        lwm2m_context_t *context = lwm2m_init(NULL);
+        lwm2m_client_t client = {0};
+        coap_packet_t request = {0};
+        uint8_t payload[64];
+        const uint8_t cborRead[] = {0x81,0xa1,0x00,0x6b,'/','2','7','3','4','3','/','0','/','1','6'};
+        const uint8_t cborWrite[] = {0x81,0xa2,0x00,0x6a,'/','2','7','3','4','6','/','0','/','0',0x03,0x61,'x'};
+        const char *json = writing ? "[{\"n\":\"/27346/0/0\",\"vs\":\"x\"}]" : "[{\"n\":\"/27343/0/16\"}]";
+        const uint8_t *expected = form ? (const uint8_t *)json : (writing ? cborWrite : cborRead);
+        size_t payloadLength = form ? strlen(json) : (writing ? sizeof(cborWrite) : sizeof(cborRead));
+        size_t length;
+        uint8_t *wire;
+        lwm2m_media_type_t format = form ? LWM2M_CONTENT_SENML_JSON : LWM2M_CONTENT_SENML_CBOR;
+        CU_ASSERT_PTR_NOT_NULL_FATAL(context);
+        memcpy(payload, expected, payloadLength);
+        client.internalID = 7; client.sessionH = &client; context->clientList = &client;
+        CU_ASSERT_EQUAL(lwm2m_dm_composite(context, 7, writing != 0, format, payload, payloadLength, NULL, NULL), NO_ERROR);
+        memset(payload, 0, sizeof(payload));
+        wire = test_get_response_buffer(&length);
+        CU_ASSERT_EQUAL(coap_parse_message(&request, wire, (uint16_t)length), NO_ERROR);
+        CU_ASSERT_EQUAL(request.code, writing ? COAP_IPATCH : COAP_FETCH);
+        CU_ASSERT_PTR_NULL(request.uri_path);
+        CU_ASSERT_EQUAL(request.content_type, format);
+        CU_ASSERT_EQUAL(request.accept_num, writing ? 0 : 1);
+        if (!writing) CU_ASSERT_EQUAL(request.accept[0], format);
+        CU_ASSERT_EQUAL(request.payload_len, payloadLength);
+        CU_ASSERT_EQUAL(memcmp(request.payload, expected, payloadLength), 0);
+        CU_ASSERT_EQUAL(memcmp(context->transactionList->payload, expected, payloadLength), 0);
+        CU_ASSERT_EQUAL(lwm2m_dm_composite(context, 8, false, format, payload, sizeof(payload), NULL, NULL), COAP_404_NOT_FOUND);
+        CU_ASSERT_EQUAL(lwm2m_dm_composite(context, 7, false, LWM2M_CONTENT_TLV, payload, sizeof(payload), NULL, NULL), COAP_415_UNSUPPORTED_CONTENT_FORMAT);
+        CU_ASSERT_EQUAL(lwm2m_dm_composite(context, 7, false, format, payload, 0, NULL, NULL), COAP_400_BAD_REQUEST);
+        CU_ASSERT_EQUAL(lwm2m_dm_composite(context, 7, false, format, payload, 65537, NULL, NULL), COAP_413_ENTITY_TOO_LARGE);
+        coap_free_header(&request); context->clientList = NULL; lwm2m_close(context);
+    }
+}
+#endif
+
 static struct TestTable table[] = {
 #ifdef LWM2M_SUPPORT_SENML_JSON
     {"Write Composite atomic owner dispatch", write_composite_dispatches_one_atomic_owner},
@@ -1433,6 +1475,7 @@ static struct TestTable table[] = {
     {"Execute caller token", execute_with_token_preserves_caller_token},
     {"Send explicit empty Token", send_payload_preserves_explicit_empty_token},
 #ifdef LWM2M_SERVER_MODE
+    {"Composite server method format root and payload owner", composite_server_method_format_root_and_owned_payload},
     {"Block1 confirmed byte progress", block1_progress_tracks_confirmed_bytes},
     {"Create serialized source ownership", create_releases_serialized_source_after_queue},
 #endif

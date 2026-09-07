@@ -280,6 +280,9 @@ void transaction_remove(lwm2m_context_t * contextP, lwm2m_transaction_t * transa
 void transaction_complete(lwm2m_context_t *contextP, lwm2m_transaction_t *transacP, void *message);
 size_t transaction_abort_session(lwm2m_context_t *contextP, void *sessionH);
 bool transaction_handleResponse(lwm2m_context_t * contextP, void * fromSessionH, coap_packet_t * message, coap_packet_t * response);
+/* 이미 session/Token을 대조한 별도 CON 응답을 ACK한다. 송신 중 요청의 해제를 지연하며,
+ * false면 취소/송신 실패이므로 caller는 이전 transaction/peer pointer를 다시 사용하지 않는다. */
+bool transaction_ack_response(lwm2m_context_t *context, lwm2m_transaction_t *transaction, coap_packet_t *message);
 bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t mid, uint8_t code);
 void transaction_step(lwm2m_context_t * contextP, time_t currentTime, time_t * timeoutP);
 bool transaction_free_userData(lwm2m_context_t * context, lwm2m_transaction_t * transaction);
@@ -442,6 +445,12 @@ void block1_delete(lwm2m_block_data_t ** pBlockDataHead, char * uri);
 uint8_t coap_block2_handler(lwm2m_block_data_t **blockData, uint16_t mid, const uint8_t *buffer, size_t length,
                             uint16_t blockSize, uint32_t blockNum, bool blockMore, uint8_t **outputBuffer,
                             size_t *outputLength);
+/* packet 수신용 wrapper. ETag/형식과 반복 Location-Path가 다른 조각은 합치지 않는다.
+ * 첫 응답 metadata는 owner 사본이다. NO_ERROR 때 첫 Location-Path 노드의 소유권을 message로
+ * 이전하므로 caller는 callback 뒤 coap_free_header(message)를 호출한다. 본문은 위 계약과 같다.
+ * 실패/중복/중간 응답에서는 message를 바꾸지 않으며 오류 후 block 정리는 caller 책임이다. */
+uint8_t coap_block2_response_handler(lwm2m_block_data_t **blockData, uint16_t mid, coap_packet_t *message,
+                                     uint8_t **outputBuffer, size_t *outputLength);
 void coap_block2_set_expected_mid(lwm2m_block_data_t *blockDataHead, uint16_t currentMid, uint16_t expectedMid);
 void free_block_data(lwm2m_block_data_t * blockData);
 /* 해당 Block2 항목을 목록에서 분리한다. 반환 항목/본문은 caller 소유며 callback 뒤

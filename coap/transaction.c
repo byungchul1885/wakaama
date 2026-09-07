@@ -93,16 +93,10 @@ Contains code snippets which are:
  *  received or a timeout occurs.
  *
  *  Supported dialogs:
- *  Requests (GET - DELETE):
- *  - CON with mid, without token => regular finished with corresponding ACK.MID
- *  - CON with mid, with token => regular finished with corresponding ACK.MID and response containing
- *                  the token. Supports both versions, with piggybacked ACK and separate ACK/response.
- *                  Though the ACK.MID may be lost in the separate version, a matching response may
- *                  finish the transaction even without the ACK.MID.
- *  - NON without token => no transaction, no result expected!
- *  - NON with token => regular finished with response containing the token.
- *  Responses (COAP_201_CREATED - ?):
- *  - CON with mid => regular finished with corresponding ACK.MID
+ * 요청(GET~iPATCH)의 완료는 session/Token이 일치하는 실제 응답으로 판정한다.
+ * 빈 Token도 허용하지만 빈 ACK는 응답 완료가 아니며 별도 응답 timeout을 시작한다.
+ * piggyback 응답은 요청 MID도 일치해야 한다. 별도 CON/NON 응답의 MID는 서버가 정한다.
+ * 송신한 CON 응답 자체의 transaction은 대응하는 MID의 ACK로 완료한다.
  */
 
 #include "internals.h"
@@ -157,22 +151,14 @@ static int prv_checkFinished(lwm2m_transaction_t * transacP,
     uint8_t* token;
     coap_packet_t * transactionMessage = (coap_packet_t *) transacP->message;
 
-    if (transactionMessage->mid == receivedMessage->mid) {
-        if (COAP_DELETE < transactionMessage->code) {
-            // response
-            return transacP->ack_received ? 1 : 0;
-        }
-        if (!IS_OPTION(transactionMessage, COAP_OPTION_TOKEN)) {
-            // request without token
-            return transacP->ack_received ? 1 : 0;
-        }
-    }
-
-    if (COAP_DELETE >= transactionMessage->code && IS_OPTION(transactionMessage, COAP_OPTION_TOKEN)) {
-        // request with token
+    if (transactionMessage->code < COAP_GET || transactionMessage->code > COAP_IPATCH)
+        return transactionMessage->mid == receivedMessage->mid && transacP->ack_received;
+    /* FETCH/iPATCH도 요청이다. 빈 ACK는 Token 길이와 무관하게 응답 본문 완료가 아니다. */
+    if (receivedMessage->code >= COAP_201_CREATED &&
+        (receivedMessage->type != COAP_TYPE_ACK || transactionMessage->mid == receivedMessage->mid)) {
         len = coap_get_header_token(receivedMessage, &token);
         if (transactionMessage->token_len == len) {
-            if (memcmp(transactionMessage->token, token, len) == 0)
+            if (len == 0 || memcmp(transactionMessage->token, token, len) == 0)
                 return 1;
         }
     }
@@ -339,6 +325,8 @@ lwm2m_transaction_t *transaction_clone(const lwm2m_transaction_t *source, uint16
     }
     copy->callback = source->callback;
     copy->userData = source->userData;
+    copy->hasPreviousResponseMid = source->hasPreviousResponseMid;
+    copy->previousResponseMid = source->previousResponseMid;
     return copy;
 failed:
     transaction_free(copy);
@@ -356,6 +344,25 @@ static void prv_release(lwm2m_transaction_t *transacP)
     if (transacP->holdCount == 0 && transacP->retired) prv_destroy(transacP);
 }
 
+static void prv_clear_block_response(lwm2m_context_t *context, lwm2m_transaction_t *transaction)
+{
+#ifdef LWM2M_CLIENT_MODE
+    lwm2m_server_t *peer = utils_findServer(context, transaction->peerH);
+#ifdef LWM2M_BOOTSTRAP
+    if (peer == NULL) peer = utils_findBootstrapServer(context, transaction->peerH);
+#endif
+#elif defined(LWM2M_SERVER_MODE)
+    lwm2m_client_t *peer = utils_findClient(context, transaction->peerH);
+#else
+    (void)context;
+    (void)transaction;
+    return;
+#endif
+#if defined(LWM2M_CLIENT_MODE) || defined(LWM2M_SERVER_MODE)
+    if (peer != NULL) block2_delete(&peer->blockData, transaction->mID);
+#endif
+}
+
 void transaction_remove(lwm2m_context_t * contextP,
                         lwm2m_transaction_t * transacP)
 {
@@ -366,6 +373,7 @@ void transaction_remove(lwm2m_context_t * contextP,
     link = &contextP->transactionList;
     while (*link != NULL && *link != transacP) link = &(*link)->next;
     if (*link != NULL) {
+        if (!transacP->completing) prv_clear_block_response(contextP, transacP);
         *link = transacP->next;
         transacP->next = NULL;
     }
@@ -377,6 +385,8 @@ void transaction_complete(lwm2m_context_t *contextP, lwm2m_transaction_t *transa
     if (transacP->retired || transacP->completing) return;
     prv_hold(transacP);
     transacP->completing = true;
+    /* 취소/timeout의 prefix는 callback 전에 회수한다. callback이 새 같은 MID를 만들 수 있다. */
+    prv_clear_block_response(contextP, transacP);
     if (transacP->callback != NULL) transacP->callback(contextP, transacP, message);
     transaction_remove(contextP, transacP);
     prv_release(transacP);
@@ -411,6 +421,23 @@ size_t transaction_abort_session(lwm2m_context_t *contextP, void *sessionH)
     return aborted;
 }
 
+bool transaction_ack_response(lwm2m_context_t *context, lwm2m_transaction_t *transaction, coap_packet_t *message)
+{
+    coap_packet_t ack;
+    bool active;
+    uint8_t result;
+    if (transaction == NULL || transaction->retired || transaction->completing || transaction->acknowledgingResponse)
+        return false;
+    prv_hold(transaction);
+    transaction->acknowledgingResponse = true;
+    coap_init_message(&ack, COAP_TYPE_ACK, COAP_EMPTY_MESSAGE_CODE, message->mid);
+    result = message_send(context, &ack, transaction->peerH);
+    active = !transaction->retired && !transaction->completing && result == NO_ERROR;
+    transaction->acknowledgingResponse = false;
+    prv_release(transaction);
+    return active;
+}
+
 bool transaction_handleResponse(lwm2m_context_t * contextP,
                                  void * fromSessionH,
                                  coap_packet_t * message,
@@ -425,7 +452,7 @@ bool transaction_handleResponse(lwm2m_context_t * contextP,
 
     while (NULL != transacP)
     {
-        if (!transacP->completing &&
+        if (!transacP->completing && !transacP->acknowledgingResponse &&
             lwm2m_session_is_equal(fromSessionH, transacP->peerH, contextP->userData) == true)
         {
             if (!transacP->ack_received)

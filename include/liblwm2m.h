@@ -651,6 +651,7 @@ typedef struct _block_data_identifier_
 
 
 typedef struct _lwm2m_block_data_ lwm2m_block_data_t;
+struct _lwm2m_block2_metadata_;
 
 struct _lwm2m_block_data_
 {
@@ -670,6 +671,8 @@ struct _lwm2m_block_data_
     uint8_t                         responseCode;
     bool                            responseHasLocationPath;
     char                            responseLocationPath[LWM2M_BLOCK1_LOCATION_PATH_MAX_LEN + 1];
+    /* Block2 첫 응답의 독립 사본. block owner가 보유하며 free_block_data에서 해제한다. */
+    struct _lwm2m_block2_metadata_ *  responseMetadata;
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
     uint16_t                        mid;                // mid of the last message received
 #endif
@@ -850,6 +853,9 @@ struct _lwm2m_transaction_
     unsigned holdCount;
     bool retired;
     bool completing;
+    bool acknowledgingResponse; /* 별도 응답 ACK 송신 callback 중 같은 응답의 재진입 방지 */
+    bool hasPreviousResponseMid;
+    uint16_t previousResponseMid; /* 직전 별도 응답의 재전송을 후속 Block 요청 완료로 오인하지 않음 */
     bool sending;
     bool abortRequested;
     lwm2m_transaction_t *stepNext;

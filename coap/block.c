@@ -384,6 +384,23 @@ uint8_t coap_block1_handler(lwm2m_block_data_t **blockDataHeadP,
         0, outputBuffer, outputLength);
 }
 
+struct _lwm2m_block2_metadata_ {
+    uint8_t code;
+    bool hasContentFormat;
+    uint16_t contentFormat;
+    bool hasEtag;
+    uint8_t etagLength;
+    uint8_t etag[COAP_ETAG_LEN];
+    multi_option_t *locationPath;
+};
+
+static void prv_free_response_metadata(struct _lwm2m_block2_metadata_ *metadata)
+{
+    if (metadata == NULL) return;
+    free_multi_option(metadata->locationPath);
+    lwm2m_free(metadata);
+}
+
 uint8_t coap_block1_handler_with_limit(lwm2m_block_data_t **blockDataHeadP,
     const char *uri, const uint8_t *token, size_t tokenLength, uint16_t mid, const uint8_t *buffer,
     size_t length, uint16_t blockSize, uint32_t blockNum, bool blockMore, bool rawBlock1, size_t limit,
@@ -689,10 +706,98 @@ uint8_t coap_block2_handler(lwm2m_block_data_t **blockDataHeadP,
     return COAP_NO_ERROR;
 }
 
+uint8_t coap_block2_response_handler(lwm2m_block_data_t **head, uint16_t mid, coap_packet_t *message,
+                                     uint8_t **outputBuffer, size_t *outputLength)
+{
+    block_data_identifier_t identifier = {0};
+    lwm2m_block_data_t *block;
+    struct _lwm2m_block2_metadata_ *metadata, *candidate = NULL;
+    bool hasContentFormat, hasEtag;
+    uint8_t result;
+
+    if (outputBuffer != NULL) *outputBuffer = NULL;
+    if (outputLength != NULL) *outputLength = 0;
+    if (head == NULL || message == NULL || outputBuffer == NULL || outputLength == NULL)
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    /* 실패 응답 본문을 이전 성공 응답에 이어 붙이지 않는다. 오류는 상위 요청에 그대로 전달한다. */
+    if (message->code >= COAP_400_BAD_REQUEST) return message->code;
+    if ((message->code >> 5) != 2 || message->code == COAP_231_CONTINUE)
+        return COAP_400_BAD_REQUEST;
+    identifier.mid = mid;
+    block = find_block_data(*head, identifier, BLOCK_2);
+    metadata = block == NULL ? NULL : block->responseMetadata;
+    hasContentFormat = IS_OPTION(message, COAP_OPTION_CONTENT_TYPE) != 0;
+    hasEtag = IS_OPTION(message, COAP_OPTION_ETAG) != 0;
+    if (hasEtag && (message->etag_len == 0 || message->etag_len > COAP_ETAG_LEN))
+        return COAP_400_BAD_REQUEST;
+    if (metadata != NULL) {
+        const multi_option_t *first, *current;
+        /* 전체 무표시는 허용하되, 전송 중 identity/형식의 추가·삭제를 성공으로 숨기지 않는다. */
+        if (metadata->hasContentFormat != hasContentFormat || metadata->hasEtag != hasEtag ||
+            (hasContentFormat && metadata->contentFormat != message->content_type) ||
+            (hasEtag && (metadata->etagLength != message->etag_len ||
+                        memcmp(metadata->etag, message->etag, message->etag_len) != 0)))
+            return COAP_400_BAD_REQUEST;
+        /* 생성 경로는 첫 응답에만 있어도 된다. 반복한 경우 원래 segment와 정확히 같아야 한다. */
+        if (message->location_path != NULL) {
+            first = metadata->locationPath;
+            current = message->location_path;
+            while (first != NULL && current != NULL && first->len == current->len &&
+                   (first->len == 0 || memcmp(first->data, current->data, first->len) == 0)) {
+                first = first->next;
+                current = current->next;
+            }
+            if (first != NULL || current != NULL) return COAP_400_BAD_REQUEST;
+        }
+    } else {
+        const multi_option_t *part;
+        multi_option_t **tail;
+        if (block != NULL && block->blockSize != 0) return COAP_500_INTERNAL_SERVER_ERROR;
+        candidate = lwm2m_malloc(sizeof(*candidate));
+        if (candidate == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
+        memset(candidate, 0, sizeof(*candidate));
+        candidate->code = message->code;
+        candidate->hasContentFormat = hasContentFormat;
+        candidate->contentFormat = message->content_type;
+        candidate->hasEtag = hasEtag;
+        candidate->etagLength = hasEtag ? message->etag_len : 0;
+        if (hasEtag) memcpy(candidate->etag, message->etag, message->etag_len);
+        tail = &candidate->locationPath;
+        for (part = message->location_path; part != NULL; part = part->next) {
+            coap_add_multi_option(tail, part->len == 0 ? (uint8_t *)"" : part->data, part->len, part->len == 0);
+            if (*tail == NULL) {
+                prv_free_response_metadata(candidate);
+                return COAP_500_INTERNAL_SERVER_ERROR;
+            }
+            tail = &(*tail)->next;
+        }
+        metadata = candidate;
+    }
+
+    result = coap_block2_handler(head, mid, message->payload, message->payload_len,
+        message->block2_size, message->block2_num, message->block2_more, outputBuffer, outputLength);
+    if (result != NO_ERROR && result != COAP_231_CONTINUE) {
+        prv_free_response_metadata(candidate);
+        return result;
+    }
+    block = find_block_data(*head, identifier, BLOCK_2);
+    if (candidate != NULL) block->responseMetadata = candidate;
+    if (result == NO_ERROR) {
+        /* 마지막 wire의 수명이 아니라 전체 논리 응답의 metadata를 callback에 전달한다. */
+        message->code = metadata->code;
+        free_multi_option(message->location_path);
+        message->location_path = metadata->locationPath;
+        metadata->locationPath = NULL;
+        if (message->location_path != NULL) SET_OPTION(message, COAP_OPTION_LOCATION_PATH);
+    }
+    return result;
+}
+
 void free_block_data(lwm2m_block_data_t *blockData)
 {
     if (blockData == NULL) return;
     lwm2m_free(blockData->blockBuffer);
+    prv_free_response_metadata(blockData->responseMetadata);
     if (blockData->blockType == BLOCK_1) lwm2m_free(blockData->identifier.uri);
     lwm2m_free(blockData);
 }

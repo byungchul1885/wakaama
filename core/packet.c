@@ -439,14 +439,20 @@ static lwm2m_transaction_t * prv_get_transaction(lwm2m_context_t * contextP, voi
     return NULL;
 }
 
-static bool prv_block_response_matches(lwm2m_context_t *contextP, void *sessionH, const coap_packet_t *response)
+static lwm2m_transaction_t *prv_response_transaction(lwm2m_context_t *contextP, void *sessionH,
+                                                     const coap_packet_t *response)
 {
-    lwm2m_transaction_t *transaction = prv_get_transaction(contextP, sessionH, response->mid);
-    const coap_packet_t *request;
-    if (transaction == NULL || transaction->completing) return false;
-    request = transaction->message;
-    return request->token_len == response->token_len &&
-           memcmp(request->token, response->token, request->token_len) == 0;
+    lwm2m_transaction_t *transaction;
+    for (transaction = contextP->transactionList; transaction != NULL; transaction = transaction->next) {
+        const coap_packet_t *request = transaction->message;
+        if (transaction->completing ||
+            !lwm2m_session_is_equal(sessionH, transaction->peerH, contextP->userData) ||
+            (response->type == COAP_TYPE_ACK && transaction->mID != response->mid)) continue;
+        if (request->code >= COAP_GET && request->code <= COAP_IPATCH &&
+            request->token_len == response->token_len &&
+            memcmp(request->token, response->token, request->token_len) == 0) return transaction;
+    }
+    return NULL;
 }
 
 static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t * previous, uint32_t block_num, uint16_t block_size)
@@ -454,8 +460,9 @@ static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t *
     lwm2m_transaction_t * next;
     size_t block_offset;
 
-    if (contextP == NULL || previous == NULL || block_size == 0)
+    if (contextP == NULL || previous == NULL)
         return COAP_500_INTERNAL_SERVER_ERROR;
+    if (!validate_block_size(block_size) || block_num > 0x0fffffU) return COAP_400_BAD_REQUEST;
 
     if ((size_t)block_num > ((size_t)-1) / (size_t)block_size)
         return COAP_400_BAD_REQUEST;
@@ -477,6 +484,13 @@ static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t *
 
     coap_set_header_block1(next->message, block_num, remaining_payload_length > block_size, block_size);
     coap_set_payload(next->message, new_block_start, MIN(block_size, remaining_payload_length));
+    if (block_num != 0) {
+        coap_packet_t *request = next->message;
+        /* RFC 7959 §2.10: 생성 전제조건은 Block1 NUM=0에서만 평가한다. */
+        request->options[COAP_OPTION_IF_NONE_MATCH / OPTION_MAP_SIZE] &=
+            ~(1 << (COAP_OPTION_IF_NONE_MATCH % OPTION_MAP_SIZE));
+        request->if_none_match = 0;
+    }
 
     if (transaction_prepare(next) != NO_ERROR) {
         transaction_free(next);
@@ -494,6 +508,7 @@ static int prv_send_next_block1(lwm2m_context_t * contextP, void * sessionH, uin
     lwm2m_transaction_t * transaction;
     coap_packet_t * message;
     uint32_t block_num;
+    uint64_t next_offset;
 
     transaction = prv_get_transaction(contextP, sessionH, mid);
     if(transaction == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
@@ -503,14 +518,12 @@ static int prv_send_next_block1(lwm2m_context_t * contextP, void * sessionH, uin
     // safeguard, requested block size should not be greater or zero
     if (block_size > message->block1_size || block_size == 0) block_size = message->block1_size;
 
-    if (message->block1_num == 0)
-    {
-        block_num = message->block1_size / block_size;
-    }
-    else
-    {
-        block_num = message->block1_num + 1;
-    }
+    if (!validate_block_size(block_size)) return COAP_400_BAD_REQUEST;
+    next_offset = (uint64_t)message->block1_num * message->block1_size + message->payload_len;
+    if (next_offset >= transaction->payload_len) return COAP_IGNORE;
+    if (next_offset % block_size != 0 || next_offset / block_size > 0x0fffffU)
+        return COAP_400_BAD_REQUEST;
+    block_num = (uint32_t)(next_offset / block_size);
 
     return prv_send_new_block1(contextP, transaction, block_num, block_size);
 }
@@ -551,7 +564,13 @@ static int prv_retry_block1(lwm2m_context_t * contextP, void * sessionH, uint16_
     if (block_size == message->block1_size && block_size > 16) block_size *= 0.5;
     if (block_size >= message->block1_size || block_size == 0) return COAP_400_BAD_REQUEST;
 
-    block_num = message->block1_num;
+    if (!validate_block_size(block_size)) return COAP_400_BAD_REQUEST;
+    /* 4.13에서 같은 조각을 작게 다시 보낼 때도 NUM이 아니라 byte 시작점을 유지한다. */
+    {
+        uint64_t offset = (uint64_t)message->block1_num * message->block1_size;
+        if (offset % block_size != 0 || offset / block_size > 0x0fffffU) return COAP_400_BAD_REQUEST;
+        block_num = (uint32_t)(offset / block_size);
+    }
 
     return prv_send_new_block1(contextP, transaction, block_num, block_size);
 }
@@ -631,7 +650,8 @@ static int prv_send_get_next_block2(lwm2m_context_t * contextP,
 }
 
 /* 순수 Block2와 마지막 Block1에 붙은 Block2가 같은 완료/회수 경계를 사용한다. */
-static void prv_handle_block2_ack(lwm2m_context_t *contextP, void *sessionH, coap_packet_t *message)
+static void prv_handle_block2_response(lwm2m_context_t *contextP, void *sessionH, coap_packet_t *message,
+                                       uint16_t requestMid)
 {
     uint8_t result, *complete = NULL;
     size_t length = 0;
@@ -644,13 +664,12 @@ static void prv_handle_block2_ack(lwm2m_context_t *contextP, void *sessionH, coa
     lwm2m_client_t *peerP = utils_findClient(contextP, sessionH);
 #endif
     if (peerP == NULL) {
-        (void)transaction_fail(contextP, sessionH, message->mid, COAP_500_INTERNAL_SERVER_ERROR);
+        (void)transaction_fail(contextP, sessionH, requestMid, COAP_500_INTERNAL_SERVER_ERROR);
         return;
     }
-    result = coap_block2_handler(&peerP->blockData, message->mid, message->payload, message->payload_len,
-        message->block2_size, message->block2_num, message->block2_more, &complete, &length);
+    result = coap_block2_response_handler(&peerP->blockData, requestMid, message, &complete, &length);
     if (result == NO_ERROR) {
-        lwm2m_block_data_t *completed = block2_take(&peerP->blockData, message->mid);
+        lwm2m_block_data_t *completed = block2_take(&peerP->blockData, requestMid);
         message->payload = complete;
         message->payload_len = length;
         transaction_handleResponse(contextP, sessionH, message, NULL);
@@ -659,15 +678,60 @@ static void prv_handle_block2_ack(lwm2m_context_t *contextP, void *sessionH, coa
     }
     if (result == COAP_231_CONTINUE) {
         result = prv_send_get_next_block2(contextP, sessionH, peerP->blockData,
-            message->mid, message->block2_num, message->block2_size);
+            requestMid, message->block2_num, message->block2_size);
         /* 인계 성공 뒤 callback이 peer를 해제했을 수 있으므로 이전 owner를 다시 읽지 않는다. */
         if (result < COAP_400_BAD_REQUEST) return;
     }
     if (result >= COAP_400_BAD_REQUEST) {
-        block2_delete(&peerP->blockData, message->mid);
-        (void)transaction_fail(contextP, sessionH, message->mid, result);
+        block2_delete(&peerP->blockData, requestMid);
+        (void)transaction_fail(contextP, sessionH, requestMid, result);
     }
     /* 정확한 중복은 오류 ACK나 완료 callback을 만들지 않는다. */
+}
+
+/* piggyback ACK와 별도 CON/NON 응답은 같은 논리 Block 요청을 진행시킨다. */
+static void prv_handle_block_response(lwm2m_context_t *contextP, void *sessionH, coap_packet_t *message,
+                                      uint16_t requestMid)
+{
+    int result = COAP_IGNORE;
+    lwm2m_transaction_t *transaction = prv_get_transaction(contextP, sessionH, requestMid);
+    const coap_packet_t *request;
+    if (transaction == NULL) return;
+    request = transaction->message;
+    if (IS_OPTION(message, COAP_OPTION_BLOCK1) && (message->code >> 5) == 2 &&
+        (!IS_OPTION(request, COAP_OPTION_BLOCK1) || message->block1_num != request->block1_num)) {
+        (void)transaction_fail(contextP, sessionH, requestMid, COAP_400_BAD_REQUEST);
+        return;
+    }
+    if (IS_OPTION(message, COAP_OPTION_BLOCK1) && IS_OPTION(message, COAP_OPTION_BLOCK2) &&
+        (message->code >> 5) == 2) {
+        if (message->block1_more || message->code == COAP_231_CONTINUE)
+            (void)transaction_fail(contextP, sessionH, requestMid, COAP_400_BAD_REQUEST);
+        else if (request->block1_more)
+            (void)transaction_fail(contextP, sessionH, requestMid, COAP_501_NOT_IMPLEMENTED);
+        else prv_handle_block2_response(contextP, sessionH, message, requestMid);
+        return;
+    }
+    if (IS_OPTION(message, COAP_OPTION_BLOCK2)) {
+        prv_handle_block2_response(contextP, sessionH, message, requestMid);
+        return;
+    }
+    switch (message->code) {
+    case COAP_201_CREATED:
+    case COAP_204_CHANGED:
+    case COAP_231_CONTINUE:
+        result = prv_send_next_block1(contextP, sessionH, requestMid, message->block1_size);
+        break;
+    case COAP_413_ENTITY_TOO_LARGE:
+        if (message->block1_num == 0)
+            result = prv_retry_block1(contextP, sessionH, requestMid, message->block1_size);
+        break;
+    default:
+        break;
+    }
+    if (result == NO_ERROR) return;
+    if (result >= COAP_400_BAD_REQUEST) (void)transaction_fail(contextP, sessionH, requestMid, result);
+    else transaction_handleResponse(contextP, sessionH, message, NULL);
 }
 
 static bool is_message_too_large(const coap_packet_t *message, const size_t packet_size) {
@@ -1140,30 +1204,49 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             {
             case COAP_TYPE_NON:
             case COAP_TYPE_CON:
-                if (message->payload_len > lwm2m_get_coap_block_size()) {
-#ifdef LWM2M_CLIENT_MODE
-                    // get server
-                    lwm2m_server_t * peerP;
-                    peerP = utils_findServer(contextP, fromSessionH);
-#ifdef LWM2M_BOOTSTRAP
-                    if (peerP == NULL)
-                    {
-                        peerP = utils_findBootstrapServer(contextP, fromSessionH);
+            case COAP_TYPE_ACK:
+            {
+                lwm2m_transaction_t *transaction = prv_response_transaction(contextP, fromSessionH, message);
+                if (transaction != NULL && message->code >= COAP_201_CREATED) {
+                    uint16_t requestMid = transaction->mID;
+                    const coap_packet_t *request;
+                    bool duplicate = message->type != COAP_TYPE_ACK && transaction->hasPreviousResponseMid &&
+                        transaction->previousResponseMid == message->mid;
+                    if (transaction->acknowledgingResponse) break;
+                    if (message->type == COAP_TYPE_CON && !transaction_ack_response(contextP, transaction, message)) break;
+                    if (duplicate) break;
+                    if (message->type != COAP_TYPE_ACK) {
+                        transaction->hasPreviousResponseMid = true;
+                        transaction->previousResponseMid = message->mid;
                     }
-#endif
-#else
-                    lwm2m_client_t * peerP;
-                    peerP = utils_findClient(contextP, fromSessionH);
-#endif
-                    if (peerP != NULL)
-                    {
-                        // retry as a block2 request
-                        prv_send_get_block2(contextP, fromSessionH, peerP->blockData, message->mid, 0,
-                                            lwm2m_get_coap_block_size());
+                    request = transaction->message;
+                    if (length > LWM2M_COAP_MAX_MESSAGE_SIZE) {
+                        (void)transaction_fail(contextP, fromSessionH, requestMid, COAP_413_ENTITY_TOO_LARGE);
+                    } else if ((message->code >> 5) == 2 &&
+                        ((IS_OPTION(request, COAP_OPTION_BLOCK2) && request->block2_num != 0 &&
+                          !IS_OPTION(message, COAP_OPTION_BLOCK2)) ||
+                         (IS_OPTION(request, COAP_OPTION_BLOCK1) && request->block1_more &&
+                          !IS_OPTION(message, COAP_OPTION_BLOCK1)))) {
+                        /* 중간 응답에서 Block 옵션이 사라져도 첫/마지막 조각만 전체 성공으로 넘기지 않는다. */
+                        (void)transaction_fail(contextP, fromSessionH, requestMid, COAP_400_BAD_REQUEST);
+                    } else if (IS_OPTION(message, COAP_OPTION_BLOCK1) || IS_OPTION(message, COAP_OPTION_BLOCK2)) {
+                        prv_handle_block_response(contextP, fromSessionH, message, requestMid);
+                    } else if (message->code == COAP_413_ENTITY_TOO_LARGE) {
+                        int result = prv_change_to_block1(contextP, fromSessionH, requestMid, message->size);
+                        if (result >= COAP_400_BAD_REQUEST) (void)transaction_fail(contextP, fromSessionH, requestMid, result);
+                        else if (result != NO_ERROR) transaction_handleResponse(contextP, fromSessionH, message, NULL);
+                    } else {
+                        /* Block 없는 완전한 응답을 이미 받았으면 원래 POST/Write를 다시 보내지 않는다.
+                         * 선호 Block 크기와 전체 수신 패킷 상한은 다르다. CON ACK는 위에서 먼저 끝냈다. */
+                        transaction_handleResponse(contextP, fromSessionH, message, NULL);
                     }
-                    transaction_handleResponse(contextP, fromSessionH, message, NULL);
+                    break;
+                }
+                /* 빈 ACK 또는 요청에 대응하지 않는 Observe 알림 등 기존 수신 경로. */
+                if (message->type == COAP_TYPE_ACK) {
+                    if (!IS_OPTION(message, COAP_OPTION_BLOCK1) && !IS_OPTION(message, COAP_OPTION_BLOCK2))
+                        transaction_handleResponse(contextP, fromSessionH, message, NULL);
                 } else {
-
                     bool done = transaction_handleResponse(contextP, fromSessionH, message, response);
 
     #ifdef LWM2M_SERVER_MODE
@@ -1183,109 +1266,12 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     }
                 }
                 break;
+            }
 
             case COAP_TYPE_RST:
                 /* Cancel possible subscriptions. */
                 handle_reset(contextP, fromSessionH, message);
                 transaction_handleResponse(contextP, fromSessionH, message, NULL);
-                break;
-
-            case COAP_TYPE_ACK:
-                /* Block 상태/후속 요청을 만들기 전에 원래 요청의 session·MID·Token을 확인한다. */
-                if ((IS_OPTION(message, COAP_OPTION_BLOCK1) || IS_OPTION(message, COAP_OPTION_BLOCK2)) &&
-                    !prv_block_response_matches(contextP, fromSessionH, message)) break;
-                if (IS_OPTION(message, COAP_OPTION_BLOCK1) && IS_OPTION(message, COAP_OPTION_BLOCK2) &&
-                    (message->code >> 5) == 2) {
-                    lwm2m_transaction_t *transaction = prv_get_transaction(contextP, fromSessionH, message->mid);
-                    const coap_packet_t *request = transaction->message;
-                    if (!IS_OPTION(request, COAP_OPTION_BLOCK1) || message->block1_more ||
-                        message->code == COAP_231_CONTINUE || message->block1_num != request->block1_num) {
-                        (void)transaction_fail(contextP, fromSessionH, message->mid, COAP_400_BAD_REQUEST);
-                    } else if (request->block1_more) {
-                        /* 조각별 적용 결과를 매번 수신하는 비원자 조합은 전체 완료로 오인하지 않는다. */
-                        (void)transaction_fail(contextP, fromSessionH, message->mid, COAP_501_NOT_IMPLEMENTED);
-                    } else prv_handle_block2_ack(contextP, fromSessionH, message);
-                    break;
-                }
-                if (message->payload_len > lwm2m_get_coap_block_size()) {
-#ifdef LWM2M_CLIENT_MODE
-                    // get server
-                    lwm2m_server_t * peerP;
-                    peerP = utils_findServer(contextP, fromSessionH);
-#ifdef LWM2M_BOOTSTRAP
-                    if (peerP == NULL)
-                    {
-                        peerP = utils_findBootstrapServer(contextP, fromSessionH);
-                    }
-#endif
-#else
-                    lwm2m_client_t * peerP;
-                    peerP = utils_findClient(contextP, fromSessionH);
-#endif
-                    if (peerP != NULL)
-                    {
-                        // retry as a block2 request
-                        prv_send_get_block2(contextP, fromSessionH, peerP->blockData, message->mid, 0,
-                                            lwm2m_get_coap_block_size());
-                    }
-                    transaction_handleResponse(contextP, fromSessionH, message, NULL);
-                } else if (IS_OPTION(message, COAP_OPTION_BLOCK1)) {
-                    uint32_t block_num;
-                    uint16_t block_size;
-                    bool wait_for_next_block_response = false;
-
-                    coap_get_header_block1(message, &block_num, NULL, &block_size, NULL);
-
-                    switch (message->code) {
-                        case COAP_201_CREATED:
-                        case COAP_204_CHANGED:
-                            coap_error_code = prv_send_next_block1(contextP, fromSessionH, message->mid, block_size);
-                            wait_for_next_block_response = coap_error_code == NO_ERROR;
-                            break;
-                        case COAP_231_CONTINUE:
-                            coap_error_code = prv_send_next_block1(contextP, fromSessionH, message->mid, block_size);
-                            if (coap_error_code == NO_ERROR)
-                            {
-                                wait_for_next_block_response = true;
-                            }
-                            break;
-                        case COAP_413_ENTITY_TOO_LARGE:
-                            // resend with smaller block size as specified in the block 1 option
-                            if (block_num > 0) break;
-                            coap_error_code = prv_retry_block1(contextP, fromSessionH, message->mid, block_size);
-                            if (coap_error_code == NO_ERROR)
-                            {
-                                wait_for_next_block_response = true;
-                            }
-                        default:
-                            break;
-                    }
-
-                    if (!wait_for_next_block_response)
-                    {
-                        if (coap_error_code >= COAP_400_BAD_REQUEST) {
-                            (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
-                            coap_error_code = NO_ERROR;
-                        } else transaction_handleResponse(contextP, fromSessionH, message, NULL);
-                    }
-                } else if (IS_OPTION(message, COAP_OPTION_BLOCK2)) {
-                    prv_handle_block2_ack(contextP, fromSessionH, message);
-                } else if (message->code == COAP_413_ENTITY_TOO_LARGE) {
-                    /*
-                    All our responses are piggyback so this must be the result of request being too large (not a separate CON)
-                    switch to a block1 request.
-                    */
-                    coap_error_code = prv_change_to_block1(contextP, fromSessionH, message->mid, message->size);
-                    if (coap_error_code >= COAP_400_BAD_REQUEST) {
-                        (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
-                        coap_error_code = NO_ERROR;
-                    } else if (coap_error_code != NO_ERROR)
-                    {
-                        transaction_handleResponse(contextP, fromSessionH, message, NULL);
-                    }
-                } else {
-                    transaction_handleResponse(contextP, fromSessionH, message, NULL);
-                }
                 break;
 
             default:

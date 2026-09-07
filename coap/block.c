@@ -176,107 +176,6 @@ static void prv_block1_delete_uri(lwm2m_block_data_t **blockDataHeadP, const cha
     }
 }
 
-static uint8_t prv_coap_block_handler(lwm2m_block_data_t **pBlockDataHead, block_data_identifier_t identifier,
-                                      block_type_t blockType, const uint8_t *buffer, size_t length, uint16_t blockSize,
-                                      uint32_t blockNum, bool blockMore, uint8_t **outputBuffer, size_t *outputLength) {
-    lwm2m_block_data_t * blockData = find_block_data(*pBlockDataHead, identifier, blockType);
-    const size_t transferLimit = blockType == BLOCK_1
-                                     ? (size_t)LWM2M_COAP_MAX_BLOCK1_TRANSFER_SIZE
-                                     : (size_t)LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE;
-
-    // manage new block transfer
-    if (blockNum == 0)
-    {
-        if (blockData == NULL)
-        {
-            blockData = prv_block_insert(pBlockDataHead, identifier, blockType);
-            if (blockData == NULL)
-            {
-                return COAP_500_INTERNAL_SERVER_ERROR;
-            }
-        }
-        else
-        {
-            // there is already existing block for this resource, clear buffer
-            lwm2m_free(blockData->blockBuffer);
-            blockData->blockBuffer = NULL;
-            blockData->blockBufferSize = 0;
-        }
-
-        if (prv_block_transfer_exceeds_limit(0, length, transferLimit)) {
-            return COAP_413_ENTITY_TOO_LARGE;
-        }
-
-        uint8_t * buf = (uint8_t *) lwm2m_malloc(length);
-        if(buf == NULL){
-            return COAP_500_INTERNAL_SERVER_ERROR;
-        }
-        blockData->blockBuffer = buf;
-        blockData->blockBufferSize = length;
-
-        // write new block in buffer
-        memcpy(blockData->blockBuffer, buffer, length);
-        blockData->blockNum = blockNum;
-    }
-    // manage already started block1 transfer
-    else
-    {
-        if (blockData == NULL)
-        {
-           return COAP_408_REQ_ENTITY_INCOMPLETE;
-        }
-
-        if (blockNum <= blockData->blockNum){
-            // this is a retransmission
-            return COAP_RETRANSMISSION;
-        }
-
-        // If this is a retransmission, we already did that.
-       if (blockNum == blockData->blockNum +1)
-       {
-          uint8_t * oldBuffer = blockData->blockBuffer;
-          size_t oldSize = blockData->blockBufferSize;
-
-          if (blockData->blockBufferSize != (size_t)blockSize * blockNum) {
-              // we don't receive block in right order
-              // TODO should we clean block1 data for this server ?
-              return COAP_408_REQ_ENTITY_INCOMPLETE;
-          }
-
-          if (prv_block_transfer_exceeds_limit(oldSize, length, transferLimit)) {
-              return COAP_413_ENTITY_TOO_LARGE;
-          }
-          const size_t new_size = oldSize + length;
-
-          // re-alloc new buffer
-          blockData->blockBufferSize = new_size;
-          blockData->blockBuffer = (uint8_t *) lwm2m_malloc(blockData->blockBufferSize);
-          if (NULL == blockData->blockBuffer) return COAP_500_INTERNAL_SERVER_ERROR; //TODO: should we clean up
-          memcpy(blockData->blockBuffer, oldBuffer, oldSize);
-          lwm2m_free(oldBuffer);
-
-          // write new block in buffer
-          memcpy(blockData->blockBuffer + oldSize, buffer, length);
-          blockData->blockNum = blockNum;
-       }
-    }
-
-    if (blockMore)
-    {
-        *outputLength = -1;
-        return COAP_231_CONTINUE;
-    }
-    else
-    {
-        // buffer is full, set output parameter
-        // we don't free it to be able to send retransmission
-        *outputLength = blockData->blockBufferSize;
-        *outputBuffer = blockData->blockBuffer;
-
-        return NO_ERROR;
-    }
-}
-
 static bool prv_block_shape_valid(size_t length, uint16_t blockSize, bool blockMore)
 {
     return blockSize != 0 && length <= blockSize && (!blockMore || length == blockSize);
@@ -733,10 +632,61 @@ uint8_t coap_block2_handler(lwm2m_block_data_t **blockDataHeadP,
                             size_t *outputLength)
 {
     block_data_identifier_t identifier = {0};
+    lwm2m_block_data_t *blockData;
+    uint8_t *replacement = NULL;
+    size_t offset, total;
 
+    if (outputBuffer != NULL) *outputBuffer = NULL;
+    if (outputLength != NULL) *outputLength = 0;
+    if (blockDataHeadP == NULL || outputBuffer == NULL || outputLength == NULL)
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    if (blockSize < 16 || blockSize > 1024 || (blockSize & (blockSize - 1)) != 0 ||
+        blockNum > 0x0fffffU || (length != 0 && buffer == NULL)) return COAP_400_BAD_REQUEST;
+    /* RFC 7959 §2.3: M=1은 정확한 한 블록이다. 마지막 본문 길이에 SZX 상한을 강제하지 않는다. */
+    if (blockMore && length != blockSize) return COAP_408_REQ_ENTITY_INCOMPLETE;
+    if (blockNum > SIZE_MAX / blockSize) return COAP_413_ENTITY_TOO_LARGE;
+    offset = (size_t)blockNum * blockSize;
     identifier.mid = mid;
-    return prv_coap_block_handler(blockDataHeadP, identifier, BLOCK_2, buffer, length, blockSize, blockNum,
-                                  blockMore, outputBuffer, outputLength);
+    blockData = find_block_data(*blockDataHeadP, identifier, BLOCK_2);
+    if (blockData != NULL && blockData->blockSize != 0) {
+        /* 중복은 직전 조각의 전체 내용과 M/SZX가 같을 때만 무시한다. */
+        if (blockNum == blockData->blockNum && blockSize == blockData->blockSize &&
+            length == blockData->lastBlockLength && blockMore == blockData->lastBlockMore &&
+            offset <= blockData->blockBufferSize && length <= blockData->blockBufferSize - offset &&
+            (length == 0 || memcmp(blockData->blockBuffer + offset, buffer, length) == 0))
+            return COAP_RETRANSMISSION;
+        if (!blockData->lastBlockMore || blockSize > blockData->blockSize ||
+            offset != blockData->blockBufferSize) return COAP_408_REQ_ENTITY_INCOMPLETE;
+    } else if (blockNum != 0) return COAP_408_REQ_ENTITY_INCOMPLETE;
+    if (prv_block_transfer_exceeds_limit(offset, length, LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE))
+        return COAP_413_ENTITY_TOO_LARGE;
+    total = offset + length;
+
+    /* 완성 사본을 먼저 준비한다. 할당 실패는 기존 prefix/메타데이터/목록을 바꾸지 않는다. */
+    if (total != 0) {
+        replacement = lwm2m_malloc(total);
+        if (replacement == NULL) return COAP_500_INTERNAL_SERVER_ERROR;
+        if (offset != 0) memcpy(replacement, blockData->blockBuffer, offset);
+        if (length != 0) memcpy(replacement + offset, buffer, length);
+    }
+    if (blockData == NULL) {
+        blockData = prv_block_insert(blockDataHeadP, identifier, BLOCK_2);
+        if (blockData == NULL) {
+            lwm2m_free(replacement);
+            return COAP_500_INTERNAL_SERVER_ERROR;
+        }
+    }
+    lwm2m_free(blockData->blockBuffer);
+    blockData->blockBuffer = replacement;
+    blockData->blockBufferSize = total;
+    blockData->blockNum = blockNum;
+    blockData->blockSize = blockSize;
+    blockData->lastBlockLength = length;
+    blockData->lastBlockMore = blockMore;
+    if (blockMore) return COAP_231_CONTINUE;
+    *outputBuffer = blockData->blockBuffer;
+    *outputLength = total;
+    return COAP_NO_ERROR;
 }
 
 void free_block_data(lwm2m_block_data_t *blockData)

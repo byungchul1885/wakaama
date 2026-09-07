@@ -392,6 +392,55 @@ static void packet_handoff_allocation_failure_is_single_terminal_result(void)
 }
 
 static lwm2m_context_t *sendingContext;
+static void check_block2_rejected_tail(bool allocationFailure)
+{
+    lwm2m_context_t context;
+    coap_packet_t ack;
+    static uint8_t body = 0xff;
+    prepare_first_ack(&context, 1, &ack);
+    deliver(&context, &ack);
+    CU_ASSERT_EQUAL(callbackCount, 0);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context.transactionList);
+    ack.mid = context.transactionList->mID;
+    coap_set_header_block2(&ack, allocationFailure ? 1 : 2, false, 16);
+    coap_set_payload(&ack, &body, 1);
+    removePeer = true;
+    if (allocationFailure) test_malloc_fail_after(0);
+    deliver(&context, &ack);
+    CU_ASSERT_EQUAL(callbackCount, 1);
+    CU_ASSERT_EQUAL(callbackCode, allocationFailure ? COAP_500_INTERNAL_SERVER_ERROR : COAP_408_REQ_ENTITY_INCOMPLETE);
+    CU_ASSERT_EQUAL(receivedLength, 0);
+    CU_ASSERT_EQUAL(test_response_count(), 2);
+    CU_ASSERT_PTR_NULL(context.transactionList);
+    CU_ASSERT_PTR_NULL(context.serverList);
+    finish(&context);
+}
+
+static void packet_block2_final_allocation_failure(void) { check_block2_rejected_tail(true); }
+static void packet_block2_final_gap(void) { check_block2_rejected_tail(false); }
+
+static void packet_block2_duplicate_does_not_send_error_ack(void)
+{
+    lwm2m_context_t context;
+    coap_packet_t ack;
+    static uint8_t tail = 0xff;
+    prepare_first_ack(&context, 1, &ack);
+    deliver(&context, &ack);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context.transactionList);
+    ack.mid = context.transactionList->mID;
+    deliver(&context, &ack);
+    CU_ASSERT_EQUAL(callbackCount, 0);
+    CU_ASSERT_EQUAL(test_response_count(), 2);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context.transactionList);
+    coap_set_header_block2(&ack, 1, false, 16);
+    coap_set_payload(&ack, &tail, 1);
+    deliver(&context, &ack);
+    CU_ASSERT_EQUAL(callbackCount, 1); CU_ASSERT_EQUAL(callbackCode, COAP_205_CONTENT);
+    CU_ASSERT_EQUAL(receivedLength, 17); CU_ASSERT_EQUAL(received[16], 0xff);
+    CU_ASSERT_EQUAL(test_response_count(), 2);
+    finish(&context);
+}
+
 static void abort_during_next_send(void)
 {
     test_set_send_callback(NULL);
@@ -433,6 +482,9 @@ CU_ErrorCode create_transaction_clone_test_suit(void)
         {"packet iPATCH Block2 without replay", packet_block2_ipatch},
         {"packet handoff allocation failure", packet_handoff_allocation_failure_is_single_terminal_result},
         {"packet handoff transport abort", packet_handoff_transport_abort_does_not_complete_old_request_twice},
+        {"packet Block2 final allocation failure", packet_block2_final_allocation_failure},
+        {"packet Block2 final gap", packet_block2_final_gap},
+        {"packet Block2 duplicate without error ACK", packet_block2_duplicate_does_not_send_error_ack},
         {NULL, NULL}
     };
     if (suite == NULL) return CU_get_error();

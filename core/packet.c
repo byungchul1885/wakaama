@@ -1271,6 +1271,11 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                             (void)transaction_fail(contextP, fromSessionH, message->mid, coap_error_code);
                             coap_error_code = NO_ERROR;
                         }
+                        else if (coap_error_code == COAP_RETRANSMISSION)
+                        {
+                            /* 동일 조각은 완료/오류 ACK 없이 무시하고 대기 중인 다음 요청을 유지한다. */
+                            coap_error_code = NO_ERROR;
+                        }
                     }
                 } else if (message->code == COAP_413_ENTITY_TOO_LARGE) {
                     /*

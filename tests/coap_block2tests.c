@@ -31,6 +31,7 @@
 #include "internals.h"
 #include "liblwm2m.h"
 #include "tests.h"
+#include "helper/faults.h"
 
 /*
 CLIENT                                                     SERVER
@@ -52,12 +53,12 @@ Figure 2: Simple Block-Wise GET
 
 static void test_block2_receive_simple_GET(void) {
     lwm2m_block_data_t *blk = NULL;
-    /* This should be incremented for each block. But it leads to a COAP_408_REQ_ENTITY_INCOMPLETE. */
+    /* 실제 packet은 다음 요청 MID를 coap_block2_set_expected_mid로 인계한다. */
     const uint16_t MID = 1234;
 
-    const char *buffer0 = "0123";
+    const char *buffer0 = "0123456789abcdef";
     size_t length0 = strlen(buffer0);
-    const uint16_t blockSize = 4; // use smaller block size for testing than the example in the RFC
+    const uint16_t blockSize = 16;
 
     uint32_t blockNum = 0;
     bool blockMore = true;
@@ -71,7 +72,7 @@ static void test_block2_receive_simple_GET(void) {
     CU_ASSERT_EQUAL(status, COAP_231_CONTINUE)
     CU_ASSERT_PTR_NULL(resultBuffer)
 
-    const char *buffer1 = "4567";
+    const char *buffer1 = "ghijklmnopqrstuv";
     size_t length1 = strlen(buffer1);
     ++blockNum;
     status = coap_block2_handler(&blk, MID, (const uint8_t *const)buffer1, length1, blockSize, blockNum, blockMore,
@@ -79,7 +80,7 @@ static void test_block2_receive_simple_GET(void) {
     CU_ASSERT_EQUAL(status, COAP_231_CONTINUE)
     CU_ASSERT_PTR_NULL(resultBuffer)
 
-    const char *buffer2 = "89";
+    const char *buffer2 = "wx";
     size_t length2 = strlen(buffer2);
     ++blockNum;
     blockMore = false;
@@ -87,8 +88,8 @@ static void test_block2_receive_simple_GET(void) {
                                  &resultBuffer, &resultLen);
     CU_ASSERT_EQUAL(status, NO_ERROR)
     CU_ASSERT_PTR_NOT_NULL(resultBuffer)
-    CU_ASSERT_EQUAL(resultLen, 10)
-    CU_ASSERT_NSTRING_EQUAL(resultBuffer, "0123456789", 10)
+    CU_ASSERT_EQUAL(resultLen, 34)
+    CU_ASSERT_NSTRING_EQUAL(resultBuffer, "0123456789abcdefghijklmnopqrstuvwx", 34)
 
     free_block_data(blk);
 }
@@ -168,7 +169,174 @@ static void test_block2_rejects_block_transfer_size_limit(void) {
     free_block_data(blk);
 }
 
+static void test_block2_gap_never_completes_partial_body(void)
+{
+    lwm2m_block_data_t *block = NULL;
+    uint8_t body[16] = {0}, *output = NULL;
+    size_t length = 0;
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 3, body, 16, 16, 0, true, &output, &length),
+                    COAP_231_CONTINUE);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 3, body, 1, 16, 2, false, &output, &length),
+                    COAP_408_REQ_ENTITY_INCOMPLETE);
+    CU_ASSERT_PTR_NULL(output);
+    CU_ASSERT_EQUAL(length, 0);
+    CU_ASSERT_EQUAL(block->blockBufferSize, 16);
+    free_block_data(block);
+}
+
+static void test_block2_all_sizes_and_binary_tails(void)
+{
+    uint8_t body[4096];
+    size_t i;
+    uint16_t size;
+    for (i = 0; i < sizeof(body); ++i) body[i] = (uint8_t)(i ^ 0xff);
+    for (size = 16; size <= 1024; size *= 2) {
+        const size_t tails[] = {0, 1, 2, 3, size - 1U, size, size + 1U};
+        size_t tail;
+        for (tail = 0; tail < sizeof(tails) / sizeof(tails[0]); ++tail) {
+            lwm2m_block_data_t *block = NULL;
+            uint8_t *output = NULL;
+            size_t length = 0;
+            CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, size, size, 0, true, &output, &length),
+                            COAP_231_CONTINUE);
+            CU_ASSERT_PTR_NULL(output); CU_ASSERT_EQUAL(length, 0);
+            coap_block2_set_expected_mid(block, 1, 2);
+            if (size + tails[tail] > LWM2M_COAP_MAX_BLOCK2_TRANSFER_SIZE) {
+                CU_ASSERT_EQUAL(coap_block2_handler(&block, 2, body + size, tails[tail], size, 1, false,
+                                                    &output, &length), COAP_413_ENTITY_TOO_LARGE);
+                CU_ASSERT_PTR_NULL(output); CU_ASSERT_EQUAL(length, 0);
+            } else {
+                CU_ASSERT_EQUAL(coap_block2_handler(&block, 2, body + size, tails[tail], size, 1, false,
+                                                    &output, &length), COAP_NO_ERROR);
+                CU_ASSERT_PTR_NOT_NULL_FATAL(output);
+                CU_ASSERT_EQUAL(length, size + tails[tail]);
+                CU_ASSERT_EQUAL(memcmp(output, body, length), 0);
+            }
+            free_block_data(block);
+        }
+    }
+}
+
+static void test_block2_smaller_size_uses_byte_continuity(void)
+{
+    lwm2m_block_data_t *block = NULL;
+    uint8_t body[81], *output = NULL;
+    size_t length = 0, i;
+    for (i = 0; i < sizeof(body); ++i) body[i] = (uint8_t)i;
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, 64, 64, 0, true, &output, &length), COAP_231_CONTINUE);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body + 64, 16, 16, 4, true, &output, &length), COAP_231_CONTINUE);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body + 80, 1, 16, 5, false, &output, &length), COAP_NO_ERROR);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(output);
+    CU_ASSERT_EQUAL(length, sizeof(body)); CU_ASSERT_EQUAL(memcmp(output, body, sizeof(body)), 0);
+    free_block_data(block);
+}
+
+static void test_block2_rejections_and_duplicate_preserve_prefix(void)
+{
+    const struct { uint32_t number; uint16_t size; size_t length; bool more; uint8_t code; } cases[] = {
+        {1, 0, 1, false, COAP_400_BAD_REQUEST}, {1, 8, 1, false, COAP_400_BAD_REQUEST},
+        {1, 17, 1, false, COAP_400_BAD_REQUEST}, {1, 2048, 1, false, COAP_400_BAD_REQUEST},
+        {0x100000, 16, 1, false, COAP_400_BAD_REQUEST},
+        {1, 16, 0, true, COAP_408_REQ_ENTITY_INCOMPLETE},
+        {1, 16, 15, true, COAP_408_REQ_ENTITY_INCOMPLETE},
+        {1, 16, 17, true, COAP_408_REQ_ENTITY_INCOMPLETE},
+        {2, 16, 1, false, COAP_408_REQ_ENTITY_INCOMPLETE},
+        {0, 32, 1, false, COAP_408_REQ_ENTITY_INCOMPLETE},
+        {0, 16, 16, false, COAP_408_REQ_ENTITY_INCOMPLETE}
+    };
+    lwm2m_block_data_t *block = NULL, saved;
+    uint8_t body[17] = {0}, *output = NULL;
+    size_t length = 0, i;
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, 16, 16, 0, true, &output, &length), COAP_231_CONTINUE);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(block);
+    saved = *block;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        output = body; length = SIZE_MAX;
+        CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, cases[i].length, cases[i].size,
+                            cases[i].number, cases[i].more, &output, &length), cases[i].code);
+        CU_ASSERT_PTR_NULL(output); CU_ASSERT_EQUAL(length, 0);
+        CU_ASSERT_EQUAL(memcmp(block, &saved, sizeof(saved)), 0);
+        CU_ASSERT_EQUAL(memcmp(block->blockBuffer, body, 16), 0);
+    }
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, 16, 16, 0, true, &output, &length), COAP_RETRANSMISSION);
+    body[3] = 0xff;
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, 16, 16, 0, true, &output, &length), COAP_408_REQ_ENTITY_INCOMPLETE);
+    CU_ASSERT_EQUAL(block->blockBuffer[3], 0);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, NULL, 1, 16, 1, false, &output, &length), COAP_400_BAD_REQUEST);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, 1, 16, 1, false, &output, &length), COAP_NO_ERROR);
+    saved = *block;
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, 1, 16, 2, false, &output, &length), COAP_408_REQ_ENTITY_INCOMPLETE);
+    CU_ASSERT_PTR_NULL(output); CU_ASSERT_EQUAL(length, 0);
+    CU_ASSERT_EQUAL(memcmp(block, &saved, sizeof(saved)), 0);
+    free_block_data(block);
+}
+
+#ifdef WAKAAMA_TEST_FAULTS
+static void test_block2_allocation_failure_preserves_owner(void)
+{
+    unsigned initial, fail;
+    uint8_t body[16] = {0};
+    for (initial = 0; initial < 3; ++initial) {
+        for (fail = 0; fail < (initial == 0 ? 2U : 1U); ++fail) {
+            lwm2m_block_data_t *block = NULL, saved = {0};
+            uint8_t *output = body;
+            size_t length = SIZE_MAX, live;
+            test_malloc_fail_after(SIZE_MAX);
+            if (initial != 0) {
+                CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, 16, 16, 0, true, &output, &length), COAP_231_CONTINUE);
+                saved = *block;
+            }
+            live = test_malloc_live_allocations();
+            test_malloc_fail_after(fail);
+            CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, initial == 2 ? 1 : 16, 16,
+                            initial == 0 ? 0 : 1, initial != 2, &output, &length), COAP_500_INTERNAL_SERVER_ERROR);
+            CU_ASSERT_PTR_NULL(output); CU_ASSERT_EQUAL(length, 0);
+            CU_ASSERT_EQUAL(test_malloc_live_allocations(), live);
+            if (initial != 0) {
+                CU_ASSERT_EQUAL(memcmp(block, &saved, sizeof(saved)), 0);
+                CU_ASSERT_EQUAL(memcmp(block->blockBuffer, body, 16), 0);
+            } else { CU_ASSERT_PTR_NULL(block); }
+            test_malloc_fail_after(SIZE_MAX);
+            CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, body, initial == 0 ? 16 : 1, 16,
+                            initial == 0 ? 0 : 1, false, &output, &length), COAP_NO_ERROR);
+            CU_ASSERT_EQUAL(length, initial == 0 ? 16 : 17);
+            free_block_data(block);
+            CU_ASSERT_EQUAL(test_malloc_live_allocations(), 0);
+            test_malloc_fault_disable();
+        }
+    }
+}
+
+static void test_block2_empty_and_invalid_arguments(void)
+{
+    lwm2m_block_data_t *block = NULL;
+    uint8_t *output = (uint8_t *)(uintptr_t)1;
+    size_t length = SIZE_MAX;
+    test_malloc_fail_after(SIZE_MAX);
+    CU_ASSERT_EQUAL(coap_block2_handler(NULL, 1, NULL, 0, 16, 0, false, &output, &length), COAP_500_INTERNAL_SERVER_ERROR);
+    CU_ASSERT_PTR_NULL(output); CU_ASSERT_EQUAL(length, 0);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, NULL, 0, 16, 0, false, NULL, &length), COAP_500_INTERNAL_SERVER_ERROR);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, NULL, 0, 16, 0, false, &output, NULL), COAP_500_INTERNAL_SERVER_ERROR);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, NULL, 0, 16, 1, false, &output, &length), COAP_408_REQ_ENTITY_INCOMPLETE);
+    CU_ASSERT_PTR_NULL(block);
+    CU_ASSERT_EQUAL(coap_block2_handler(&block, 1, NULL, 0, 16, 0, false, &output, &length), COAP_NO_ERROR);
+    CU_ASSERT_PTR_NOT_NULL(block); CU_ASSERT_PTR_NULL(output); CU_ASSERT_EQUAL(length, 0);
+    CU_ASSERT_EQUAL(test_malloc_observed_calls(), 1);
+    free_block_data(block);
+    CU_ASSERT_EQUAL(test_malloc_live_allocations(), 0);
+    test_malloc_fault_disable();
+}
+#endif
+
 static struct TestTable table[] = {
+    {"all block sizes and binary tails", test_block2_all_sizes_and_binary_tails},
+    {"size change preserves byte continuity", test_block2_smaller_size_uses_byte_continuity},
+    {"invalid and duplicate preserve prefix", test_block2_rejections_and_duplicate_preserve_prefix},
+#ifdef WAKAAMA_TEST_FAULTS
+    {"each allocation failure preserves owner", test_block2_allocation_failure_preserves_owner},
+    {"empty body and invalid arguments", test_block2_empty_and_invalid_arguments},
+#endif
+    {"missing block cannot complete", test_block2_gap_never_completes_partial_body},
     {"test of test_block2_receive_simple_GET()", test_block2_receive_simple_GET},
     {"test of test_block2_receive_larger_than_message_size_when_configured()", test_block2_receive_larger_than_message_size_when_configured},
     {"test of test_block2_rejects_block_transfer_size_limit()", test_block2_rejects_block_transfer_size_limit},

@@ -436,6 +436,9 @@ int coap_block1_get_cached_response(lwm2m_block_data_t *blockData, const char *u
 int coap_block1_get_exchange_mid(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
                                  size_t tokenLength, uint16_t *exchangeMidP);
 void block1_delete(lwm2m_block_data_t ** pBlockDataHead, char * uri);
+/* 입력 본문은 호출 동안 borrowed다. NO_ERROR에서만 전체 결과를 공개하며 출력은 blockData
+ * 소유로 다음 성공 수신/해제까지 유효하다. 그 밖에는 NULL/0. 거절/할당 실패는 기존 prefix를
+ * 보존하며 terminal 정리는 caller가 담당한다. 직전 동일 조각은 COAP_RETRANSMISSION이다. */
 uint8_t coap_block2_handler(lwm2m_block_data_t **blockData, uint16_t mid, const uint8_t *buffer, size_t length,
                             uint16_t blockSize, uint32_t blockNum, bool blockMore, uint8_t **outputBuffer,
                             size_t *outputLength);

@@ -660,7 +660,7 @@ struct _lwm2m_block_data_
     uint8_t *                       blockBuffer;        // data buffer
     size_t                          blockBufferSize;    // buffer size
     uint32_t                        blockNum;           // block num of the last message received
-    uint16_t                        blockSize;          // immutable block size for this block1 exchange
+    uint16_t                        blockSize;          // Block1은 교환 고정값, Block2는 직전 수신 조각의 크기
     size_t                          lastBlockLength;
     bool                            lastBlockMore;
     bool                            rawBlock1;

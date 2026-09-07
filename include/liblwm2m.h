@@ -1134,6 +1134,12 @@ struct _lwm2m_context_
 #endif
 #ifdef LWM2M_BOOTSTRAP
     lwm2m_bootstrap_command_callback_t bootstrapCommandCallback;
+    /* 검증된 후보를 확정한다. context/list 수명을 바꾸지 않는 동기 callback이다.
+     * 0이면 Finish 진행, CoAP 오류면 PENDING 보존. userData는 borrowed다. */
+    uint8_t (*bootstrapCommitCallback)(lwm2m_context_t *, void *);
+    void *bootstrapCommitUserData;
+    /* 5.xx 이후 후보는 동결한다. 같은 Finish 재시도로 해소하거나 context를 닫는다. */
+    bool bootstrapCommitPending;
     void *                            bootstrapCommandUserData;
     lwm2m_bootstrap_log_callback_t    bootstrapLogCallback;
     void *                            bootstrapLogUserData;
@@ -1220,6 +1226,8 @@ void lwm2m_resource_value_changed(lwm2m_context_t * contextP, lwm2m_uri_t * uriP
 // in the context and passed back unchanged.
 void lwm2m_set_bootstrap_command_callback(lwm2m_context_t *contextP, lwm2m_bootstrap_command_callback_t callback,
                                           void *userData);
+void lwm2m_set_bootstrap_commit_callback(lwm2m_context_t *contextP,
+    uint8_t (*callback)(lwm2m_context_t *, void *), void *userData);
 
 // Register or clear a client-side bootstrap trace callback. userData is stored
 // in the context and passed back unchanged.

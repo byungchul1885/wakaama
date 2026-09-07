@@ -871,11 +871,24 @@ uint8_t bootstrap_handleFinish(lwm2m_context_t * context,
     LOG_DBG("Entering");
     prv_bootstrapLog(context, "[BOOTSTRAP] finish recv");
     bootstrapServer = utils_findBootstrapServer(context, fromSessionH);
+    /* Finish 응답 유실의 재전송은 후보를 다시 확정하거나 계정 세대를 전진시키지 않는다. */
+    if (bootstrapServer != NULL && bootstrapServer->status == STATE_BS_FINISHING)
+        return COAP_204_CHANGED;
     if (bootstrapServer != NULL
      && bootstrapServer->status == STATE_BS_PENDING)
     {
         if (object_getServers(context, true) == 0)
         {
+            if (context->bootstrapCommitCallback != NULL)
+            {
+                result = context->bootstrapCommitCallback(context, context->bootstrapCommitUserData);
+                context->bootstrapCommitPending = result >= COAP_500_INTERNAL_SERVER_ERROR;
+                if (result != NO_ERROR) {
+                    prv_bootstrapFormatCode(result, codeBuffer, sizeof(codeBuffer));
+                    prv_bootstrapLog(context, "[BOOTSTRAP] commit rejected code=%s", codeBuffer);
+                    return result;
+                }
+            }
             LOG_DBG("Bootstrap server status changed to STATE_BS_FINISHING");
             bootstrapServer->status = STATE_BS_FINISHING;
             result = COAP_204_CHANGED;
@@ -1058,6 +1071,8 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     char uriBuffer[URI_MAX_STRING_LEN + 1];
     const char * method;
     const char * operation;
+
+    if (contextP->bootstrapCommitPending) return COAP_503_SERVICE_UNAVAILABLE;
 
     LOG_ARG_DBG("Code: %02X", message->code);
     LOG_ARG_DBG("%s", LOG_URI_TO_STRING(uriP));
@@ -1302,6 +1317,14 @@ uint8_t bootstrap_handleCommand(lwm2m_context_t * contextP,
     return result;
 }
 
+void lwm2m_set_bootstrap_commit_callback(lwm2m_context_t *contextP,
+    uint8_t (*callback)(lwm2m_context_t *, void *), void *userData)
+{
+    if (contextP == NULL) return;
+    contextP->bootstrapCommitCallback = callback;
+    contextP->bootstrapCommitUserData = userData;
+}
+
 void lwm2m_set_bootstrap_command_callback(lwm2m_context_t * contextP,
                                           lwm2m_bootstrap_command_callback_t callback,
                                           void * userData)
@@ -1353,6 +1376,7 @@ uint8_t bootstrap_handleDeleteAll(lwm2m_context_t * contextP,
     prv_bootstrapLog(contextP, "[BOOTSTRAP] delete / recv");
     serverP = utils_findBootstrapServer(contextP, fromSessionH);
     if (serverP == NULL) return COAP_IGNORE;
+    if (contextP->bootstrapCommitPending) return COAP_503_SERVICE_UNAVAILABLE;
     result = prv_checkServerStatus(serverP);
     if (result != COAP_NO_ERROR)
     {

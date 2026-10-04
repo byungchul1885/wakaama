@@ -286,6 +286,8 @@ bool transaction_ack_response(lwm2m_context_t *context, lwm2m_transaction_t *tra
 bool transaction_fail(lwm2m_context_t * contextP, void * fromSessionH, uint16_t mid, uint8_t code);
 void transaction_step(lwm2m_context_t * contextP, time_t currentTime, time_t * timeoutP);
 bool transaction_free_userData(lwm2m_context_t * context, lwm2m_transaction_t * transaction);
+/* 등록 해제 시 진입 당시 session의 요청을 NULL terminal callback으로 종결한다.
+ * callback/userData 정리는 완료 consumer의 책임이며 다른 session에는 적용하지 않는다. */
 void transaction_remove_client(lwm2m_context_t *contextP, lwm2m_client_t *clientP);
 /* 성공 시 payload 사본은 transaction 소유다. 첫 message/Block1도 그 사본을 참조하므로
  * caller는 반환 직후 원본을 수정/해제할 수 있다. transaction_free가 사본을 해제한다. */

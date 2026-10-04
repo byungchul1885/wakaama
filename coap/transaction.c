@@ -759,17 +759,8 @@ bool transaction_free_userData(lwm2m_context_t * context, lwm2m_transaction_t * 
  * Remove transactions from a specific client.
  */
 void transaction_remove_client(lwm2m_context_t *contextP, lwm2m_client_t *clientP) {
-    lwm2m_transaction_t *transacP;
-
-    LOG_DBG("Entering");
-    transacP = contextP->transactionList;
-    while (transacP != NULL) {
-        lwm2m_transaction_t *nextP = transacP->next;
-
-        if (lwm2m_session_is_equal(transacP->peerH, clientP->sessionH, contextP->userData)) {
-            LOG_DBG("Found session to remove");
-            transaction_remove(contextP, transacP);
-        }
-        transacP = nextP;
-    }
+    if (contextP == NULL || clientP == NULL) return;
+    /* 등록 해제도 terminal callback을 통보한다. callback 재진입 뒤에는 owner가
+     * 최신 목록을 조회하며 진입 당시 요청만 종결한다. clientP는 다시 참조하지 않는다. */
+    (void)transaction_abort_session(contextP, clientP->sessionH);
 }

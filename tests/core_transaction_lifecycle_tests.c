@@ -373,6 +373,35 @@ static void close_list_retains_shared_userdata_until_last_callback(void)
     CU_ASSERT_EQUAL(userdataFreed, 1);
     finish(&f);
 }
+/* 등록 해제 consumer도 callback의 자기 제거·추가·중첩 취소에 안전해야 한다. */
+static void client_removal_completes_with_reentry(void)
+{
+    unsigned nested;
+    for (nested = 0; nested < 2; ++nested) {
+        transaction_fixture_t f;
+        lwm2m_client_t client = {0};
+        lwm2m_transaction_t *other;
+        start(&f);
+        client.sessionH = (void *)(uintptr_t)1;
+        f.selfRemove = true;
+        f.createReplacement = true;
+        f.nestedAbort = nested != 0;
+        f.first = add_request(&f, 10, 1);
+        f.second = add_request(&f, 20, 1);
+        other = add_request(&f, 30, 2);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(f.first);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(f.second);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(other);
+        transaction_remove_client(&f.context, &client);
+        CU_ASSERT_EQUAL(f.calls, nested ? 3 : 2);
+        CU_ASSERT_EQUAL(f.nullCalls, f.calls);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(f.replacement);
+        CU_ASSERT_FALSE(f.replacement->retired);
+        CU_ASSERT_PTR_EQUAL(f.context.transactionList, f.replacement);
+        CU_ASSERT_PTR_EQUAL(f.replacement->next, nested ? NULL : other);
+        finish(&f);
+    }
+}
 #endif
 
 CU_ErrorCode create_transaction_lifecycle_test_suit(void)
@@ -389,6 +418,7 @@ CU_ErrorCode create_transaction_lifecycle_test_suit(void)
         {"retry and separate response schedule", retries_and_separate_ack_keep_existing_schedule},
         {"authentication retry and exhaustion", authentication_retry_and_exhaustion_are_bounded},
         {"close list shared userData", close_list_retains_shared_userdata_until_last_callback},
+        {"client removal terminal callback and reentry", client_removal_completes_with_reentry},
         {NULL, NULL}
     };
     if (suite == NULL) return CU_get_error();

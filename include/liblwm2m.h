@@ -813,6 +813,8 @@ typedef struct _lwm2m_client_
     uint32_t                lifetime;
     time_t                  endOfLife;
     void *                  sessionH;
+    /* 새 Registration 및 session 교체마다 발급하며 같은 session의 Update는 유지한다. */
+    uint64_t                sessionGeneration;
     lwm2m_client_object_t * objectList;
     lwm2m_observation_t *   observationList;
     uint16_t                observationId;
@@ -1168,6 +1170,7 @@ struct _lwm2m_context_
     lwm2m_client_t *        clientList;
 #endif
 #ifdef LWM2M_SERVER_MODE
+    uint64_t nextClientSessionGeneration; /* context 수명 동안 재사용하지 않는 등록 세션 세대 */
     lwm2m_result_callback_t monitorCallback;
     void *                  monitorUserData;
     lwm2m_result_callback_t reportingSendCallback;
@@ -1380,7 +1383,8 @@ void lwm2m_reporting_set_async_send_callback(lwm2m_context_t *contextP,
                                              lwm2m_reporting_async_send_callback_t callback,
                                              void *userData);
 /* 직렬화된 transaction 인계 성공 이후에만 request ID를 소비한다.
- * 일시 실패는 같은 ID로 재시도하며 404는 확정 종료다. protocol owner thread 전용이다. */
+ * 일시 실패는 같은 ID로 재시도하며 404는 확정 종료다. 수신 당시 등록 세대와
+ * 다른 세션으로는 인계하지 않는다. protocol owner thread 전용이다. */
 int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
                                   lwm2m_reporting_send_request_id_t requestId,
                                   uint8_t responseCode);

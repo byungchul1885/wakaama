@@ -1879,6 +1879,7 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
         lwm2m_media_type_t format;
         lwm2m_client_t * clientP;
         char location[MAX_LOCATION_LENGTH];
+        uint64_t sessionGeneration;
 
         if (0 != prv_getParameters(message->uri_query, &name, &lifetime, &msisdn, &binding, &version))
         {
@@ -1935,6 +1936,16 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
                 lifetime = LWM2M_DEFAULT_LIFETIME;
             }
 
+            /* 새 등록은 같은 session 포인터를 재사용해도 이전 요청과 구분한다. */
+            if (contextP->nextClientSessionGeneration == UINT64_MAX)
+            {
+                lwm2m_free(name);
+                lwm2m_free(msisdn);
+                lwm2m_free(altPath);
+                prv_freeClientObjectList(objects);
+                return COAP_503_SERVICE_UNAVAILABLE;
+            }
+            sessionGeneration = ++contextP->nextClientSessionGeneration;
             clientP = prv_getClientByName(contextP, name);
             if (IS_OPTION(message, COAP_OPTION_BLOCK1))
             {
@@ -1945,13 +1956,20 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
                 else
                 {
                     lwm2m_client_t * tmpClientP = utils_findClient(contextP, fromSessionH);
-                    contextP->clientList = (lwm2m_client_t *)LWM2M_LIST_RM(contextP->clientList, tmpClientP->internalID, &tmpClientP);
-                    registration_freeClient(contextP, tmpClientP);
+                    /* 조립용 임시 client만 제거한다. 재등록 대상 자체는 유지한다. */
+                    if (tmpClientP != NULL && tmpClientP != clientP)
+                    {
+                        contextP->clientList = (lwm2m_client_t *)LWM2M_LIST_RM(contextP->clientList, tmpClientP->internalID, &tmpClientP);
+                        registration_freeClient(contextP, tmpClientP);
+                    }
                 }
             }
             if (clientP != NULL)
             {
                 // we reset this registration
+#ifndef LWM2M_VERSION_1_0
+                reporting_clearClient(contextP, clientP->internalID);
+#endif
                 lwm2m_free(clientP->name);
                 if (clientP->msisdn != NULL) lwm2m_free(clientP->msisdn);
                 if (clientP->altPath != NULL) lwm2m_free(clientP->altPath);
@@ -1983,6 +2001,7 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
             clientP->endOfLife = tv_sec + lifetime;
             clientP->objectList = objects;
             clientP->sessionH = fromSessionH;
+            clientP->sessionGeneration = sessionGeneration;
 
             if (prv_getLocationString(clientP->internalID, location) == 0)
             {
@@ -2025,6 +2044,22 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
                 return COAP_400_BAD_REQUEST;
             }
 
+            sessionGeneration = clientP->sessionGeneration;
+            if (sessionGeneration == 0U
+                || !lwm2m_session_is_equal(clientP->sessionH, fromSessionH, contextP->userData))
+            {
+                if (contextP->nextClientSessionGeneration == UINT64_MAX)
+                {
+                    lwm2m_free(msisdn);
+                    lwm2m_free(altPath);
+                    prv_freeClientObjectList(objects);
+                    return COAP_503_SERVICE_UNAVAILABLE;
+                }
+                sessionGeneration = ++contextP->nextClientSessionGeneration;
+#ifndef LWM2M_VERSION_1_0
+                reporting_clearClient(contextP, clientP->internalID);
+#endif
+            }
             if (binding != BINDING_UNKNOWN)
             {
                 clientP->binding = binding;
@@ -2040,6 +2075,7 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
             }
             // client IP address, port or MSISDN may have changed
             clientP->sessionH = fromSessionH;
+            clientP->sessionGeneration = sessionGeneration;
 
             if (objects != NULL)
             {

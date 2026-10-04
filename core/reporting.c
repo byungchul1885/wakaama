@@ -26,6 +26,7 @@ struct _lwm2m_reporting_send_request_ {
     lwm2m_reporting_send_request_t *next;
     lwm2m_reporting_send_request_id_t requestId;
     uint16_t clientId;
+    uint64_t sessionGeneration;
     uint16_t messageId;
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t tokenLength;
@@ -33,13 +34,15 @@ struct _lwm2m_reporting_send_request_ {
 
 static lwm2m_reporting_send_request_t *prv_findPendingByMessage(lwm2m_context_t *contextP,
                                                                uint16_t clientId,
+                                                               uint64_t sessionGeneration,
                                                                uint16_t messageId,
                                                                const uint8_t *token,
                                                                size_t tokenLength) {
     lwm2m_reporting_send_request_t *requestP;
 
     for (requestP = contextP->reportingSendRequestList; requestP != NULL; requestP = requestP->next) {
-        if (requestP->clientId == clientId && requestP->messageId == messageId
+        if (requestP->clientId == clientId && requestP->sessionGeneration == sessionGeneration
+            && requestP->messageId == messageId
             && requestP->tokenLength == tokenLength
             && (tokenLength == 0U || memcmp(requestP->token, token, tokenLength) == 0)) {
             return requestP;
@@ -123,6 +126,7 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
 
         if (prv_findPendingByMessage(contextP,
                                     clientP->internalID,
+                                    clientP->sessionGeneration,
                                     message->mid,
                                     message->token,
                                     message->token_len)
@@ -137,6 +141,7 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
         memset(requestP, 0, sizeof(*requestP));
         requestP->requestId = prv_nextRequestId(contextP);
         requestP->clientId = clientP->internalID;
+        requestP->sessionGeneration = clientP->sessionGeneration;
         requestP->messageId = message->mid;
         requestP->tokenLength = message->token_len;
         if (requestP->tokenLength > 0U) {
@@ -209,7 +214,8 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
     }
 
     clientP = (lwm2m_client_t *)lwm2m_list_find((lwm2m_list_t *)contextP->clientList, requestP->clientId);
-    if (clientP == NULL) {
+    if (clientP == NULL || clientP->sessionH == NULL
+        || clientP->sessionGeneration != requestP->sessionGeneration) {
         if (previousP == NULL) {
             contextP->reportingSendRequestList = requestP->next;
         } else {

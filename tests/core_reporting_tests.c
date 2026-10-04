@@ -61,6 +61,8 @@ static lwm2m_context_t *prv_context(void) {
     clientP->name = lwm2m_strdup("endpoint-1");
     CU_ASSERT_PTR_NOT_NULL_FATAL(clientP->name);
     clientP->sessionH = (void *)(uintptr_t)1;
+    clientP->sessionGeneration = contextP->nextClientSessionGeneration = 1;
+    clientP->lifetime = 300;
     contextP->clientList = clientP;
     return contextP;
 }
@@ -161,9 +163,133 @@ static void async_send_can_reject_immediately(void) {
     lwm2m_close(contextP);
 }
 
+/* 실제 Registration/Update를 통해 session 교체와 동일 포인터 재등록을 실행한다. */
+static uint8_t prv_register(lwm2m_context_t *contextP, void *session, int full, int block1)
+{
+    lwm2m_uri_t uri;
+    coap_packet_t message, response;
+    static uint8_t objects[] = "</>;ct=112,</3/0>";
+    uint8_t result;
+    LWM2M_URI_RESET(&uri);
+    if (!full) uri.objectId = 7;
+    coap_init_message(&message, COAP_TYPE_CON, COAP_POST, 0x6789);
+    memset(&response, 0, sizeof(response));
+    coap_set_header_uri_query(&message, full ? "lwm2m=1.1&ep=endpoint-1&lt=300" : "lt=300");
+    coap_set_header_content_type(&message, LWM2M_CONTENT_LINK);
+    if (full) coap_set_payload(&message, objects, sizeof(objects) - 1);
+    if (block1) coap_set_header_block1(&message, 0, false, 32);
+    result = registration_handleRequest(contextP, &uri, session, &message, &response);
+    coap_free_header(&message);
+    coap_free_header(&response);
+    return result;
+}
+
+static void async_send_registration_generation(void)
+{
+    unsigned mode;
+    /* 같은 session Update, 새 session Update, 같은 포인터 및 Block1 재등록. */
+    for (mode = 0; mode < 4; ++mode) {
+        lwm2m_context_t *contextP = prv_context();
+        callback_state_t state = {0U, 0U, COAP_IGNORE, 0x1234, "tok"};
+        coap_packet_t message, response;
+        lwm2m_reporting_send_request_id_t oldId;
+        void *session = (void *)(uintptr_t)(mode == 1 ? 2 : 1);
+        coap_packet_t packet;
+        size_t length;
+        uint8_t *bytes;
+        memset(&message, 0, sizeof(message)); memset(&response, 0, sizeof(response));
+        prv_message(&message, 0x1234);
+        lwm2m_reporting_set_async_send_callback(contextP, prv_asyncCallback, &state);
+        CU_ASSERT_EQUAL(reporting_handleSend(contextP, (void *)(uintptr_t)1, &message, &response), NO_ERROR);
+        oldId = state.requestId;
+#ifdef WAKAAMA_TEST_FAULTS
+        test_malloc_fail_after(0);
+        int failed = lwm2m_reporting_complete_send(contextP, oldId, COAP_204_CHANGED);
+        test_malloc_fault_disable();
+        CU_ASSERT_EQUAL(failed, COAP_500_INTERNAL_SERVER_ERROR);
+#endif
+        CU_ASSERT_EQUAL(prv_register(contextP, session, mode >= 2, mode == 3),
+                        mode >= 2 ? COAP_201_CREATED : COAP_204_CHANGED);
+        CU_ASSERT_EQUAL(contextP->clientList->internalID, 7);
+        CU_ASSERT_EQUAL(contextP->clientList->sessionGeneration, mode == 0 ? 1 : 2);
+        test_reset_response_history();
+        if (mode != 0) {
+            CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, oldId, COAP_204_CHANGED), COAP_404_NOT_FOUND);
+            CU_ASSERT_EQUAL(test_response_count(), 0);
+            CU_ASSERT_PTR_NULL(contextP->reportingSendRequestList);
+        }
+        /* 같은 MID/Token도 새 등록 세대에서는 새 ingest로 전달한다. */
+        CU_ASSERT_EQUAL(reporting_handleSend(contextP, session, &message, &response), NO_ERROR);
+        CU_ASSERT_EQUAL(state.calls, mode == 0 ? 1 : 2);
+        if (mode != 0) CU_ASSERT_NOT_EQUAL(state.requestId, oldId);
+        CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, state.requestId, COAP_204_CHANGED), NO_ERROR);
+        CU_ASSERT_EQUAL(test_response_count(), 1);
+        CU_ASSERT_PTR_EQUAL(contextP->transactionList->peerH, session);
+        bytes = test_get_response_buffer(&length);
+        memset(&packet, 0, sizeof(packet));
+        CU_ASSERT_EQUAL(coap_parse_message(&packet, bytes, (uint16_t)length), NO_ERROR);
+        CU_ASSERT_EQUAL(packet.code, COAP_204_CHANGED);
+        CU_ASSERT_EQUAL(packet.token_len, 3);
+        CU_ASSERT_NSTRING_EQUAL(packet.token, "tok", 3);
+        coap_free_header(&packet); coap_free_header(&message); coap_free_header(&response);
+        contextP->clientList->sessionH = NULL; /* 시험 transport는 실제 session 구조체가 없다. */
+        lwm2m_close(contextP);
+    }
+}
+
+static void async_send_rejects_stale_or_missing_session(void)
+{
+    unsigned missing;
+    for (missing = 0; missing < 2; ++missing) {
+        lwm2m_context_t *contextP = prv_context();
+        callback_state_t state = {0U, 0U, COAP_IGNORE, 0x1234, "tok"};
+        coap_packet_t message, response;
+        memset(&message, 0, sizeof(message)); memset(&response, 0, sizeof(response));
+        prv_message(&message, 0x1234);
+        lwm2m_reporting_set_async_send_callback(contextP, prv_asyncCallback, &state);
+        CU_ASSERT_EQUAL(reporting_handleSend(contextP, (void *)(uintptr_t)1, &message, &response), NO_ERROR);
+        if (missing) contextP->clientList->sessionH = NULL;
+        else contextP->clientList->sessionGeneration++;
+        test_reset_response_history();
+        CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, state.requestId, COAP_204_CHANGED), COAP_404_NOT_FOUND);
+        CU_ASSERT_PTR_NULL(contextP->reportingSendRequestList);
+        CU_ASSERT_PTR_NULL(contextP->transactionList);
+        CU_ASSERT_EQUAL(test_response_count(), 0);
+        coap_free_header(&message); coap_free_header(&response);
+        contextP->clientList->sessionH = NULL;
+        lwm2m_close(contextP);
+    }
+}
+
+static void registration_generation_exhaustion_preserves_request(void)
+{
+    lwm2m_context_t *contextP = prv_context();
+    callback_state_t state = {0U, 0U, COAP_IGNORE, 0x1234, "tok"};
+    coap_packet_t message, response;
+    memset(&message, 0, sizeof(message)); memset(&response, 0, sizeof(response));
+    prv_message(&message, 0x1234);
+    lwm2m_reporting_set_async_send_callback(contextP, prv_asyncCallback, &state);
+    CU_ASSERT_EQUAL(reporting_handleSend(contextP, (void *)(uintptr_t)1, &message, &response), NO_ERROR);
+    contextP->nextClientSessionGeneration = UINT64_MAX;
+    CU_ASSERT_EQUAL(prv_register(contextP, (void *)(uintptr_t)2, 0, 0), COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_EQUAL(prv_register(contextP, (void *)(uintptr_t)1, 1, 0), COAP_503_SERVICE_UNAVAILABLE);
+    CU_ASSERT_PTR_EQUAL(contextP->clientList->sessionH, (void *)(uintptr_t)1);
+    CU_ASSERT_EQUAL(contextP->clientList->sessionGeneration, 1);
+    CU_ASSERT_EQUAL(contextP->nextClientSessionGeneration, UINT64_MAX);
+    CU_ASSERT_PTR_NOT_NULL(contextP->reportingSendRequestList);
+    CU_ASSERT_EQUAL(prv_register(contextP, (void *)(uintptr_t)1, 0, 0), COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, state.requestId, COAP_204_CHANGED), NO_ERROR);
+    coap_free_header(&message); coap_free_header(&response);
+    contextP->clientList->sessionH = NULL;
+    lwm2m_close(contextP);
+}
+
 static struct TestTable table[] = {
     {"async Send deferred completion", async_send_defers_deduplicates_and_completes},
     {"async Send immediate rejection", async_send_can_reject_immediately},
+    {"async Send registration generation", async_send_registration_generation},
+    {"async Send stale and missing session", async_send_rejects_stale_or_missing_session},
+    {"registration generation exhaustion", registration_generation_exhaustion_preserves_request},
     {NULL, NULL},
 };
 

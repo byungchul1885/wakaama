@@ -668,6 +668,7 @@ struct _lwm2m_block_data_
     bool                            responseCached;
     bool                            responseSubmitted;
     bool                            allowTokenReuse;
+    bool                            separateResponse; /* 빈 ACK를 보낸 교환은 최종 결과를 ACK에 싣지 않는다. */
     uint8_t                         responseCode;
     bool                            responseHasLocationPath;
     char                            responseLocationPath[LWM2M_BLOCK1_LOCATION_PATH_MAX_LEN + 1];
@@ -1195,6 +1196,7 @@ struct _lwm2m_context_
     void *reportingAsyncSendUserData;
     lwm2m_reporting_send_request_t *reportingSendRequestList;
     lwm2m_reporting_send_request_id_t nextReportingSendRequestId;
+    bool reportingDeferredAck;
 #endif
 #endif
 #ifdef LWM2M_BOOTSTRAP_SERVER_MODE
@@ -1402,7 +1404,11 @@ void lwm2m_reporting_set_send_callback(lwm2m_context_t *contextP, lwm2m_result_c
 void lwm2m_reporting_set_async_send_callback(lwm2m_context_t *contextP,
                                              lwm2m_reporting_async_send_callback_t callback,
                                              void *userData);
-/* 직렬화된 transaction 인계 성공 이후에만 request ID를 소비한다.
+/* CON Send의 Store 처리 중 ACK를 보류하고 완료 결과를 원래 MID의 ACK로 반환한다.
+ * 기본값은 기존 별도 응답 방식이다. pending이 있으면 모드 변경을 503으로 거부한다.
+ * 같은 Token의 연속 Send에도 ACK의 MID로 응답을 구분한다. NON은 별도 응답을 유지한다. */
+int lwm2m_reporting_set_deferred_ack(lwm2m_context_t *contextP, bool enabled);
+/* 준비한 ACK 송신 또는 직렬화된 별도 응답 transaction 인계 성공 이후에만 request ID를 소비한다.
  * 일시 실패는 같은 ID로 재시도하며 404는 확정 종료다. 수신 당시 등록 세대와
  * 다른 세션으로는 인계하지 않는다. protocol owner thread 전용이다.
  * Block1 key 사본은 pending request가 소유한다. 인계 성공 시 첫 MID가 일치하는

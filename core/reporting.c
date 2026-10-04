@@ -32,6 +32,10 @@ struct _lwm2m_reporting_send_request_ {
     size_t tokenLength;
     char *block1Uri; /* request가 소유하는 교환 key 사본 */
     uint16_t block1ExchangeMid;
+    uint32_t block1Num;
+    uint16_t block1Size;
+    bool deferredAck;
+    bool completing;
 };
 
 static void prv_freePending(lwm2m_reporting_send_request_t *requestP) {
@@ -92,8 +96,8 @@ static lwm2m_reporting_send_request_id_t prv_nextRequestId(lwm2m_context_t *cont
     return candidate;
 }
 
-static uint8_t prv_deferredResponse(coap_packet_t *message, coap_packet_t *response) {
-    if (message->type != COAP_TYPE_CON) {
+static uint8_t prv_deferredResponse(lwm2m_context_t *contextP, coap_packet_t *message, coap_packet_t *response) {
+    if (message->type != COAP_TYPE_CON || contextP->reportingDeferredAck) {
         return COAP_IGNORE;
     }
 
@@ -138,7 +142,7 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
                                     message->token,
                                     message->token_len)
             != NULL) {
-            return prv_deferredResponse(message, response);
+            return prv_deferredResponse(contextP, message, response);
         }
 
         requestP = (lwm2m_reporting_send_request_t *)lwm2m_malloc(sizeof(*requestP));
@@ -150,11 +154,14 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
         requestP->clientId = clientP->internalID;
         requestP->sessionGeneration = clientP->sessionGeneration;
         requestP->messageId = message->mid;
+        requestP->deferredAck = contextP->reportingDeferredAck && message->type == COAP_TYPE_CON;
         requestP->tokenLength = message->token_len;
         if (requestP->tokenLength > 0U) {
             memcpy(requestP->token, message->token, requestP->tokenLength);
         }
         if (IS_OPTION(message, COAP_OPTION_BLOCK1)) {
+            requestP->block1Num = message->block1_num;
+            requestP->block1Size = message->block1_size;
             requestP->block1Uri = coap_get_packet_uri_as_string(message);
             if (requestP->block1Uri == NULL ||
                 coap_block1_get_exchange_mid(clientP->blockData, requestP->block1Uri,
@@ -178,7 +185,7 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
                                                               message->payload_len,
                                                               contextP->reportingAsyncSendUserData);
         if (callbackResult == COAP_IGNORE) {
-            return prv_deferredResponse(message, response);
+            return prv_deferredResponse(contextP, message, response);
         }
 
         contextP->reportingSendRequestList = requestP->next;
@@ -210,6 +217,13 @@ void lwm2m_reporting_set_async_send_callback(lwm2m_context_t *contextP,
     contextP->reportingAsyncSendUserData = userData;
 }
 
+int lwm2m_reporting_set_deferred_ack(lwm2m_context_t *contextP, bool enabled) {
+    if (contextP == NULL) return COAP_400_BAD_REQUEST;
+    if (contextP->reportingSendRequestList != NULL) return COAP_503_SERVICE_UNAVAILABLE;
+    contextP->reportingDeferredAck = enabled;
+    return NO_ERROR;
+}
+
 int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
                                   lwm2m_reporting_send_request_id_t requestId,
                                   uint8_t responseCode) {
@@ -228,6 +242,7 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
     if (requestP == NULL) {
         return COAP_404_NOT_FOUND;
     }
+    if (requestP->completing) return COAP_503_SERVICE_UNAVAILABLE;
 
     clientP = (lwm2m_client_t *)lwm2m_list_find((lwm2m_list_t *)contextP->clientList, requestP->clientId);
     if (clientP == NULL || clientP->sessionH == NULL
@@ -241,24 +256,35 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
         return COAP_404_NOT_FOUND;
     }
 
-    transactionP = transaction_new(clientP->sessionH,
+    if (requestP->deferredAck) {
+        coap_packet_t response;
+        coap_init_message(&response, COAP_TYPE_ACK, responseCode, requestP->messageId);
+        coap_set_header_token(&response, requestP->token, requestP->tokenLength);
+        if (requestP->block1Uri != NULL)
+            coap_set_header_block1(&response, requestP->block1Num, false, requestP->block1Size);
+        requestP->completing = true;
+        result = message_send(contextP, &response, clientP->sessionH);
+    } else {
+        transactionP = transaction_new(clientP->sessionH,
                                    (coap_method_t)responseCode,
                                    NULL,
                                    NULL,
                                    contextP->nextMID++,
                                    (uint8_t)requestP->tokenLength,
                                    requestP->token);
-    if (transactionP == NULL) {
-        return COAP_500_INTERNAL_SERVER_ERROR;
-    }
-    if (transaction_prepare(transactionP) != NO_ERROR) {
-        transaction_free(transactionP);
-        return COAP_500_INTERNAL_SERVER_ERROR;
-    }
+        if (transactionP == NULL) {
+            return COAP_500_INTERNAL_SERVER_ERROR;
+        }
+        if (transaction_prepare(transactionP) != NO_ERROR) {
+            transaction_free(transactionP);
+            return COAP_500_INTERNAL_SERVER_ERROR;
+        }
 
-    contextP->transactionList =
-        (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transactionP);
-    result = transaction_send(contextP, transactionP);
+        contextP->transactionList =
+            (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transactionP);
+        requestP->completing = true;
+        result = transaction_send(contextP, transactionP);
+    }
     if (result == NO_ERROR) {
         /* transport 호출 뒤에는 최신 list에서 stable request ID를 다시 찾는다. */
         requestP = prv_findPendingById(contextP, requestId, &previousP);
@@ -274,6 +300,10 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
             else previousP->next = requestP->next;
             prv_freePending(requestP);
         }
+    }
+    else {
+        requestP = prv_findPendingById(contextP, requestId, &previousP);
+        if (requestP != NULL) requestP->completing = false;
     }
     return result;
 }

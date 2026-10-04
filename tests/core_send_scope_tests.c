@@ -424,6 +424,41 @@ static void payload_send_absent_or_unregistered_is_not_success(void)
     }
 }
 
+static void first_late_ack_cannot_complete_next_same_token_delivery(void)
+{
+    unsigned mode;
+    uint16_t previousSize = lwm2m_get_coap_block_size();
+    CU_ASSERT_TRUE(lwm2m_set_coap_block_size(16));
+    for (mode = 0; mode < 4; ++mode) {
+        send_fixture_t f;
+        coap_packet_t response;
+        lwm2m_transaction_t *current;
+        uint16_t oldMid;
+        uint8_t wire[64];
+        static const uint8_t token[] = {0x11, 0xff, 0x00};
+        size_t count;
+        setup(&f); payloadCallbacks = 0; payload_send(&f, 2);
+        oldMid = f.context.transactionList->mID;
+        /* A는 timeout으로 끝났고 그 ACK는 아직 한 번도 수신하지 않았다. */
+        transaction_complete(&f.context, f.context.transactionList, NULL);
+        CU_ASSERT_EQUAL(payloadCallbacks, 1);
+        payload_send(&f, mode % 2 == 0 ? 2 : 33); current = f.context.transactionList;
+        coap_init_message(&response, COAP_TYPE_ACK, mode < 2 ? COAP_204_CHANGED : COAP_503_SERVICE_UNAVAILABLE, oldMid);
+        coap_set_header_token(&response, token, sizeof(token));
+        count = test_response_count();
+        lwm2m_handle_packet(&f.context, wire, coap_serialize_message(&response, wire), (void *)(uintptr_t)7);
+        CU_ASSERT_EQUAL(payloadCallbacks, 1); CU_ASSERT_PTR_EQUAL(f.context.transactionList, current);
+        CU_ASSERT_EQUAL(test_response_count(), count);
+        if (mode % 2 == 0) {
+            response.mid = current->mID;
+            lwm2m_handle_packet(&f.context, wire, coap_serialize_message(&response, wire), (void *)(uintptr_t)7);
+            CU_ASSERT_EQUAL(payloadCallbacks, 2); CU_ASSERT_PTR_NULL(f.context.transactionList);
+        }
+        cleanup(&f);
+    }
+    CU_ASSERT_TRUE(lwm2m_set_coap_block_size(previousSize));
+}
+
 static struct TestTable table[] = {
     {"broadcast per-target Read authorization and pure scope", each_broadcast_target_gets_its_own_values_and_scope},
     {"absent unregistered forbidden targets have no Read", absent_unregistered_and_forbidden_targets_do_not_read},
@@ -434,6 +469,7 @@ static struct TestTable table[] = {
     {"payload Send single allocation failure and retry", payload_send_single_allocation_failure_never_sends_root},
     {"packet URI single allocation failure cleanup", packet_uri_single_allocation_failure_releases_partial_strings},
     {"payload Send absent or unregistered target rejection", payload_send_absent_or_unregistered_is_not_success},
+    {"first late ACK versus next same Token delivery", first_late_ack_cannot_complete_next_same_token_delivery},
     {NULL, NULL}
 };
 CU_ErrorCode create_send_scope_test_suit(void)

@@ -391,18 +391,17 @@ static uint8_t packet_send_callback(lwm2m_context_t *context, lwm2m_reporting_se
     return COAP_IGNORE;
 }
 
-static uint8_t packet_send_block_expected(lwm2m_context_t *context, uint16_t firstMid, unsigned block,
-    const uint8_t *body, bool expectResponse)
+static uint8_t packet_send_block_token(lwm2m_context_t *context, uint16_t firstMid, unsigned block,
+    const uint8_t *body, bool expectResponse, const uint8_t *token, size_t tokenLength)
 {
     coap_packet_t request, response;
     uint8_t wire[128];
-    static const uint8_t token[] = {'t', 'o', 'k'};
     size_t length;
     uint8_t code;
     coap_init_message(&request, COAP_TYPE_CON, COAP_POST, (uint16_t)(firstMid + block));
     coap_set_header_uri_path(&request, "/dp");
     coap_set_header_content_type(&request, LWM2M_CONTENT_SENML_CBOR);
-    coap_set_header_token(&request, token, sizeof(token));
+    coap_set_header_token(&request, token, tokenLength);
     coap_set_header_block1(&request, block, block < 2, 16);
     coap_set_payload(&request, body + 16 * block, block < 2 ? 16 : 3);
     length = coap_serialize_message(&request, wire);
@@ -422,9 +421,16 @@ static uint8_t packet_send_block_expected(lwm2m_context_t *context, uint16_t fir
     CU_ASSERT_EQUAL(response.type, COAP_TYPE_ACK);
     CU_ASSERT_EQUAL(response.mid, firstMid + block);
     if (code == COAP_EMPTY_MESSAGE_CODE) { CU_ASSERT_EQUAL(response.token_len, 0); }
-    else { CU_ASSERT_EQUAL(response.token_len, 3); CU_ASSERT_NSTRING_EQUAL(response.token, "tok", 3); }
+    else { CU_ASSERT_EQUAL(response.token_len, tokenLength); if (tokenLength != 0) CU_ASSERT_NSTRING_EQUAL(response.token, token, tokenLength); }
     coap_free_header(&response);
     return code;
+}
+
+static uint8_t packet_send_block_expected(lwm2m_context_t *context, uint16_t firstMid, unsigned block,
+    const uint8_t *body, bool expectResponse)
+{
+    return packet_send_block_token(context, firstMid, block, body, expectResponse,
+        (const uint8_t *)"tok", 3);
 }
 
 static uint8_t packet_send_block(lwm2m_context_t *context, uint16_t firstMid, unsigned block,
@@ -611,6 +617,101 @@ static void packet_deferred_ack_matches_original_mid_and_replays_after_loss(void
 }
 #endif
 
+#if !defined(LWM2M_CLIENT_MODE)
+static void packet_previous_block1_fragments_preserve_next_exchange(void)
+{
+    unsigned mode, resultMode, block, oldBlock;
+    for (mode = 0; mode < 3; ++mode) for (resultMode = 0; resultMode < 2; ++resultMode) {
+        lwm2m_context_t *context = prv_context();
+        packet_send_state_t state = {0};
+        uint8_t previous[35];
+        const uint8_t *oldToken = (const uint8_t *)"tok";
+        const uint8_t *nextToken = (const uint8_t *)(mode == 1 ? "new" : "tok");
+        size_t tokenLength = mode == 2 ? 0 : 3;
+        memset(previous, 0xa7, sizeof(previous));
+        memcpy(state.expected, previous, sizeof(previous));
+        CU_ASSERT_EQUAL(lwm2m_reporting_set_deferred_ack(context, true), NO_ERROR);
+        lwm2m_reporting_set_async_send_callback(context, packet_send_callback, &state);
+        for (block = 0; block < 3; ++block)
+            CU_ASSERT_EQUAL(packet_send_block_token(context, 0x1000, block, previous, block < 2, oldToken, tokenLength),
+                block < 2 ? COAP_231_CONTINUE : COAP_IGNORE);
+        CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, state.requestId,
+            resultMode == 0 ? COAP_204_CHANGED : COAP_503_SERVICE_UNAVAILABLE), NO_ERROR);
+        memset(state.expected, 0x5a, sizeof(state.expected));
+        for (block = 0; block < 2; ++block) {
+            lwm2m_block_data_t *owner;
+            uint8_t *buffer;
+            CU_ASSERT_EQUAL(packet_send_block_token(context, 0x2000, block, state.expected, true, nextToken, tokenLength), COAP_231_CONTINUE);
+            owner = context->clientList->blockData;
+            CU_ASSERT_PTR_NOT_NULL_FATAL(owner);
+            buffer = owner->blockBuffer;
+            for (oldBlock = 0; oldBlock < 3; ++oldBlock) {
+                CU_ASSERT_EQUAL(packet_send_block_token(context, 0x1000, oldBlock, previous, false, oldToken, tokenLength), COAP_IGNORE);
+                CU_ASSERT_PTR_EQUAL(context->clientList->blockData, owner);
+                CU_ASSERT_PTR_EQUAL(owner->blockBuffer, buffer);
+                CU_ASSERT_EQUAL(owner->blockBufferSize, 16 * (block + 1));
+                CU_ASSERT_EQUAL(memcmp(buffer, state.expected, owner->blockBufferSize), 0);
+                CU_ASSERT_EQUAL(state.calls, 1);
+            }
+        }
+        CU_ASSERT_EQUAL(packet_send_block_token(context, 0x2000, 2, state.expected, false, nextToken, tokenLength), COAP_IGNORE);
+        CU_ASSERT_EQUAL(state.calls, 2);
+        CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, state.requestId, COAP_204_CHANGED), NO_ERROR);
+        CU_ASSERT_EQUAL(packet_send_block_token(context, 0x2000, 2, state.expected, true, nextToken, tokenLength), COAP_204_CHANGED);
+        context->clientList->sessionH = NULL; lwm2m_close(context);
+    }
+}
+
+#ifdef WAKAAMA_TEST_FAULTS
+static void packet_block1_history_bounds_clock_failure_and_generation(void)
+{
+    lwm2m_context_t *context = prv_context();
+    packet_send_state_t state = {0};
+    lwm2m_block_data_t *owner;
+    size_t i;
+    test_clock_set(100);
+    memset(state.expected, 0xa7, sizeof(state.expected));
+    lwm2m_reporting_set_deferred_ack(context, true);
+    lwm2m_reporting_set_async_send_callback(context, packet_send_callback, &state);
+    CU_ASSERT_EQUAL(packet_send_block(context, 0x1000, 0, state.expected), COAP_231_CONTINUE);
+    owner = context->clientList->blockData;
+    for (i = 0; i < LWM2M_BLOCK1_HISTORY_SIZE; ++i) {
+        if (context->block1History[i].used) continue;
+        context->block1History[i].used = true;
+        context->block1History[i].receivedAt = 100;
+        context->block1History[i].sessionIdentity = 2;
+        context->block1History[i].mid = (uint16_t)i;
+    }
+    CU_ASSERT_EQUAL(packet_send_block_expected(context, 0x1000, 1, state.expected, false), COAP_IGNORE);
+    CU_ASSERT_PTR_EQUAL(context->clientList->blockData, owner);
+    CU_ASSERT_EQUAL(owner->blockBufferSize, 16);
+    /* 기록 상한이어도 기존 MID의 정확한 retransmission은 응답한다. */
+    CU_ASSERT_EQUAL(packet_send_block(context, 0x1000, 0, state.expected), COAP_231_CONTINUE);
+    test_clock_set(-1);
+    CU_ASSERT_EQUAL(packet_send_block_expected(context, 0x1000, 1, state.expected, false), COAP_IGNORE);
+    CU_ASSERT_PTR_EQUAL(context->clientList->blockData, owner);
+    test_clock_set(100 + COAP_EXCHANGE_LIFETIME);
+    CU_ASSERT_EQUAL(packet_send_block(context, 0x1000, 1, state.expected), COAP_231_CONTINUE);
+    CU_ASSERT_EQUAL(packet_send_block_expected(context, 0x1000, 2, state.expected, false), COAP_IGNORE);
+    CU_ASSERT_EQUAL(state.calls, 1);
+    CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, state.requestId, COAP_204_CHANGED), NO_ERROR);
+    /* 같은 주소가 새 세대를 갖는 경우 이전 수신 기록으로 새 요청을 거부하지 않는다. */
+    while (context->clientList->blockData != NULL) {
+        lwm2m_block_data_t *removed = context->clientList->blockData;
+        context->clientList->blockData = removed->next;
+        free_block_data(removed);
+    }
+    ++context->clientList->sessionGeneration;
+    for (i = 0; i < 3; ++i)
+        CU_ASSERT_EQUAL(packet_send_block_expected(context, 0x1000, (unsigned)i, state.expected, i < 2),
+            i < 2 ? COAP_231_CONTINUE : COAP_IGNORE);
+    CU_ASSERT_EQUAL(state.calls, 2);
+    CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, state.requestId, COAP_204_CHANGED), NO_ERROR);
+    context->clientList->sessionH = NULL; lwm2m_close(context); test_clock_reset();
+}
+#endif
+#endif
+
 static struct TestTable table[] = {
     {"async Send deferred completion", async_send_defers_deduplicates_and_completes},
     {"async Send immediate rejection", async_send_can_reject_immediately},
@@ -624,6 +725,10 @@ static struct TestTable table[] = {
     {"packet Block1 Send terminal cache and same Token retry", packet_send_terminal_cache_and_same_token_retry},
     {"packet Block1 registration owner transfer and Send invalidation", packet_block1_registration_transfers_owner_and_invalidates_send},
     {"packet deferred ACK original MID loss retry and failure", packet_deferred_ack_matches_original_mid_and_replays_after_loss},
+    {"packet previous Block1 fragments preserve next exchange", packet_previous_block1_fragments_preserve_next_exchange},
+#ifdef WAKAAMA_TEST_FAULTS
+    {"packet Block1 history bounds clock failure and generation", packet_block1_history_bounds_clock_failure_and_generation},
+#endif
 #endif
     {NULL, NULL},
 };

@@ -1106,6 +1106,22 @@ typedef struct {
     bool processing;
 } lwm2m_response_history_t;
 
+/* 영속 Block1 교환의 수신 MID를 조립 버퍼와 독립적으로 보관한다.
+ * 폐기된 교환의 재전송은 새 조립에 넣지 않고 무응답으로 버린다.
+ * current 교환의 응답 replay는 기존 Block1 cache가 담당한다.
+ * context 소유이며 주소는 비교에만 쓴다. 상한에서는 새 조각을 받지 않는다. */
+#ifndef LWM2M_BLOCK1_HISTORY_SIZE
+#define LWM2M_BLOCK1_HISTORY_SIZE 1024
+#endif
+typedef struct {
+    uintptr_t sessionIdentity;
+    uint64_t sessionGeneration;
+    time_t receivedAt;
+    uint16_t mid;
+    uint16_t exchangeMid;
+    bool used;
+} lwm2m_block1_history_t;
+
 struct _lwm2m_context_
 {
 #ifdef LWM2M_CLIENT_MODE
@@ -1208,6 +1224,8 @@ struct _lwm2m_context_
     bool                   transactionStepActive;
     lwm2m_response_history_t responseHistory[LWM2M_RESPONSE_HISTORY_SIZE];
     uint8_t                responseHistoryFailure; /* 같은 보류 원인의 경고는 한 번만 남긴다. */
+    lwm2m_block1_history_t  block1History[LWM2M_BLOCK1_HISTORY_SIZE];
+    uint8_t                block1HistoryFailure;
     void *                  userData;
 };
 

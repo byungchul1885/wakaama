@@ -515,6 +515,58 @@ static lwm2m_response_history_t *prv_response_history(lwm2m_context_t *contextP,
     return available;
 }
 
+static lwm2m_block1_history_t *prv_block1_history(lwm2m_context_t *contextP,
+    void *sessionH, uint16_t mid, bool *duplicate)
+{
+    time_t now = lwm2m_gettime();
+    uint64_t generation = 0;
+    size_t i;
+    lwm2m_block1_history_t *available = NULL;
+#ifndef LWM2M_VERSION_1_0
+#ifdef LWM2M_CLIENT_MODE
+    lwm2m_server_t *server = utils_findServer(contextP, sessionH);
+    if (server != NULL) generation = server->sessionGeneration;
+#endif
+#ifdef LWM2M_SERVER_MODE
+    lwm2m_client_t *client = utils_findClient(contextP, sessionH);
+    if (client != NULL) generation = client->sessionGeneration;
+#endif
+#endif
+    *duplicate = false;
+    if (now < 0) {
+        if (contextP->block1HistoryFailure != 1)
+            LOG_WARN("Block1 request deferred reason=clock_unavailable");
+        contextP->block1HistoryFailure = 1;
+        return NULL;
+    }
+    for (i = 0; i < LWM2M_BLOCK1_HISTORY_SIZE; ++i) {
+        lwm2m_block1_history_t *entry = &contextP->block1History[i];
+        if (entry->used && now >= entry->receivedAt &&
+            now - entry->receivedAt >= COAP_EXCHANGE_LIFETIME) entry->used = false;
+        if (!entry->used) {
+            if (available == NULL) available = entry;
+        } else if (entry->sessionIdentity == (uintptr_t)sessionH &&
+                   entry->sessionGeneration == generation && entry->mid == mid) {
+            *duplicate = true;
+            return entry;
+        }
+    }
+    if (available != NULL) {
+        contextP->block1HistoryFailure = 0;
+        available->sessionIdentity = (uintptr_t)sessionH;
+        available->sessionGeneration = generation;
+        available->receivedAt = now;
+        available->mid = mid;
+        available->exchangeMid = mid;
+        available->used = true;
+    } else {
+        if (contextP->block1HistoryFailure != 2)
+            LOG_ARG_WARN("Block1 request deferred reason=history_full capacity=%u", (unsigned)LWM2M_BLOCK1_HISTORY_SIZE);
+        contextP->block1HistoryFailure = 2;
+    }
+    return available;
+}
+
 static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t * previous, uint32_t block_num, uint16_t block_size)
 {
     lwm2m_transaction_t * next;
@@ -1009,6 +1061,24 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     if (block1Uri == NULL){
                         coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
                     } else {
+                    lwm2m_block1_history_t *history = NULL;
+                    bool duplicate = false;
+                    bool trackHistory = prv_durable_block1_exchange(contextP, message);
+                    if (trackHistory) {
+                        uint16_t currentExchangeMid = 0;
+                        history = prv_block1_history(contextP, fromSessionH, message->mid, &duplicate);
+                        if (history == NULL || (duplicate &&
+                            (coap_block1_get_exchange_mid(peerP->blockData, block1Uri,
+                                message->token, message->token_len, &currentExchangeMid) != 1 ||
+                             currentExchangeMid != history->exchangeMid))) {
+                            /* 과거 MID 또는 기록 상한에서는 현재 조립을 전혀 변경하지 않는다.
+                             * 이미 없어진 응답을 새 교환의 cache로 대신 응답하지 않는다. */
+                            lwm2m_free(block1Uri);
+                            coap_free_header(message);
+                            coap_free_header(response);
+                            return;
+                        }
+                    }
                     // handle block 1
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
 #ifdef LWM2M_CLIENT_MODE
@@ -1024,6 +1094,14 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                                                              message->payload_len, block1_size, block1_num, block1_more,
                                                              false, requestLimit, &complete_buffer, &complete_buffer_size);
 #endif
+                    if (history != NULL && !duplicate) {
+                        if ((coap_error_code == NO_ERROR || coap_error_code == COAP_231_CONTINUE ||
+                             coap_error_code == COAP_RETRANSMISSION) &&
+                            coap_block1_get_exchange_mid(peerP->blockData, block1Uri,
+                                message->token, message->token_len, &history->exchangeMid) == 1) {
+                            /* application callback 전에 논리 교환에 결합한다. */
+                        } else history->used = false;
+                    }
                     }
                     /* FETCH는 상태 코드뿐 아니라 고정 응답 bytes를 replay해야 한다. */
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)

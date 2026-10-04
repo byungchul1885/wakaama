@@ -30,7 +30,14 @@ struct _lwm2m_reporting_send_request_ {
     uint16_t messageId;
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t tokenLength;
+    char *block1Uri; /* request가 소유하는 교환 key 사본 */
+    uint16_t block1ExchangeMid;
 };
+
+static void prv_freePending(lwm2m_reporting_send_request_t *requestP) {
+    lwm2m_free(requestP->block1Uri);
+    lwm2m_free(requestP);
+}
 
 static lwm2m_reporting_send_request_t *prv_findPendingByMessage(lwm2m_context_t *contextP,
                                                                uint16_t clientId,
@@ -147,6 +154,15 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
         if (requestP->tokenLength > 0U) {
             memcpy(requestP->token, message->token, requestP->tokenLength);
         }
+        if (IS_OPTION(message, COAP_OPTION_BLOCK1)) {
+            requestP->block1Uri = coap_get_packet_uri_as_string(message);
+            if (requestP->block1Uri == NULL ||
+                coap_block1_get_exchange_mid(clientP->blockData, requestP->block1Uri,
+                    message->token, message->token_len, &requestP->block1ExchangeMid) != 1) {
+                prv_freePending(requestP);
+                return COAP_503_SERVICE_UNAVAILABLE;
+            }
+        }
         requestP->next = contextP->reportingSendRequestList;
         contextP->reportingSendRequestList = requestP;
 
@@ -166,7 +182,7 @@ uint8_t reporting_handleSend(lwm2m_context_t *contextP,
         }
 
         contextP->reportingSendRequestList = requestP->next;
-        lwm2m_free(requestP);
+        prv_freePending(requestP);
         return callbackResult;
     }
 
@@ -221,7 +237,7 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
         } else {
             previousP->next = requestP->next;
         }
-        lwm2m_free(requestP);
+        prv_freePending(requestP);
         return COAP_404_NOT_FOUND;
     }
 
@@ -247,9 +263,16 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
         /* transport 호출 뒤에는 최신 list에서 stable request ID를 다시 찾는다. */
         requestP = prv_findPendingById(contextP, requestId, &previousP);
         if (requestP != NULL) {
+            clientP = (lwm2m_client_t *)lwm2m_list_find((lwm2m_list_t *)contextP->clientList, requestP->clientId);
+            if (requestP->block1Uri != NULL && clientP != NULL &&
+                clientP->sessionGeneration == requestP->sessionGeneration) {
+                /* transport 재진입이 다른 교환을 만들었으면 그 cache를 덮어쓰지 않는다. */
+                (void)coap_block1_complete_response(clientP->blockData, requestP->block1Uri,
+                    requestP->token, requestP->tokenLength, requestP->block1ExchangeMid, responseCode);
+            }
             if (previousP == NULL) contextP->reportingSendRequestList = requestP->next;
             else previousP->next = requestP->next;
-            lwm2m_free(requestP);
+            prv_freePending(requestP);
         }
     }
     return result;
@@ -271,7 +294,7 @@ void reporting_clearClient(lwm2m_context_t *contextP, uint16_t clientId) {
             } else {
                 previousP->next = nextP;
             }
-            lwm2m_free(requestP);
+            prv_freePending(requestP);
         } else {
             previousP = requestP;
         }
@@ -286,7 +309,7 @@ void reporting_clear(lwm2m_context_t *contextP) {
     while (contextP->reportingSendRequestList != NULL) {
         lwm2m_reporting_send_request_t *requestP = contextP->reportingSendRequestList;
         contextP->reportingSendRequestList = requestP->next;
-        lwm2m_free(requestP);
+        prv_freePending(requestP);
     }
 }
 #endif

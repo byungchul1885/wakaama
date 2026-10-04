@@ -301,6 +301,12 @@ static bool prv_uses_raw_block1(lwm2m_context_t *contextP, void *fromSessionH, c
 
 static bool prv_durable_block1_exchange(lwm2m_context_t *contextP, coap_packet_t *message)
 {
+#if defined(LWM2M_SERVER_MODE) && !defined(LWM2M_VERSION_1_0)
+    lwm2m_uri_t sendUri;
+    /* Send의 terminal 결과 뒤 새 MID/Block 0은 같은 Token의 다음 전송이다. */
+    if (uri_decode(NULL, message->uri_path, message->code, &sendUri) == LWM2M_REQUEST_TYPE_SEND)
+        return true;
+#endif
 #ifdef LWM2M_CLIENT_MODE
     lwm2m_uri_t uri;
     lwm2m_object_t *object;

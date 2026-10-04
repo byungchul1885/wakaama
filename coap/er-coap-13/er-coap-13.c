@@ -401,8 +401,10 @@ char * coap_get_packet_uri_as_string(coap_packet_t * packet)
     char * output;
     
     char * path_string = coap_get_multi_option_as_path_string(packet->uri_path);
+    if (path_string == NULL) return NULL;
     size_t path_len = strlen(path_string);
     char * query_string = coap_get_multi_option_as_query_string(packet->uri_query);
+    if (query_string == NULL) { lwm2m_free(path_string); return NULL; }
     size_t query_len = strlen(query_string);
 
     size_t len = 2 * sizeof(char); // "//"
@@ -413,11 +415,13 @@ char * coap_get_packet_uri_as_string(coap_packet_t * packet)
     
     output = (char *) lwm2m_malloc(len + 1);
     if(output == NULL){
+      lwm2m_free(path_string);
+      lwm2m_free(query_string);
       return NULL;
     }
     
     strcpy(output, "//");
-    strncat(output, (char *)packet->uri_host, packet->uri_host_len);
+    if (packet->uri_host_len > 0) strncat(output, (char *)packet->uri_host, packet->uri_host_len);
     if (1 > path_len)
     {
         strcat(output, "/");

@@ -43,6 +43,11 @@ set(TEST_SOURCES
 
 set(TARGET_NAME lwm2munittests)
 
+# 실제 server packet 경로는 client mode가 꺼진 별도 구성에서 실행한다.
+if(NOT WAKAAMA_MODE_CLIENT)
+    set(TEST_SOURCES helper/log_handler.c core_reporting_tests.c server_packet_runner.c tests.h)
+endif()
+
 add_executable(${TARGET_NAME})
 target_sources(${TARGET_NAME} PRIVATE ${TEST_SOURCES})
 

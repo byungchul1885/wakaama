@@ -432,6 +432,10 @@ uint8_t coap_block1_handler_with_limit(lwm2m_block_data_t **blockData, const cha
 /* locationPath는 호출 중 복사되므로 caller가 계속 소유한다. */
 int coap_block1_cache_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
                                size_t tokenLength, uint8_t responseCode, const char *locationPath);
+/* deferred 응답 인계 성공 이후 해당 첫 MID의 완료 교환만 갱신한다.
+ * 입력은 borrowed이며 일치하지 않는 새 교환은 보존한다. 할당하지 않는다. */
+int coap_block1_complete_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
+    size_t tokenLength, uint16_t exchangeMid, uint8_t responseCode);
 /* message_send 성공 뒤 호출한다. 입력을 보관하지 않으며 상대 수신/영속 저장 ACK를 뜻하지 않는다. */
 void coap_block1_mark_response_submitted(lwm2m_block_data_t *blockData, const char *uri,
     const uint8_t *token, size_t tokenLength, uint8_t responseCode, bool allowTokenReuse);

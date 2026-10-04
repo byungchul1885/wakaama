@@ -284,12 +284,110 @@ static void registration_generation_exhaustion_preserves_request(void)
     lwm2m_close(contextP);
 }
 
+#if !defined(LWM2M_CLIENT_MODE)
+typedef struct {
+    unsigned calls;
+    lwm2m_reporting_send_request_id_t requestId;
+    uint8_t expected[35];
+} packet_send_state_t;
+
+static uint8_t packet_send_callback(lwm2m_context_t *context, lwm2m_reporting_send_request_id_t id,
+    uint16_t clientId, const char *endpoint, uint16_t mid, lwm2m_media_type_t format,
+    const uint8_t *token, size_t tokenLength, const uint8_t *data, size_t length, void *userData)
+{
+    packet_send_state_t *state = userData;
+    (void)context; (void)clientId; (void)endpoint; (void)mid; (void)format; (void)token; (void)tokenLength;
+    ++state->calls; state->requestId = id;
+    CU_ASSERT_EQUAL(length, sizeof(state->expected));
+    CU_ASSERT_EQUAL(memcmp(data, state->expected, sizeof(state->expected)), 0);
+    return COAP_IGNORE;
+}
+
+static uint8_t packet_send_block(lwm2m_context_t *context, uint16_t firstMid, unsigned block,
+    const uint8_t *body)
+{
+    coap_packet_t request, response;
+    uint8_t wire[128];
+    static const uint8_t token[] = {'t', 'o', 'k'};
+    size_t length;
+    uint8_t code;
+    coap_init_message(&request, COAP_TYPE_CON, COAP_POST, (uint16_t)(firstMid + block));
+    coap_set_header_uri_path(&request, "/dp");
+    coap_set_header_content_type(&request, LWM2M_CONTENT_SENML_CBOR);
+    coap_set_header_token(&request, token, sizeof(token));
+    coap_set_header_block1(&request, block, block < 2, 16);
+    coap_set_payload(&request, body + 16 * block, block < 2 ? 16 : 3);
+    length = coap_serialize_message(&request, wire);
+    coap_free_header(&request);
+    test_reset_response_buffer();
+    lwm2m_handle_packet(context, wire, length, (void *)(uintptr_t)1);
+    {
+        uint8_t *responseBytes = test_get_response_buffer(&length);
+        CU_ASSERT_EQUAL_FATAL(coap_parse_message(&response, responseBytes, length), NO_ERROR);
+    }
+    code = response.code;
+    CU_ASSERT_EQUAL(response.type, COAP_TYPE_ACK);
+    CU_ASSERT_EQUAL(response.mid, firstMid + block);
+    if (code == COAP_EMPTY_MESSAGE_CODE) { CU_ASSERT_EQUAL(response.token_len, 0); }
+    else { CU_ASSERT_EQUAL(response.token_len, 3); CU_ASSERT_NSTRING_EQUAL(response.token, "tok", 3); }
+    coap_free_header(&response);
+    return code;
+}
+
+static void packet_send_terminal_cache_and_same_token_retry(void)
+{
+    unsigned mode, block;
+    for (mode = 0; mode < 4; ++mode) {
+        lwm2m_context_t *context = prv_context();
+        packet_send_state_t state = {0};
+        lwm2m_reporting_send_request_id_t firstId;
+        uint8_t terminal = mode < 2 ? COAP_204_CHANGED : COAP_503_SERVICE_UNAVAILABLE;
+        memset(state.expected, 0xa7, sizeof(state.expected));
+        lwm2m_reporting_set_async_send_callback(context, packet_send_callback, &state);
+        for (block = 0; block < 3; ++block)
+            CU_ASSERT_EQUAL(packet_send_block(context, 0x1000, block, state.expected),
+                block < 2 ? COAP_231_CONTINUE : COAP_EMPTY_MESSAGE_CODE);
+        CU_ASSERT_EQUAL(state.calls, 1); firstId = state.requestId;
+        /* 진행 중 동일 본문의 다른 MID 재시도는 다시 ingest하지 않는다. */
+        for (block = 0; block < 3; ++block)
+            CU_ASSERT_EQUAL(packet_send_block(context, 0x2000, block, state.expected),
+                block < 2 ? COAP_231_CONTINUE : COAP_EMPTY_MESSAGE_CODE);
+        CU_ASSERT_EQUAL(state.calls, 1);
+#ifdef WAKAAMA_TEST_FAULTS
+        test_deferred_completion_failures(context, firstId, lwm2m_reporting_complete_send,
+            prv_pending_reporting, context->clientList->sessionH);
+#endif
+        CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, firstId, terminal), NO_ERROR);
+        /* 별도 CON이 유실되어도 원래 마지막 조각은 terminal 결과를 replay한다. */
+        CU_ASSERT_EQUAL(packet_send_block(context, 0x1000, 2, state.expected), terminal);
+        CU_ASSERT_EQUAL(state.calls, 1);
+        if (mode % 2 != 0) state.expected[34] ^= 0xff;
+        for (block = 0; block < 3; ++block)
+            CU_ASSERT_EQUAL(packet_send_block(context, 0x3000, block, state.expected),
+                block < 2 ? COAP_231_CONTINUE : COAP_EMPTY_MESSAGE_CODE);
+        CU_ASSERT_EQUAL(state.calls, 2);
+        CU_ASSERT_NOT_EQUAL(state.requestId, firstId);
+        CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, firstId, terminal), COAP_404_NOT_FOUND);
+        test_auto_ack_notifications(context);
+        /* 먼저 인계한 final CON을 종료하여 다음 final 응답의 NSTART 대기를 해제한다. */
+        while (context->transactionList != NULL) transaction_complete(context, context->transactionList, NULL);
+        CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, state.requestId, COAP_204_CHANGED), NO_ERROR);
+        test_auto_ack_notifications(NULL);
+        CU_ASSERT_EQUAL(packet_send_block(context, 0x3000, 2, state.expected), COAP_204_CHANGED);
+        context->clientList->sessionH = NULL; lwm2m_close(context);
+    }
+}
+#endif
+
 static struct TestTable table[] = {
     {"async Send deferred completion", async_send_defers_deduplicates_and_completes},
     {"async Send immediate rejection", async_send_can_reject_immediately},
     {"async Send registration generation", async_send_registration_generation},
     {"async Send stale and missing session", async_send_rejects_stale_or_missing_session},
     {"registration generation exhaustion", registration_generation_exhaustion_preserves_request},
+#if !defined(LWM2M_CLIENT_MODE)
+    {"packet Block1 Send terminal cache and same Token retry", packet_send_terminal_cache_and_same_token_retry},
+#endif
     {NULL, NULL},
 };
 

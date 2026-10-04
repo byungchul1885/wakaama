@@ -377,6 +377,85 @@ static void packet_send_terminal_cache_and_same_token_retry(void)
         context->clientList->sessionH = NULL; lwm2m_close(context);
     }
 }
+
+static const uint8_t registrationObjects[] = "</>;ct=112,</3/0>,</6/0>,</3303/0>";
+static unsigned registrationMonitorCalls;
+static void packet_registration_monitor(lwm2m_context_t *context, uint16_t clientId,
+    lwm2m_uri_t *uri, int status, block_info_t *block, lwm2m_media_type_t format,
+    uint8_t *data, size_t length, void *userData)
+{
+    (void)context; (void)uri; (void)status; (void)block; (void)format; (void)userData;
+    ++registrationMonitorCalls;
+    CU_ASSERT_EQUAL(clientId, 7);
+    CU_ASSERT_EQUAL(length, sizeof(registrationObjects) - 1);
+    CU_ASSERT_EQUAL(memcmp(data, registrationObjects, sizeof(registrationObjects) - 1), 0);
+}
+
+static uint8_t packet_registration_block(lwm2m_context_t *context, void *session,
+    unsigned block, bool full)
+{
+    coap_packet_t request, response;
+    uint8_t wire[160], *bytes;
+    static const uint8_t token[] = {'r', 'e', 'g'};
+    size_t length, remaining = sizeof(registrationObjects) - 1 - 16 * block;
+    uint8_t code;
+    coap_init_message(&request, COAP_TYPE_CON, COAP_POST, (uint16_t)(0x4000 + block));
+    coap_set_header_uri_path(&request, full ? "/rd" : "/rd/7");
+    coap_set_header_uri_query(&request, full ? "lwm2m=1.1&ep=endpoint-1&lt=300" : "lt=300");
+    coap_set_header_content_type(&request, LWM2M_CONTENT_LINK);
+    coap_set_header_token(&request, token, sizeof(token));
+    coap_set_header_block1(&request, block, remaining > 16, 16);
+    coap_set_payload(&request, registrationObjects + 16 * block, remaining > 16 ? 16 : remaining);
+    length = coap_serialize_message(&request, wire); coap_free_header(&request);
+    test_reset_response_buffer(); lwm2m_handle_packet(context, wire, length, session);
+    bytes = test_get_response_buffer(&length);
+    CU_ASSERT_EQUAL_FATAL(coap_parse_message(&response, bytes, length), NO_ERROR);
+    code = response.code;
+    CU_ASSERT_EQUAL(response.mid, 0x4000 + block);
+    if (code == COAP_201_CREATED) {
+        char *location = coap_get_multi_option_as_path_string(response.location_path);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(location);
+        CU_ASSERT_STRING_EQUAL(location, "/rd/7"); lwm2m_free(location);
+    }
+    coap_free_header(&response);
+    return code;
+}
+
+static void packet_block1_registration_transfers_owner_and_invalidates_send(void)
+{
+    unsigned mode, block;
+    for (mode = 0; mode < 4; ++mode) {
+        lwm2m_context_t *context = prv_context();
+        lwm2m_client_t *owner = context->clientList;
+        packet_send_state_t state = {0};
+        lwm2m_reporting_send_request_id_t oldId;
+        uint64_t generation = owner->sessionGeneration;
+        bool full = mode < 2;
+        void *session = (void *)(uintptr_t)(mode % 2 == 0 ? 2 : 1);
+        memset(state.expected, 0xa7, sizeof(state.expected));
+        lwm2m_reporting_set_async_send_callback(context, packet_send_callback, &state);
+        for (block = 0; block < 3; ++block) packet_send_block(context, 0x1000, block, state.expected);
+        oldId = state.requestId;
+        registrationMonitorCalls = 0;
+        lwm2m_set_monitoring_callback(context, packet_registration_monitor, NULL);
+        for (block = 0; block < 3; ++block)
+            CU_ASSERT_EQUAL(packet_registration_block(context, session, block, full),
+                block < 2 ? COAP_231_CONTINUE : full ? COAP_201_CREATED : COAP_204_CHANGED);
+        CU_ASSERT_EQUAL(registrationMonitorCalls, 1);
+        CU_ASSERT_PTR_EQUAL(context->clientList, owner); CU_ASSERT_PTR_NULL(owner->next);
+        CU_ASSERT_PTR_EQUAL(owner->sessionH, session);
+        CU_ASSERT_EQUAL(packet_registration_block(context, session, 2, full), full ? COAP_201_CREATED : COAP_204_CHANGED);
+        CU_ASSERT_EQUAL(registrationMonitorCalls, 1);
+        if (full || session != (void *)(uintptr_t)1) {
+            CU_ASSERT_NOT_EQUAL(owner->sessionGeneration, generation);
+            CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, oldId, COAP_204_CHANGED), COAP_404_NOT_FOUND);
+        } else {
+            CU_ASSERT_EQUAL(owner->sessionGeneration, generation);
+            CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(context, oldId, COAP_204_CHANGED), NO_ERROR);
+        }
+        owner->sessionH = NULL; lwm2m_close(context);
+    }
+}
 #endif
 
 static struct TestTable table[] = {
@@ -387,6 +466,7 @@ static struct TestTable table[] = {
     {"registration generation exhaustion", registration_generation_exhaustion_preserves_request},
 #if !defined(LWM2M_CLIENT_MODE)
     {"packet Block1 Send terminal cache and same Token retry", packet_send_terminal_cache_and_same_token_retry},
+    {"packet Block1 registration owner transfer and Send invalidation", packet_block1_registration_transfers_owner_and_invalidates_send},
 #endif
     {NULL, NULL},
 };

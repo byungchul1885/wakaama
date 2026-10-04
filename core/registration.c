@@ -1834,6 +1834,40 @@ void registration_freeClient(lwm2m_context_t *const context, lwm2m_client_t *cli
     lwm2m_free(clientP);
 }
 
+/* 새 등록 세대에서는 이전 교환을 정리하되 현재 packet의 조립 buffer만 이전한다.
+ * 최종 client가 buffer owner가 되므로 monitor와 packet 응답 cache까지 유효하다. */
+static void prv_adoptRegistrationBlocks(lwm2m_context_t *contextP, lwm2m_client_t *clientP,
+    void *sessionH, const coap_packet_t *message)
+{
+    lwm2m_client_t *temporary = utils_findClient(contextP, sessionH);
+    lwm2m_block_data_t *block, *keep = NULL;
+    if (temporary != NULL && temporary != clientP && temporary->name == NULL &&
+        IS_OPTION(message, COAP_OPTION_BLOCK1)) {
+        while (clientP->blockData != NULL) {
+            block = clientP->blockData;
+            clientP->blockData = block->next;
+            free_block_data(block);
+        }
+        clientP->blockData = temporary->blockData;
+        temporary->blockData = NULL;
+        /* session은 최종 client가 계속 사용한다. 임시 owner 정리에서 닫지 않는다. */
+        temporary->sessionH = NULL;
+        contextP->clientList = (lwm2m_client_t *)LWM2M_LIST_RM(contextP->clientList,
+            temporary->internalID, &temporary);
+        registration_freeClient(contextP, temporary);
+    }
+    while (clientP->blockData != NULL) {
+        block = clientP->blockData;
+        clientP->blockData = block->next;
+        if (IS_OPTION(message, COAP_OPTION_BLOCK1) && block->blockType == BLOCK_1 &&
+            block->blockBuffer == message->payload) {
+            block->next = keep;
+            keep = block;
+        } else free_block_data(block);
+    }
+    clientP->blockData = keep;
+}
+
 static int prv_getLocationString(uint16_t id,
                                  char location[MAX_LOCATION_LENGTH])
 {
@@ -1953,19 +1987,10 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
                 {
                     clientP = utils_findClient(contextP, fromSessionH);
                 }
-                else
-                {
-                    lwm2m_client_t * tmpClientP = utils_findClient(contextP, fromSessionH);
-                    /* 조립용 임시 client만 제거한다. 재등록 대상 자체는 유지한다. */
-                    if (tmpClientP != NULL && tmpClientP != clientP)
-                    {
-                        contextP->clientList = (lwm2m_client_t *)LWM2M_LIST_RM(contextP->clientList, tmpClientP->internalID, &tmpClientP);
-                        registration_freeClient(contextP, tmpClientP);
-                    }
-                }
             }
             if (clientP != NULL)
             {
+                prv_adoptRegistrationBlocks(contextP, clientP, fromSessionH, message);
                 // we reset this registration
 #ifndef LWM2M_VERSION_1_0
                 reporting_clearClient(contextP, clientP->internalID);
@@ -2056,6 +2081,7 @@ uint8_t  registration_handleRequest(lwm2m_context_t * contextP,
                     return COAP_503_SERVICE_UNAVAILABLE;
                 }
                 sessionGeneration = ++contextP->nextClientSessionGeneration;
+                prv_adoptRegistrationBlocks(contextP, clientP, fromSessionH, message);
 #ifndef LWM2M_VERSION_1_0
                 reporting_clearClient(contextP, clientP->internalID);
 #endif

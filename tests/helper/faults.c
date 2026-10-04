@@ -7,6 +7,7 @@ static time_t clock_value;
 static bool allocation_enabled;
 static size_t allocation_limit;
 static size_t allocation_calls;
+static bool allocation_once;
 static void *tracked[8192];
 
 void *__real_malloc(size_t size);
@@ -22,6 +23,12 @@ void test_malloc_fail_after(size_t successful)
     allocation_enabled = true;
     allocation_limit = successful;
     allocation_calls = 0;
+    allocation_once = false;
+}
+void test_malloc_fail_once_after(size_t successful)
+{
+    test_malloc_fail_after(successful);
+    allocation_once = true;
 }
 void test_malloc_fault_disable(void) { allocation_enabled = false; }
 size_t test_malloc_observed_calls(void) { return allocation_calls; }
@@ -37,7 +44,10 @@ void *__wrap_malloc(size_t size)
 {
     void *pointer;
     size_t i;
-    if (allocation_enabled && allocation_calls++ >= allocation_limit) return NULL;
+    if (allocation_enabled) {
+        size_t index = allocation_calls++;
+        if (index >= allocation_limit && (!allocation_once || index == allocation_limit)) return NULL;
+    }
     pointer = __real_malloc(size);
     if (!allocation_enabled || pointer == NULL) return pointer;
     for (i = 0; i < sizeof(tracked)/sizeof(tracked[0]); ++i)

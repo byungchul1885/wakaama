@@ -556,6 +556,15 @@ int coap_block1_complete_response(lwm2m_block_data_t *blockDataHead, const char 
     uint16_t currentMid;
     if (coap_block1_get_exchange_mid(blockDataHead, uri, token, tokenLength, &currentMid) != 1 ||
         currentMid != exchangeMid) return 0;
+    {
+        block_data_identifier_t identifier = {0};
+        lwm2m_block_data_t *block;
+        identifier.uri = (char *)uri;
+        identifier.tokenLength = (uint8_t)tokenLength;
+        if (tokenLength != 0) memcpy(identifier.token, token, tokenLength);
+        block = find_block_data(blockDataHead, identifier, BLOCK_1);
+        if (block == NULL || block->lastBlockMore) return 0;
+    }
     if (coap_block1_cache_response(blockDataHead, uri, token, tokenLength, responseCode, NULL) != 0) return -1;
     coap_block1_mark_response_submitted(blockDataHead, uri, token, tokenLength, responseCode, true);
     return 1;

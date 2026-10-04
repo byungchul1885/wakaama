@@ -481,7 +481,12 @@ static lwm2m_response_history_t *prv_response_history(lwm2m_context_t *contextP,
 #endif
 #endif
     *duplicate = false;
-    if (now < 0) return NULL;
+    if (now < 0) {
+        if (contextP->responseHistoryFailure != 1)
+            LOG_WARN("CON response deferred reason=clock_unavailable");
+        contextP->responseHistoryFailure = 1;
+        return NULL;
+    }
     for (i = 0; i < LWM2M_RESPONSE_HISTORY_SIZE; ++i) {
         lwm2m_response_history_t *entry = &contextP->responseHistory[i];
         if (entry->used && !entry->processing && now >= entry->receivedAt &&
@@ -495,12 +500,17 @@ static lwm2m_response_history_t *prv_response_history(lwm2m_context_t *contextP,
         }
     }
     if (available != NULL) {
+        contextP->responseHistoryFailure = 0;
         available->sessionIdentity = (uintptr_t)sessionH;
         available->sessionGeneration = generation;
         available->receivedAt = now;
         available->mid = mid;
         available->used = true;
         available->processing = true;
+    } else {
+        if (contextP->responseHistoryFailure != 2)
+            LOG_ARG_WARN("CON response deferred reason=history_full capacity=%u", (unsigned)LWM2M_RESPONSE_HISTORY_SIZE);
+        contextP->responseHistoryFailure = 2;
     }
     return available;
 }

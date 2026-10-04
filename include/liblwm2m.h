@@ -1205,6 +1205,7 @@ struct _lwm2m_context_
     lwm2m_transaction_t *   transactionList;
     bool                   transactionStepActive;
     lwm2m_response_history_t responseHistory[LWM2M_RESPONSE_HISTORY_SIZE];
+    uint8_t                responseHistoryFailure; /* 같은 보류 원인의 경고는 한 번만 남긴다. */
     void *                  userData;
 };
 
@@ -1310,6 +1311,9 @@ int lwm2m_send_with_token(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
 // tokenLen == 0 requests an explicit zero-length CoAP Token. A NULL token with
 // tokenLen == 0 inherits the active request Token, or creates an autonomous
 // device Token when there is no active request.
+/* payload/token은 caller 소유 borrowed 입력이며 transaction이 필요한 사본을 소유한다.
+ * /dp option 등 공개 전 준비 실패에는 해당 대상의 packet/callback을 보내지 않는다.
+ * 공개 뒤 오류는 동기 terminal callback과 오류 반환이 함께 발생할 수 있다. */
 int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServerID,
                                   lwm2m_media_type_t format, const uint8_t *payload, size_t payloadLen,
                                   const uint8_t *token, size_t tokenLen,
@@ -1400,7 +1404,9 @@ void lwm2m_reporting_set_async_send_callback(lwm2m_context_t *contextP,
                                              void *userData);
 /* 직렬화된 transaction 인계 성공 이후에만 request ID를 소비한다.
  * 일시 실패는 같은 ID로 재시도하며 404는 확정 종료다. 수신 당시 등록 세대와
- * 다른 세션으로는 인계하지 않는다. protocol owner thread 전용이다. */
+ * 다른 세션으로는 인계하지 않는다. protocol owner thread 전용이다.
+ * Block1 key 사본은 pending request가 소유한다. 인계 성공 시 첫 MID가 일치하는
+ * 교환의 terminal cache를 갱신하며 새 MID/Block 0의 같은 Token Send는 다시 접수한다. */
 int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
                                   lwm2m_reporting_send_request_id_t requestId,
                                   uint8_t responseCode);

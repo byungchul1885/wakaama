@@ -311,6 +311,10 @@ static void con_history_failure_expiry_capacity_and_generation(void)
     send_fixture_t f;
     size_t i, count;
     setup(&f); payloadCallbacks = 0; payload_send(&f, 2);
+    count = test_response_count(); test_clock_set(-1);
+    payload_deliver(&f, 0x8001, COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(payloadCallbacks, 0); CU_ASSERT_EQUAL(test_response_count(), count);
+    test_clock_set(100);
     test_fail_next_response();
     payload_deliver(&f, 0x8001, COAP_204_CHANGED);
     CU_ASSERT_EQUAL(payloadCallbacks, 0); CU_ASSERT_PTR_NOT_NULL(f.context.transactionList);
@@ -334,6 +338,92 @@ static void con_history_failure_expiry_capacity_and_generation(void)
     cleanup(&f);
 }
 
+static void payload_send_single_allocation_failure_never_sends_root(void)
+{
+    size_t fail, calls, baseline = test_malloc_live_allocations();
+    send_fixture_t f;
+    uint8_t body[] = {0x81, 0xa0};
+    static const uint8_t token[] = {0x11, 0xff, 0x00};
+    setup(&f); test_malloc_fail_after(SIZE_MAX); payloadCallbacks = 0;
+    CU_ASSERT_EQUAL(lwm2m_send_payload_with_token(&f.context, 7, LWM2M_CONTENT_SENML_CBOR,
+        body, sizeof(body), token, sizeof(token), payload_response, &f), NO_ERROR);
+    calls = test_malloc_observed_calls();
+    test_malloc_fault_disable(); cleanup(&f);
+    for (fail = 0; fail < calls; ++fail) {
+        int result;
+        unsigned callbacks;
+        coap_packet_t sent;
+        uint8_t *bytes;
+        size_t length;
+        setup(&f); payloadCallbacks = 0;
+        test_malloc_fail_once_after(fail);
+        result = lwm2m_send_payload_with_token(&f.context, 7, LWM2M_CONTENT_SENML_CBOR,
+            body, sizeof(body), token, sizeof(token), payload_response, &f);
+        test_malloc_fault_disable();
+        CU_ASSERT_TRUE(payloadCallbacks <= 1);
+        if (result != NO_ERROR) {
+            CU_ASSERT_EQUAL(result, COAP_500_INTERNAL_SERVER_ERROR);
+            CU_ASSERT_EQUAL(test_response_count(), 0);
+            CU_ASSERT_PTR_NULL(f.context.transactionList);
+            callbacks = payloadCallbacks;
+            CU_ASSERT_EQUAL(lwm2m_send_payload_with_token(&f.context, 7, LWM2M_CONTENT_SENML_CBOR,
+                body, sizeof(body), token, sizeof(token), payload_response, &f), NO_ERROR);
+            CU_ASSERT_EQUAL(payloadCallbacks, callbacks);
+        }
+        bytes = test_get_response_buffer(&length);
+        CU_ASSERT_EQUAL_FATAL(coap_parse_message(&sent, bytes, length), NO_ERROR);
+        CU_ASSERT_EQUAL(sent.code, COAP_POST);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(sent.uri_path);
+        CU_ASSERT_PTR_NULL(sent.uri_path->next);
+        CU_ASSERT_EQUAL(sent.uri_path->len, 2);
+        CU_ASSERT_NSTRING_EQUAL(sent.uri_path->data, "dp", 2);
+        coap_free_header(&sent);
+        callbacks = payloadCallbacks;
+        payload_deliver(&f, 0xa001, COAP_204_CHANGED);
+        CU_ASSERT_EQUAL(payloadCallbacks, callbacks + 1);
+        CU_ASSERT_PTR_NULL(f.context.transactionList);
+        cleanup(&f); CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    }
+}
+
+static void packet_uri_single_allocation_failure_releases_partial_strings(void)
+{
+    coap_packet_t packet;
+    size_t fail, baseline = test_malloc_live_allocations();
+    coap_init_message(&packet, COAP_TYPE_CON, COAP_POST, 1);
+    coap_set_header_uri_path(&packet, "/dp");
+    for (fail = 0; fail < 3; ++fail) {
+        char *uri;
+        test_malloc_fail_once_after(fail); uri = coap_get_packet_uri_as_string(&packet);
+        test_malloc_fault_disable(); CU_ASSERT_PTR_NULL(uri);
+        CU_ASSERT_EQUAL(test_malloc_live_allocations(), baseline);
+    }
+    {
+        char *uri = coap_get_packet_uri_as_string(&packet);
+        CU_ASSERT_PTR_NOT_NULL_FATAL(uri); CU_ASSERT_STRING_EQUAL(uri, "///dp");
+        lwm2m_free(uri);
+    }
+    coap_free_header(&packet);
+}
+
+static void payload_send_absent_or_unregistered_is_not_success(void)
+{
+    const lwm2m_status_t statuses[] = {STATE_DEREGISTERED, STATE_REG_PENDING, STATE_REG_FAILED, STATE_REG_HOLD_OFF};
+    unsigned mode;
+    uint8_t body[] = {0x81, 0xa0};
+    for (mode = 0; mode < 6; ++mode) {
+        send_fixture_t f;
+        setup(&f); payloadCallbacks = 0;
+        if (mode < 4) f.context.serverList->status = statuses[mode];
+        else if (mode == 4) f.context.serverList->sessionH = NULL;
+        CU_ASSERT_EQUAL(lwm2m_send_payload_with_token(&f.context, mode == 5 ? 99 : 7,
+            LWM2M_CONTENT_SENML_CBOR, body, sizeof(body), NULL, 0, payload_response, &f),
+            mode == 5 ? COAP_404_NOT_FOUND : COAP_405_METHOD_NOT_ALLOWED);
+        CU_ASSERT_EQUAL(test_response_count(), 0); CU_ASSERT_EQUAL(payloadCallbacks, 0);
+        CU_ASSERT_PTR_NULL(f.context.transactionList); cleanup(&f);
+    }
+}
+
 static struct TestTable table[] = {
     {"broadcast per-target Read authorization and pure scope", each_broadcast_target_gets_its_own_values_and_scope},
     {"absent unregistered forbidden targets have no Read", absent_unregistered_and_forbidden_targets_do_not_read},
@@ -341,6 +431,9 @@ static struct TestTable table[] = {
     {"Send scope all allocation failure ownership", every_allocation_failure_preserves_scope_and_ownership},
     {"completed CON versus next same Token payload Send", completed_con_cannot_complete_next_same_token_send},
     {"CON history ACK failure expiry capacity generation", con_history_failure_expiry_capacity_and_generation},
+    {"payload Send single allocation failure and retry", payload_send_single_allocation_failure_never_sends_root},
+    {"packet URI single allocation failure cleanup", packet_uri_single_allocation_failure_releases_partial_strings},
+    {"payload Send absent or unregistered target rejection", payload_send_absent_or_unregistered_is_not_success},
     {NULL, NULL}
 };
 CU_ErrorCode create_send_scope_test_suit(void)

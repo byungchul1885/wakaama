@@ -610,6 +610,7 @@ static void prv_handleRegistrationReply(lwm2m_context_t * contextP,
 {
     coap_packet_t * packet = (coap_packet_t *)message;
     registration_data_t * dataP = (registration_data_t *)(transacP->userData);
+    char *newLocation = NULL;
 
 #ifdef LWM2M_VERSION_1_0
     (void)contextP; /* unused */
@@ -627,7 +628,10 @@ static void prv_handleRegistrationReply(lwm2m_context_t * contextP,
             transaction_free_userData(contextP, transacP);
             return;
         }
-        if (packet != NULL && packet->code == COAP_201_CREATED)
+        if (packet != NULL && packet->code == COAP_201_CREATED && packet->location_path != NULL)
+            newLocation = coap_get_multi_option_as_path_string(packet->location_path);
+        if (packet != NULL && packet->code == COAP_201_CREATED &&
+            newLocation != NULL && newLocation[0] == '/')
         {
             /* 새 Register가 완료되면 서버가 다시 Observe한다. 단순 재연결/Update는
              * 이 경계를 통과하지 않으며, 별도 owner의 Attribute 설정도 지우지 않는다. */
@@ -637,7 +641,7 @@ static void prv_handleRegistrationReply(lwm2m_context_t * contextP,
             {
                 lwm2m_free(dataP->server->location);
             }
-            dataP->server->location = coap_get_multi_option_as_path_string(packet->location_path);
+            dataP->server->location = newLocation;
 
             LOG_ARG_DBG("%d Registration successful", dataP->server->shortID);
 #ifndef LWM2M_VERSION_1_0
@@ -676,6 +680,9 @@ static void prv_handleRegistrationReply(lwm2m_context_t * contextP,
         }
         else
         {
+            if (packet != NULL && packet->code == COAP_201_CREATED)
+                LOG_ARG_WARN("Registration location invalid server=%u", dataP->server->shortID);
+            lwm2m_free(newLocation);
 #ifdef LWM2M_VERSION_1_0
             dataP->server->status = STATE_REG_FAILED;
             LOG_ARG_DBG("%d Registration failed", dataP->server->shortID);
@@ -903,6 +910,16 @@ static int prv_updateRegistration(lwm2m_context_t * contextP,
     uint8_t token[COAP_TOKEN_LEN];
     uint8_t * payload = NULL;
     int payload_length;
+
+    if (server->location == NULL || server->location[0] != '/') {
+        LOG_ARG_WARN("Registration update location invalid server=%u", server->shortID);
+#ifdef LWM2M_VERSION_1_0
+        server->status = STATE_REG_FAILED;
+#else
+        prv_handleRegistrationAttemptFailure(contextP, server);
+#endif
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
 
     transaction_generate_device_token(token);
     transaction = transaction_new(server->sessionH, COAP_POST, NULL, NULL, contextP->nextMID++, COAP_TOKEN_LEN, token);

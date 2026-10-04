@@ -6,6 +6,8 @@
 void test_clock_set(time_t now);
 void test_clock_reset(void);
 void test_malloc_fail_after(size_t successful);
+/* 이후 할당은 복구하여 해당 한 번의 실패가 다른 오류에 가려지지 않게 한다. */
+void test_malloc_fail_once_after(size_t successful);
 void test_malloc_fault_disable(void);
 size_t test_malloc_observed_calls(void);
 size_t test_malloc_live_allocations(void);

@@ -707,6 +707,14 @@ static bool prv_sendReady(const lwm2m_server_t *server)
         (server->status == STATE_REGISTERED || server->status == STATE_REG_UPDATE_PENDING ||
          server->status == STATE_REG_UPDATE_NEEDED || server->status == STATE_REG_FULL_UPDATE_NEEDED);
 }
+
+static bool prv_setSendUri(coap_packet_t *message)
+{
+    coap_set_header_uri_path(message, "/" URI_SEND_SEGMENT);
+    return message->uri_path != NULL && message->uri_path->next == NULL &&
+        message->uri_path->data != NULL && message->uri_path->len == strlen(URI_SEND_SEGMENT) &&
+        memcmp(message->uri_path->data, URI_SEND_SEGMENT, strlen(URI_SEND_SEGMENT)) == 0;
+}
 #endif
 
 static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm2m_uri_t *urisP, size_t numUris,
@@ -753,7 +761,6 @@ static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
     for (i = 0; i < count; ++i) {
         lwm2m_data_t *data = NULL;
         lwm2m_transaction_t *transaction;
-        coap_packet_t *message;
         lwm2m_uri_t uri;
         uint8_t *buffer = NULL;
         int size = 0, length;
@@ -800,11 +807,7 @@ static int prv_lwm2m_send(lwm2m_context_t *contextP, uint16_t shortServerID, lwm
             ret = COAP_500_INTERNAL_SERVER_ERROR;
             break;
         }
-        coap_set_header_uri_path(transaction->message, "/" URI_SEND_SEGMENT);
-        message = transaction->message;
-        if (message->uri_path == NULL || message->uri_path->data == NULL ||
-            message->uri_path->len != strlen(URI_SEND_SEGMENT) ||
-            memcmp(message->uri_path->data, URI_SEND_SEGMENT, strlen(URI_SEND_SEGMENT)) != 0) {
+        if (!prv_setSendUri(transaction->message)) {
             lwm2m_free(buffer);
             transaction_free(transaction);
             ret = COAP_500_INTERNAL_SERVER_ERROR;
@@ -878,6 +881,8 @@ int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServe
     if (shortServerID == 0 && contextP->serverList != NULL && contextP->serverList->next == NULL)
         shortServerID = contextP->serverList->shortID;
 
+    /* Token 준비 성공은 제출 성공이 아니다. 실제 대상을 찾고 전송한 결과로만 판정한다. */
+    ret = COAP_404_NOT_FOUND;
     for (targetP = contextP->serverList; targetP != NULL; targetP = targetP->next)
     {
         lwm2m_transaction_t *transactionP;
@@ -904,7 +909,11 @@ int lwm2m_send_payload_with_token(lwm2m_context_t *contextP, uint16_t shortServe
             ret = COAP_500_INTERNAL_SERVER_ERROR;
             break;
         }
-        coap_set_header_uri_path(transactionP->message, "/" URI_SEND_SEGMENT);
+        if (!prv_setSendUri(transactionP->message)) {
+            transaction_free(transactionP);
+            ret = COAP_500_INTERNAL_SERVER_ERROR;
+            break;
+        }
         coap_set_header_content_type(transactionP->message, format);
         if (!transaction_set_payload(transactionP, (uint8_t *)payload, payloadLen))
         {

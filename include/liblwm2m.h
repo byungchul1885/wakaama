@@ -1090,6 +1090,21 @@ void lwm2m_set_composite_read_event_callback(lwm2m_context_t *contextP,
 uint64_t lwm2m_get_current_composite_read_id(const lwm2m_context_t *contextP);
 #endif
 
+/* 완료한 CON 응답의 MID는 다음 동일 Token 요청과 독립적으로 보관한다.
+ * sessionIdentity는 비교만 하는 주소값이며 dereference하지 않는다. context가 소유하며
+ * exchange lifetime 이전에는 덮어쓰지 않는다. 상한 도달 시 새 CON 처리를 보류한다. */
+#ifndef LWM2M_RESPONSE_HISTORY_SIZE
+#define LWM2M_RESPONSE_HISTORY_SIZE 256
+#endif
+typedef struct {
+    uintptr_t sessionIdentity;
+    uint64_t sessionGeneration;
+    time_t receivedAt;
+    uint16_t mid;
+    bool used;
+    bool processing;
+} lwm2m_response_history_t;
+
 struct _lwm2m_context_
 {
 #ifdef LWM2M_CLIENT_MODE
@@ -1189,6 +1204,7 @@ struct _lwm2m_context_
     uint16_t                nextMID;
     lwm2m_transaction_t *   transactionList;
     bool                   transactionStepActive;
+    lwm2m_response_history_t responseHistory[LWM2M_RESPONSE_HISTORY_SIZE];
     void *                  userData;
 };
 

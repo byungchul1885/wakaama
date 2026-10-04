@@ -244,11 +244,103 @@ static void every_allocation_failure_preserves_scope_and_ownership(void)
     }
 }
 
+static unsigned payloadCallbacks;
+static uint8_t payloadCode;
+static void payload_response(lwm2m_context_t *context, lwm2m_transaction_t *transaction, void *data)
+{
+    (void)context; (void)transaction;
+    ++payloadCallbacks;
+    payloadCode = data == NULL ? 0 : ((coap_packet_t *)data)->code;
+}
+
+static void payload_send(send_fixture_t *f, size_t length)
+{
+    uint8_t body[33];
+    static const uint8_t token[] = {0x11, 0xff, 0x00};
+    memset(body, 0xa7, sizeof(body));
+    CU_ASSERT_EQUAL_FATAL(lwm2m_send_payload_with_token(&f->context, 7, LWM2M_CONTENT_SENML_CBOR,
+        body, length, token, sizeof(token), payload_response, f), NO_ERROR);
+}
+
+static void payload_deliver(send_fixture_t *f, uint16_t mid, uint8_t code)
+{
+    coap_packet_t response;
+    uint8_t wire[64];
+    static const uint8_t token[] = {0x11, 0xff, 0x00};
+    coap_init_message(&response, COAP_TYPE_CON, code, mid);
+    coap_set_header_token(&response, token, sizeof(token));
+    lwm2m_handle_packet(&f->context, wire, coap_serialize_message(&response, wire), (void *)(uintptr_t)7);
+    coap_free_header(&response);
+}
+
+static void completed_con_cannot_complete_next_same_token_send(void)
+{
+    unsigned mode;
+    uint16_t previousSize = lwm2m_get_coap_block_size();
+    CU_ASSERT_TRUE(lwm2m_set_coap_block_size(16));
+    for (mode = 0; mode < 4; ++mode) {
+        send_fixture_t f;
+        lwm2m_transaction_t *next;
+        size_t responseCount;
+        setup(&f); payloadCallbacks = 0;
+        payload_send(&f, 2);
+        payload_deliver(&f, 0x8001, mode < 2 ? COAP_204_CHANGED : COAP_503_SERVICE_UNAVAILABLE);
+        CU_ASSERT_EQUAL(payloadCallbacks, 1); CU_ASSERT_PTR_NULL(f.context.transactionList);
+        payload_send(&f, mode % 2 == 0 ? 2 : 33);
+        next = f.context.transactionList;
+        CU_ASSERT_PTR_NOT_NULL_FATAL(next);
+        responseCount = test_response_count();
+        payload_deliver(&f, 0x8001, mode < 2 ? COAP_204_CHANGED : COAP_503_SERVICE_UNAVAILABLE);
+        CU_ASSERT_EQUAL(test_response_count(), responseCount + 1);
+        CU_ASSERT_EQUAL(payloadCallbacks, 1);
+        CU_ASSERT_PTR_EQUAL(f.context.transactionList, next);
+        /* 첫 CON의 ACK가 유실되어 반복되어도 다음 delivery는 그대로 둔다. */
+        payload_deliver(&f, 0x8001, COAP_204_CHANGED);
+        CU_ASSERT_EQUAL(payloadCallbacks, 1);
+        if (mode % 2 == 0) {
+            payload_deliver(&f, 0x8002, COAP_204_CHANGED);
+            CU_ASSERT_EQUAL(payloadCallbacks, 2); CU_ASSERT_EQUAL(payloadCode, COAP_204_CHANGED);
+        }
+        cleanup(&f);
+    }
+    CU_ASSERT_TRUE(lwm2m_set_coap_block_size(previousSize));
+}
+
+static void con_history_failure_expiry_capacity_and_generation(void)
+{
+    send_fixture_t f;
+    size_t i, count;
+    setup(&f); payloadCallbacks = 0; payload_send(&f, 2);
+    test_fail_next_response();
+    payload_deliver(&f, 0x8001, COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(payloadCallbacks, 0); CU_ASSERT_PTR_NOT_NULL(f.context.transactionList);
+    payload_deliver(&f, 0x8001, COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(payloadCallbacks, 1);
+    /* 유효 기록을 덮어쓰지 않는다. 모르는 CON도 ACK 이후의 재전송을 기억한다. */
+    for (i = 1; i < LWM2M_RESPONSE_HISTORY_SIZE; ++i)
+        payload_deliver(&f, (uint16_t)(0x8001 + i), COAP_204_CHANGED);
+    payload_send(&f, 2); count = test_response_count();
+    payload_deliver(&f, 0x9001, COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(test_response_count(), count); CU_ASSERT_EQUAL(payloadCallbacks, 1);
+    payload_deliver(&f, 0x8001, COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(test_response_count(), count + 1); CU_ASSERT_EQUAL(payloadCallbacks, 1);
+    test_clock_set(100 + (time_t)COAP_EXCHANGE_LIFETIME + 1);
+    payload_deliver(&f, 0x9001, COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(payloadCallbacks, 2);
+    /* 같은 주소라도 새 transport generation의 MID는 독립적이다. */
+    ++f.context.serverList->sessionGeneration;
+    payload_send(&f, 2); payload_deliver(&f, 0x9001, COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(payloadCallbacks, 3);
+    cleanup(&f);
+}
+
 static struct TestTable table[] = {
     {"broadcast per-target Read authorization and pure scope", each_broadcast_target_gets_its_own_values_and_scope},
     {"absent unregistered forbidden targets have no Read", absent_unregistered_and_forbidden_targets_do_not_read},
     {"Read callback removes or replaces target", read_callback_cannot_reuse_removed_or_replaced_targets},
     {"Send scope all allocation failure ownership", every_allocation_failure_preserves_scope_and_ownership},
+    {"completed CON versus next same Token payload Send", completed_con_cannot_complete_next_same_token_send},
+    {"CON history ACK failure expiry capacity generation", con_history_failure_expiry_capacity_and_generation},
     {NULL, NULL}
 };
 CU_ErrorCode create_send_scope_test_suit(void)

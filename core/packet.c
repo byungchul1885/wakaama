@@ -455,6 +455,50 @@ static lwm2m_transaction_t *prv_response_transaction(lwm2m_context_t *contextP, 
     return NULL;
 }
 
+/* transaction 종료 뒤에도 같은 MID의 CON 재전송을 새 요청에 연결하지 않는다.
+ * 주소값은 identity 비교에만 쓰며 owner의 현재 generation을 함께 검사한다. */
+static lwm2m_response_history_t *prv_response_history(lwm2m_context_t *contextP,
+    void *sessionH, uint16_t mid, bool *duplicate)
+{
+    time_t now = lwm2m_gettime();
+    uint64_t generation = 0;
+    size_t i;
+    lwm2m_response_history_t *available = NULL;
+#ifndef LWM2M_VERSION_1_0
+#ifdef LWM2M_CLIENT_MODE
+    lwm2m_server_t *server = utils_findServer(contextP, sessionH);
+    if (server != NULL) generation = server->sessionGeneration;
+#endif
+#ifdef LWM2M_SERVER_MODE
+    lwm2m_client_t *client = utils_findClient(contextP, sessionH);
+    if (client != NULL) generation = client->sessionGeneration;
+#endif
+#endif
+    *duplicate = false;
+    if (now < 0) return NULL;
+    for (i = 0; i < LWM2M_RESPONSE_HISTORY_SIZE; ++i) {
+        lwm2m_response_history_t *entry = &contextP->responseHistory[i];
+        if (entry->used && !entry->processing && now >= entry->receivedAt &&
+            now - entry->receivedAt >= COAP_EXCHANGE_LIFETIME) entry->used = false;
+        if (!entry->used) {
+            if (available == NULL) available = entry;
+        } else if (entry->sessionIdentity == (uintptr_t)sessionH &&
+                   entry->sessionGeneration == generation && entry->mid == mid) {
+            *duplicate = true;
+            return entry;
+        }
+    }
+    if (available != NULL) {
+        available->sessionIdentity = (uintptr_t)sessionH;
+        available->sessionGeneration = generation;
+        available->receivedAt = now;
+        available->mid = mid;
+        available->used = true;
+        available->processing = true;
+    }
+    return available;
+}
+
 static int prv_send_new_block1(lwm2m_context_t * contextP, lwm2m_transaction_t * previous, uint32_t block_num, uint16_t block_size)
 {
     lwm2m_transaction_t * next;
@@ -1215,13 +1259,42 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             case COAP_TYPE_ACK:
             {
                 lwm2m_transaction_t *transaction = prv_response_transaction(contextP, fromSessionH, message);
+                lwm2m_response_history_t *history = NULL;
+                if (message->type == COAP_TYPE_CON && message->code >= COAP_201_CREATED &&
+                    !IS_OPTION(message, COAP_OPTION_OBSERVE)) {
+                    bool duplicate;
+                    history = prv_response_history(contextP, fromSessionH, message->mid, &duplicate);
+                    /* clock 오류와 상한에서도 기존 MID 기록을 잃고 성공 처리하지 않는다. */
+                    if (history == NULL) break;
+                    if (duplicate) {
+                        if (!history->processing) {
+                            coap_init_message(response, COAP_TYPE_ACK, COAP_EMPTY_MESSAGE_CODE, message->mid);
+                            (void)message_send(contextP, response, fromSessionH);
+                        }
+                        break;
+                    }
+                    if (transaction == NULL) {
+                        coap_init_message(response, COAP_TYPE_ACK, COAP_EMPTY_MESSAGE_CODE, message->mid);
+                        history->used = message_send(contextP, response, fromSessionH) == NO_ERROR;
+                        history->processing = false;
+                        /* ACK transport 재진입에서 생긴 새 요청에도 이 응답을 넘기지 않는다. */
+                        break;
+                    }
+                }
                 if (transaction != NULL && message->code >= COAP_201_CREATED) {
                     uint16_t requestMid = transaction->mID;
                     const coap_packet_t *request;
                     bool duplicate = message->type != COAP_TYPE_ACK && transaction->hasPreviousResponseMid &&
                         transaction->previousResponseMid == message->mid;
-                    if (transaction->acknowledgingResponse) break;
-                    if (message->type == COAP_TYPE_CON && !transaction_ack_response(contextP, transaction, message)) break;
+                    if (transaction->acknowledgingResponse) {
+                        if (history != NULL) { history->used = false; history->processing = false; }
+                        break;
+                    }
+                    if (message->type == COAP_TYPE_CON && !transaction_ack_response(contextP, transaction, message)) {
+                        if (history != NULL) { history->used = false; history->processing = false; }
+                        break;
+                    }
+                    if (history != NULL) history->processing = false;
                     if (duplicate) break;
                     if (message->type != COAP_TYPE_ACK) {
                         transaction->hasPreviousResponseMid = true;

@@ -48,6 +48,18 @@ static lwm2m_reporting_send_request_t *prv_findPendingByMessage(lwm2m_context_t 
     return NULL;
 }
 
+static lwm2m_reporting_send_request_t *prv_findPendingById(lwm2m_context_t *contextP,
+                                                          lwm2m_reporting_send_request_id_t requestId,
+                                                          lwm2m_reporting_send_request_t **previousP) {
+    lwm2m_reporting_send_request_t *requestP = contextP->reportingSendRequestList;
+    *previousP = NULL;
+    while (requestP != NULL && requestP->requestId != requestId) {
+        *previousP = requestP;
+        requestP = requestP->next;
+    }
+    return requestP;
+}
+
 static lwm2m_reporting_send_request_id_t prv_nextRequestId(lwm2m_context_t *contextP) {
     lwm2m_reporting_send_request_id_t candidate;
     lwm2m_reporting_send_request_t *requestP;
@@ -184,17 +196,14 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
     lwm2m_reporting_send_request_t *previousP = NULL;
     lwm2m_client_t *clientP;
     lwm2m_transaction_t *transactionP;
+    int result;
 
     if (contextP == NULL || requestId == 0U
         || ((responseCode >> 5) != 2U && (responseCode >> 5) != 4U && (responseCode >> 5) != 5U)) {
         return COAP_400_BAD_REQUEST;
     }
 
-    requestP = contextP->reportingSendRequestList;
-    while (requestP != NULL && requestP->requestId != requestId) {
-        previousP = requestP;
-        requestP = requestP->next;
-    }
+    requestP = prv_findPendingById(contextP, requestId, &previousP);
     if (requestP == NULL) {
         return COAP_404_NOT_FOUND;
     }
@@ -220,17 +229,24 @@ int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
     if (transactionP == NULL) {
         return COAP_500_INTERNAL_SERVER_ERROR;
     }
-
-    if (previousP == NULL) {
-        contextP->reportingSendRequestList = requestP->next;
-    } else {
-        previousP->next = requestP->next;
+    if (transaction_prepare(transactionP) != NO_ERROR) {
+        transaction_free(transactionP);
+        return COAP_500_INTERNAL_SERVER_ERROR;
     }
-    lwm2m_free(requestP);
 
     contextP->transactionList =
         (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transactionP);
-    return transaction_send(contextP, transactionP);
+    result = transaction_send(contextP, transactionP);
+    if (result == NO_ERROR) {
+        /* transport 호출 뒤에는 최신 list에서 stable request ID를 다시 찾는다. */
+        requestP = prv_findPendingById(contextP, requestId, &previousP);
+        if (requestP != NULL) {
+            if (previousP == NULL) contextP->reportingSendRequestList = requestP->next;
+            else previousP->next = requestP->next;
+            lwm2m_free(requestP);
+        }
+    }
+    return result;
 }
 
 void reporting_clearClient(lwm2m_context_t *contextP, uint16_t clientId) {

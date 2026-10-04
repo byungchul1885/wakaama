@@ -210,6 +210,7 @@ int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
     lwm2m_deferred_request_t *requestP;
     lwm2m_server_t *serverP;
     lwm2m_transaction_t *transactionP;
+    int result;
 
     if (contextP == NULL || requestId == 0U
         || ((responseCode >> 5) != 2U && (responseCode >> 5) != 4U && (responseCode >> 5) != 5U))
@@ -248,10 +249,22 @@ int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
                                    requestP->token);
     if (transactionP == NULL)
         return COAP_500_INTERNAL_SERVER_ERROR;
+    /* NSTART 대기에서도 응답 버퍼 준비 실패를 request ID 소비 전에 확정한다. */
+    if (transaction_prepare(transactionP) != NO_ERROR)
+    {
+        transaction_free(transactionP);
+        return COAP_500_INTERNAL_SERVER_ERROR;
+    }
     contextP->transactionList =
         (lwm2m_transaction_t *)LWM2M_LIST_ADD(contextP->transactionList, transactionP);
-    prv_removeDeferred(contextP, requestP, previousP);
-    return transaction_send(contextP, transactionP);
+    result = transaction_send(contextP, transactionP);
+    if (result == NO_ERROR)
+    {
+        /* transport 재진입으로 list가 바뀔 수 있으므로 borrowed pointer를 다시 찾는다. */
+        requestP = prv_findDeferredById(contextP, requestId, &previousP);
+        if (requestP != NULL) prv_removeDeferred(contextP, requestP, previousP);
+    }
+    return result;
 }
 
 void dm_clearDeferredRequests(lwm2m_context_t *contextP)

@@ -1227,6 +1227,9 @@ uint8_t lwm2m_replace_attributes(lwm2m_context_t *contextP, const lwm2m_attribut
  * event-loop thread에서 실행해야 한다. 다른 mutation callback에는 허용하지 않는다.
  */
 int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t *requestIdP);
+/* protocol owner thread 전용이다. 성공 시 직렬화된 응답 transaction의 소유권을
+ * Wakaama에 인계하고 request ID를 소비한다. 준비/인계 실패 시 ID를 보존하여
+ * 같은 ID로 재시도할 수 있다. 이미 소멸한 요청/session의 404는 확정 종료다. */
 int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
                                     lwm2m_deferred_request_id_t requestId,
                                     uint8_t responseCode);
@@ -1376,6 +1379,8 @@ void lwm2m_reporting_set_send_callback(lwm2m_context_t *contextP, lwm2m_result_c
 void lwm2m_reporting_set_async_send_callback(lwm2m_context_t *contextP,
                                              lwm2m_reporting_async_send_callback_t callback,
                                              void *userData);
+/* 직렬화된 transaction 인계 성공 이후에만 request ID를 소비한다.
+ * 일시 실패는 같은 ID로 재시도하며 404는 확정 종료다. protocol owner thread 전용이다. */
 int lwm2m_reporting_complete_send(lwm2m_context_t *contextP,
                                   lwm2m_reporting_send_request_id_t requestId,
                                   uint8_t responseCode);

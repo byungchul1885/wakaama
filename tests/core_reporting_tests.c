@@ -7,6 +7,7 @@
 #include "connection.h"
 #include "internals.h"
 #include "tests.h"
+#include "helper/deferred_completion.h"
 
 #include <string.h>
 
@@ -74,6 +75,12 @@ static void prv_message(coap_packet_t *message, uint16_t mid) {
     coap_set_payload(message, payload, sizeof(payload));
 }
 
+#ifdef WAKAAMA_TEST_FAULTS
+static const void *prv_pending_reporting(lwm2m_context_t *contextP) {
+    return contextP->reportingSendRequestList;
+}
+#endif
+
 static void async_send_defers_deduplicates_and_completes(void) {
     lwm2m_context_t *contextP = prv_context();
     callback_state_t state = {0U, 0U, COAP_IGNORE, 0x1234, "tok"};
@@ -109,6 +116,10 @@ static void async_send_defers_deduplicates_and_completes(void) {
                     COAP_503_SERVICE_UNAVAILABLE);
     CU_ASSERT_EQUAL(state.calls, 2);
 
+#ifdef WAKAAMA_TEST_FAULTS
+    test_deferred_completion_failures(contextP, deferredRequestId, lwm2m_reporting_complete_send,
+                                     prv_pending_reporting, contextP->clientList->sessionH);
+#endif
     CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, deferredRequestId, COAP_204_CHANGED), NO_ERROR);
     CU_ASSERT_PTR_NOT_NULL(contextP->transactionList);
     CU_ASSERT_EQUAL(lwm2m_reporting_complete_send(contextP, deferredRequestId, COAP_204_CHANGED), COAP_404_NOT_FOUND);

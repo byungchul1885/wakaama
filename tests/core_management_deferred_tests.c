@@ -7,6 +7,7 @@
 #include "connection.h"
 #include "internals.h"
 #include "tests.h"
+#include "helper/deferred_completion.h"
 
 #include <string.h>
 
@@ -565,6 +566,13 @@ static void closing_session_inside_callback_keeps_copied_identity_safe(void)
     lwm2m_close(contextP);
 }
 
+#ifdef WAKAAMA_TEST_FAULTS
+static const void *prv_pending_deferred(lwm2m_context_t *contextP)
+{
+    return contextP->deferredRequestList;
+}
+#endif
+
 static void deferred_execute_deduplicates_and_completes(void)
 {
     lwm2m_server_t server;
@@ -618,6 +626,10 @@ static void deferred_execute_deduplicates_and_completes(void)
     CU_ASSERT_EQUAL(dm_handleRequest(contextP, &uri, &server, &message, &response), NO_ERROR);
     CU_ASSERT_EQUAL(state.calls, 1);
 
+#ifdef WAKAAMA_TEST_FAULTS
+    test_deferred_completion_failures(contextP, state.requestId, lwm2m_complete_deferred_request,
+                                     prv_pending_deferred, server.sessionH);
+#endif
     CU_ASSERT_EQUAL(lwm2m_complete_deferred_request(contextP, state.requestId, COAP_204_CHANGED), NO_ERROR);
     CU_ASSERT_EQUAL(lwm2m_complete_deferred_request(contextP, state.requestId, COAP_204_CHANGED), COAP_404_NOT_FOUND);
 

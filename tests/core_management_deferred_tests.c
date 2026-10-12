@@ -1640,7 +1640,16 @@ static void suspended_composite_keeps_configured_assembled_input_limit(void)
     CU_ASSERT_EQUAL(dm_handleRequest(context,&uri,&server,&message,&response),NO_ERROR);
     CU_ASSERT_NOT_EQUAL(state.id,0);CU_ASSERT_EQUAL(state.calls,1);
     lwm2m_free(body);coap_free_header(&message);coap_free_header(&response);state.ready=true;
+    test_fail_next_response();
     CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls,2);CU_ASSERT_EQUAL(state.applied,1);CU_ASSERT_EQUAL(state.released,0);
+#ifdef WAKAAMA_TEST_FAULTS
+    test_malloc_reset_maximum_size();
+#endif
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+#ifdef WAKAAMA_TEST_FAULTS
+    CU_ASSERT_TRUE(test_malloc_maximum_size()<65536U);
+#endif
     CU_ASSERT_EQUAL(state.calls,2);CU_ASSERT_EQUAL(state.applied,1);CU_ASSERT_EQUAL(state.released,1);
     context->objectList=NULL;context->serverList=NULL;lwm2m_close(context);
 }

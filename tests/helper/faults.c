@@ -8,6 +8,7 @@ static bool allocation_enabled;
 static size_t allocation_limit;
 static size_t allocation_calls;
 static bool allocation_once;
+static size_t maximum_allocation_size;
 static void *tracked[8192];
 
 void *__real_malloc(size_t size);
@@ -32,6 +33,8 @@ void test_malloc_fail_once_after(size_t successful)
 }
 void test_malloc_fault_disable(void) { allocation_enabled = false; }
 size_t test_malloc_observed_calls(void) { return allocation_calls; }
+void test_malloc_reset_maximum_size(void) { maximum_allocation_size = 0; }
+size_t test_malloc_maximum_size(void) { return maximum_allocation_size; }
 size_t test_malloc_live_allocations(void)
 {
     size_t i;
@@ -44,6 +47,7 @@ void *__wrap_malloc(size_t size)
 {
     void *pointer;
     size_t i;
+    if (size > maximum_allocation_size) maximum_allocation_size = size;
     if (allocation_enabled) {
         size_t index = allocation_calls++;
         if (index >= allocation_limit && (!allocation_once || index == allocation_limit)) return NULL;

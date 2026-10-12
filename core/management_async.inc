@@ -184,18 +184,21 @@ int lwm2m_resume_suspended_request(lwm2m_context_t *contextP, lwm2m_deferred_req
     if (!server) { (void)lwm2m_cancel_deferred_request(contextP, id); return COAP_404_NOT_FOUND; }
     /* transport나 callback의 session close가 원본 entry를 해제해도 현재 순회의 입력은 소유한다. */
     uint8_t *header = lwm2m_malloc(request->headerLength);
-    uint8_t *payload = request->payloadLength ? lwm2m_malloc(request->payloadLength) : NULL;
-    if (!header || (request->payloadLength && !payload)) {
+    /* 최종 제출 통지는 header/Token과 저장한 Read snapshot만 사용한다.
+     * callback을 재실행하지 않는 분기에는 원본 본문 사본이 필요하지 않다. */
+    size_t payloadLength = request->responsePrepared ? 0 : request->payloadLength;
+    uint8_t *payload = payloadLength ? lwm2m_malloc(payloadLength) : NULL;
+    if (!header || (payloadLength && !payload)) {
         lwm2m_free(header); lwm2m_free(payload); return COAP_500_INTERNAL_SERVER_ERROR;
     }
     memcpy(header, request->header, request->headerLength);
-    if (payload) memcpy(payload, request->payload, request->payloadLength);
+    if (payload) memcpy(payload, request->payload, payloadLength);
     coap_packet_t message;
     memset(&message, 0, sizeof(message));
     int result = coap_parse_message(&message, header, (uint16_t)request->headerLength);
     if (result == NO_ERROR)
     {
-        message.payload = payload; message.payload_len = request->payloadLength;
+        message.payload = payload; message.payload_len = payloadLength;
         contextP->dmAsyncResumeId = id;
         contextP->dmAsyncExchangeMid = request->exchangeMid;
         request->awaitingIo = false;

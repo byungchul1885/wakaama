@@ -11,4 +11,6 @@ void test_malloc_fail_once_after(size_t successful);
 void test_malloc_fault_disable(void);
 size_t test_malloc_observed_calls(void);
 size_t test_malloc_live_allocations(void);
+void test_malloc_reset_maximum_size(void);
+size_t test_malloc_maximum_size(void);
 #endif

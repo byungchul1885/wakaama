@@ -419,7 +419,21 @@ restart:
                 if (++ended < LWM2M_OBSERVER_LIMIT) goto restart;
                 prv_wait(timeoutP, 1); return;
             }
+#ifndef LWM2M_VERSION_1_0
+            contextP->notificationIoUri=uri;
+            contextP->notificationIoServerId=watcher->server->shortID;
+            contextP->notificationIoGeneration=watcher->server->sessionGeneration;
+            contextP->notificationIoSequence=change;
+            contextP->notificationIoTokenLength=watcher->tokenLen;
+            memcpy(contextP->notificationIoToken,watcher->token,watcher->tokenLen);
+            if(contextP->dmAsyncCallback)
+                contextP->dmAsyncCallback(contextP,LWM2M_DM_ASYNC_DEFAULTS_BEGIN,0,contextP->dmAsyncUserData);
+#endif
             result = prv_reportingParameters(contextP, &uri, watcher->server, &attr);
+#ifndef LWM2M_VERSION_1_0
+            if(contextP->dmAsyncCallback)
+                contextP->dmAsyncCallback(contextP,LWM2M_DM_ASYNC_NOTIFY_END,0,contextP->dmAsyncUserData);
+#endif
             /* 기본값 조회 콜백에서 취소/계정 종료가 일어나면 이전 watcher를 다시 참조하지 않는다. */
             if (epoch != contextP->observeEpoch || attributeEpoch != contextP->attributeEpoch)
             {
@@ -461,6 +475,7 @@ restart:
             if (!evaluate && !maxDue && !sendPending) continue;
 
 #ifndef LWM2M_VERSION_1_0
+            contextP->notificationIoSequence=change;
             result = dm_readNotification(contextP, watcher->server, &uri, &count, &data);
 #else
             result = object_readData(contextP, &uri, &count, &data);

@@ -303,6 +303,8 @@ void dm_clearDeferredRequests(lwm2m_context_t *contextP)
 {
     if (contextP == NULL)
         return;
+    if (contextP->dmAsyncCallback)
+        contextP->dmAsyncCallback(contextP,LWM2M_DM_ASYNC_CONTEXT_RELEASE,0,contextP->dmAsyncUserData);
     while (contextP->deferredRequestList != NULL)
     {
         lwm2m_deferred_request_t *requestP = contextP->deferredRequestList;
@@ -497,12 +499,19 @@ uint8_t dm_readNotification(lwm2m_context_t *contextP, lwm2m_server_t *serverP,
     if (result != NO_ERROR) return result;
     contextP->currentDmOperation = LWM2M_DM_OPERATION_NOTIFY;
     contextP->currentCompositeReadId = 0;
+    contextP->notificationIoUri=*uriP;
+    contextP->notificationIoServerId=serverP->shortID;
+    contextP->notificationIoGeneration=serverP->sessionGeneration;
+    if(contextP->dmAsyncCallback)
+        contextP->dmAsyncCallback(contextP,LWM2M_DM_ASYNC_NOTIFY_BEGIN,0,contextP->dmAsyncUserData);
     if (uriP->objectId == LWM2M_SECURITY_OBJECT_ID || uriP->objectId == LWM2M_OSCORE_OBJECT_ID ||
         (contextP->compositeAccessCallback != NULL &&
          !contextP->compositeAccessCallback(contextP, contextP->currentDmServerShortId, uriP, false,
                                             contextP->compositeAccessUserData)))
         result = COAP_401_UNAUTHORIZED;
     else result = object_readData(contextP, uriP, sizeP, dataP);
+    if(contextP->dmAsyncCallback)
+        contextP->dmAsyncCallback(contextP,LWM2M_DM_ASYNC_NOTIFY_END,0,contextP->dmAsyncUserData);
     contextP->currentCompositeReadId = readId;
     prv_endDmRequestScope(contextP, &scope);
     return result;

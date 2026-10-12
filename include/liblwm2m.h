@@ -1047,9 +1047,15 @@ typedef uint8_t (*lwm2m_reporting_async_send_callback_t)(
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
 typedef uint32_t lwm2m_deferred_request_id_t;
 typedef struct _lwm2m_deferred_request_ lwm2m_deferred_request_t;
-typedef enum { LWM2M_DM_ASYNC_BEGIN, LWM2M_DM_ASYNC_END, LWM2M_DM_ASYNC_RELEASE } lwm2m_dm_async_event_t;
+typedef enum {
+    LWM2M_DM_ASYNC_BEGIN, LWM2M_DM_ASYNC_END, LWM2M_DM_ASYNC_RELEASE,
+    LWM2M_DM_ASYNC_NOTIFY_BEGIN, LWM2M_DM_ASYNC_DEFAULTS_BEGIN,
+    LWM2M_DM_ASYNC_NOTIFY_END, LWM2M_DM_ASYNC_CONTEXT_RELEASE
+} lwm2m_dm_async_event_t;
 /* owner thread 전용이다. callback은 worker에 context/object/session pointer를 전달하지 않는다.
- * BEGIN/END는 외부 DM callback 순회의 범위이며 RELEASE는 복사 요청의 종료/취소다. */
+ * BEGIN/END는 외부 DM callback 순회의 범위이며 RELEASE는 복사 요청의 종료/취소다.
+ * Notify/defaults는 반복 평가하는 읽기 범위다. 미준비 IO는 5.03으로 양보하고 다음
+ * owner 평가에서 같은 불변 결과를 재사용한다. CONTEXT_RELEASE는 내부 IO도 취소한다. */
 typedef void (*lwm2m_dm_async_callback_t)(lwm2m_context_t *, lwm2m_dm_async_event_t,
     lwm2m_deferred_request_id_t, void *);
 typedef struct _lwm2m_composite_snapshot_ lwm2m_composite_snapshot_t;
@@ -1177,6 +1183,12 @@ struct _lwm2m_context_
     lwm2m_deferred_request_t *deferredRequestList;
     lwm2m_dm_async_callback_t dmAsyncCallback;
     void *dmAsyncUserData;
+    /* Notify callback 범위의 복사 metadata. sequence/epoch가 바뀐 IO 결과는 재사용하지 않는다. */
+    lwm2m_uri_t notificationIoUri;
+    uint16_t notificationIoServerId;
+    uint64_t notificationIoGeneration, notificationIoSequence;
+    uint8_t notificationIoToken[LWM2M_COAP_TOKEN_MAX_LEN];
+    size_t notificationIoTokenLength;
     /* callback 범위에서만 빌리는 packet/URI. scope 종료 전에 복원한다. */
     void *currentDmPacket;
     const lwm2m_uri_t *currentDmUri;

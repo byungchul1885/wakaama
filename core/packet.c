@@ -299,7 +299,7 @@ static bool prv_uses_raw_block1(lwm2m_context_t *contextP, void *fromSessionH, c
 }
 #endif
 
-static bool prv_durable_block1_exchange(lwm2m_context_t *contextP, coap_packet_t *message)
+bool coap_block1_is_durable_exchange(lwm2m_context_t *contextP, coap_packet_t *message)
 {
 #if defined(LWM2M_SERVER_MODE) && !defined(LWM2M_VERSION_1_0)
     lwm2m_uri_t sendUri;
@@ -1087,7 +1087,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     } else {
                     lwm2m_block1_history_t *history = NULL;
                     bool duplicate = false;
-                    bool trackHistory = prv_durable_block1_exchange(contextP, message);
+                    bool trackHistory = coap_block1_is_durable_exchange(contextP, message);
                     if (trackHistory) {
                         uint16_t currentExchangeMid = 0;
                         history = prv_block1_history(contextP, fromSessionH, message->mid, &duplicate);
@@ -1318,7 +1318,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 #endif
                 if (coap_error_code == NO_ERROR && block1Uri != NULL)
                     coap_block1_mark_response_submitted(prv_get_peer_block_data(contextP, fromSessionH),
-                        block1Uri, message->token, message->token_len, response->code, prv_durable_block1_exchange(contextP,message));
+                        block1Uri, message->token, message->token_len, response->code, coap_block1_is_durable_exchange(contextP,message));
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
                 if (!block1Replay &&
                     (!IS_OPTION(message, COAP_OPTION_BLOCK1) ||
@@ -1358,7 +1358,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 #endif
                     if (coap_error_code == NO_ERROR && block1Uri != NULL)
                         coap_block1_mark_response_submitted(prv_get_peer_block_data(contextP, fromSessionH),
-                            block1Uri, message->token, message->token_len, response->code, prv_durable_block1_exchange(contextP,message));
+                            block1Uri, message->token, message->token_len, response->code, coap_block1_is_durable_exchange(contextP,message));
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
                     if (!block1Replay &&
                         (!IS_OPTION(message, COAP_OPTION_BLOCK1) ||

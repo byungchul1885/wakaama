@@ -576,20 +576,26 @@ int coap_block1_complete_response(lwm2m_block_data_t *blockDataHead, const char 
 
 int coap_block1_async_response(lwm2m_block_data_t *head,const char *uri,
     const uint8_t *token,size_t tokenLength,uint16_t exchangeMid,uint32_t blockNum,
-    uint8_t code,bool allowTokenReuse)
+    const coap_packet_t *response,bool allowTokenReuse)
 {
     uint16_t currentMid;
-    if(!uri || tokenLength>LWM2M_COAP_TOKEN_MAX_LEN || (tokenLength && !token) ||
+    if(!response || !uri || tokenLength>LWM2M_COAP_TOKEN_MAX_LEN || (tokenLength && !token) ||
         coap_block1_get_exchange_mid(head,uri,token,tokenLength,&currentMid)!=1 || currentMid!=exchangeMid) return 0;
     block_data_identifier_t identifier={0};identifier.uri=(char *)uri;
     identifier.tokenLength=(uint8_t)tokenLength;
     if(tokenLength) memcpy(identifier.token,token,tokenLength);
     lwm2m_block_data_t *block=find_block_data(head,identifier,BLOCK_1);
     if(!block || block->blockNum!=blockNum) return 0;
-    bool separate=block->separateResponse && !block->rawBlock1;
-    if(coap_block1_cache_response(head,uri,token,tokenLength,code,NULL)!=0) return -1;
+    /* 본문 없는 완료/실패 코드는 중복 요청에 바로 재사용한다. Read 본문을 이
+     * 작은 status cache로 대체하지 않으며 Create의 Location-Path도 보존한다. */
+    bool separate=block->separateResponse && response->payload_len!=0;
+    char *location=response->location_path ? coap_get_multi_option_as_path_string(response->location_path) : NULL;
+    if(response->location_path && !location) return -1;
+    int cached=coap_block1_cache_response(head,uri,token,tokenLength,response->code,location);
+    lwm2m_free(location);
+    if(cached!=0) return -1;
     block->separateResponse=separate;
-    coap_block1_mark_response_submitted(head,uri,token,tokenLength,code,allowTokenReuse);
+    coap_block1_mark_response_submitted(head,uri,token,tokenLength,response->code,allowTokenReuse);
     return 1;
 }
 

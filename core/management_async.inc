@@ -140,13 +140,9 @@ static void prv_publishAsyncBlock1(lwm2m_context_t *context,lwm2m_deferred_reque
     if(IS_OPTION(&input,COAP_OPTION_BLOCK1)) {
         lwm2m_server_t *server=utils_findServer(context,session);
         char *path=coap_block1_request_key(&input);
-        lwm2m_uri_t uri;bool durable=false;
-        if(uri_decode(context->altPath,input.uri_path,input.code,&uri)==LWM2M_REQUEST_TYPE_DM) {
-            lwm2m_object_t *object=(lwm2m_object_t *)LWM2M_LIST_FIND(context->objectList,uri.objectId);
-            durable=object && (object->flags & LWM2M_OBJECT_FLAG_DURABLE_BLOCK1_EXCHANGE)!=0;
-        }
+        bool durable=coap_block1_is_durable_exchange(context,&input);
         if(server && path) (void)coap_block1_async_response(server->blockData,path,input.token,input.token_len,
-            request->exchangeMid,input.block1_num,request->responseCode,durable);
+            request->exchangeMid,input.block1_num,&request->responsePacket,durable);
         lwm2m_free(path);
     }
     coap_free_header(&input);

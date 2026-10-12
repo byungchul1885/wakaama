@@ -432,12 +432,14 @@ uint8_t coap_block1_handler_with_limit(lwm2m_block_data_t **blockData, const cha
 /* locationPath는 호출 중 복사되므로 caller가 계속 소유한다. */
 int coap_block1_cache_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
                                size_t tokenLength, uint8_t responseCode, const char *locationPath);
-/* deferred 응답 인계 성공 이후 해당 첫 MID의 완료 교환만 갱신한다.
- * 입력은 borrowed이며 일치하지 않는 새 교환은 보존한다. 할당하지 않는다. */
+/* key는 caller가 lwm2m_free하는 사본이다. 현재 요청과 재개가 같은 원본 판정을 쓴다. */
 char *coap_block1_request_key(coap_packet_t *message);
+bool coap_block1_is_durable_exchange(lwm2m_context_t *,coap_packet_t *);
 /* 비동기 IO 응답은 현재 블록과 첫 MID를 확인한 뒤 캐시를 확정한다. */
 int coap_block1_async_response(lwm2m_block_data_t *,const char *,const uint8_t *,size_t,
-    uint16_t,uint32_t,uint8_t,bool);
+    uint16_t,uint32_t,const coap_packet_t *,bool);
+/* deferred 응답 인계 성공 이후 해당 첫 MID의 완료 교환만 갱신한다.
+ * 입력은 borrowed이며 일치하지 않는 새 교환은 보존한다. 할당하지 않는다. */
 int coap_block1_complete_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
     size_t tokenLength, uint16_t exchangeMid, uint8_t responseCode);
 /* message_send 성공 뒤 호출한다. 입력을 보관하지 않으며 상대 수신/영속 저장 ACK를 뜻하지 않는다. */

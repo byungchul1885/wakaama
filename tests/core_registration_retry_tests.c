@@ -281,6 +281,33 @@ static void update_without_location_returns_to_registration_retry(void)
     CU_ASSERT_EQUAL(test_response_count(), 0); CU_ASSERT_PTR_NULL(context.transactionList);
     test_clock_reset();
 }
+static bool connection_pending;
+static bool pending_connection(uint16_t iid,void *data) {(void)data;CU_ASSERT_EQUAL(iid,0);return connection_pending;}
+static void connection_preparation_does_not_consume_attempts(void)
+{
+    lwm2m_context_t context;lwm2m_object_t object;lwm2m_server_t server;
+    time_t timeout=1000;char endpoint[]="connection-preparation";
+    prv_setup(&context,&object,&server);context.endpointName=endpoint;context.connectionPendingCallback=pending_connection;
+    server.status=STATE_REG_HOLD_OFF;server.registration=100;server.attempt=0;server.sequence=0;
+    server.binding=BINDING_U;server.lifetime=300;g_attempt_limit=3;g_attempt_delay=300;
+    connection_pending=true;test_clock_set(100);test_reset_response_history();
+    registration_step(&context,100,&timeout);
+    CU_ASSERT_EQUAL(server.status,STATE_REG_HOLD_OFF);CU_ASSERT_EQUAL(server.registration,101);
+    CU_ASSERT_EQUAL(server.attempt,0);CU_ASSERT_EQUAL(server.sequence,0);CU_ASSERT_EQUAL(timeout,1);
+    CU_ASSERT_PTR_NULL(context.transactionList);CU_ASSERT_EQUAL(test_response_count(),0);
+    connection_pending=false;test_clock_set(101);timeout=1000;
+    registration_step(&context,101,&timeout);
+    CU_ASSERT_EQUAL(server.attempt,1);CU_ASSERT_EQUAL(server.sequence,1);
+    CU_ASSERT_EQUAL(server.status,STATE_REG_HOLD_OFF);CU_ASSERT_EQUAL(server.registration,401);CU_ASSERT_EQUAL(timeout,300);
+    connection_pending=true;test_clock_set(401);registration_step(&context,401,&timeout);
+    CU_ASSERT_EQUAL(server.attempt,1);CU_ASSERT_EQUAL(server.registration,402);
+    /* 조회 성공 뒤에만 최초 등록 packet과 다음 attempt가 생긴다. */
+    server.secObjInstID=1;test_clock_set(402);registration_step(&context,402,&timeout);
+    CU_ASSERT_EQUAL(server.status,STATE_REG_PENDING);CU_ASSERT_EQUAL(server.attempt,2);
+    CU_ASSERT_EQUAL(test_response_count(),1);
+    while(context.transactionList) transaction_complete(&context,context.transactionList,NULL);
+    test_clock_reset();test_reset_response_history();CU_ASSERT_EQUAL(test_malloc_live_allocations(),0);
+}
 #endif
 
 static struct TestTable table[] = {
@@ -291,6 +318,7 @@ static struct TestTable table[] = {
 #ifdef WAKAAMA_TEST_FAULTS
     {"Registration Location allocation failure missing and retry", registration_location_failure_never_becomes_ready_and_retries},
     {"Update NULL Location returns to registration retry", update_without_location_returns_to_registration_retry},
+    {"Connection preparation preserves attempts and applies configured retry", connection_preparation_does_not_consume_attempts},
 #endif
     {NULL, NULL},
 };

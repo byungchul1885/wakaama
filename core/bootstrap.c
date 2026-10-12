@@ -432,6 +432,13 @@ static void prv_requestBootstrap(lwm2m_context_t * context,
     else
     {
         LOG_DBG("Connecting bootstrap server failed");
+#ifndef LWM2M_VERSION_1_0
+        if(context->connectionPendingCallback && context->connectionPendingCallback(bootstrapServer->secObjInstID,context->userData)) {
+            bootstrapServer->registration=lwm2m_gettime()+1;
+            bootstrapServer->status=STATE_BS_HOLD_OFF;
+            return;
+        }
+#endif
         bootstrapServer->status = STATE_BS_FAILED;
     }
 }
@@ -812,6 +819,7 @@ void bootstrap_step(lwm2m_context_t * contextP,
             if (targetP->registration <= currentTime)
             {
                 prv_requestBootstrap(contextP, targetP);
+                if(targetP->status==STATE_BS_HOLD_OFF && *timeoutP>1) *timeoutP=1;
             }
             else if (*timeoutP > targetP->registration - currentTime)
             {

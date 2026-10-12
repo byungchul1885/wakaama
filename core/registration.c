@@ -757,6 +757,20 @@ static uint8_t prv_register(lwm2m_context_t * contextP,
     {
         lwm2m_free(payload);
         lwm2m_free(query);
+#ifndef LWM2M_VERSION_1_0
+        if(contextP->connectionPendingCallback) {
+            if(contextP->connectionPendingCallback(server->secObjInstID,contextP->userData)) {
+                server->status=STATE_REG_HOLD_OFF;
+                server->registration=lwm2m_gettime()+1;
+            } else {
+                /* 준비 완료 뒤의 확정 연결 실패만 설정된 attempt/retry 정책에 반영한다. */
+                if(!server->attempt) ++server->sequence;
+                ++server->attempt;
+                prv_handleRegistrationAttemptFailure(contextP,server);
+            }
+            return COAP_NO_ERROR;
+        }
+#endif
         return COAP_503_SERVICE_UNAVAILABLE;
     }
 
@@ -2259,6 +2273,8 @@ void registration_step(lwm2m_context_t * contextP,
             if (0 >= interval)
             {
                 prv_register(contextP, targetP);
+                if(targetP->status==STATE_REG_HOLD_OFF && targetP->registration>currentTime &&
+                    *timeoutP>targetP->registration-currentTime) *timeoutP=targetP->registration-currentTime;
             }
             else if (interval <= *timeoutP)
             {

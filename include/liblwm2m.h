@@ -1142,6 +1142,10 @@ struct _lwm2m_context_
     lwm2m_client_state_t state;
     bool registrationPaused;
     bool registrationResumeRequired;
+    /* opt-in 연결 준비 조회. connect_server가 NULL을 반환한 직후 MAIN에서만
+     * 호출한다. true는 준비 중이며 등록 attempt나 Bootstrap 실패로 소비하지 않는다.
+     * callback과 userData 수명은 context owner가 관리한다. */
+    bool (*connectionPendingCallback)(uint16_t securityInstanceId, void *userData);
     char *               endpointName;
     char *               msisdn;
     char *               altPath;

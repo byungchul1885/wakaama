@@ -434,6 +434,10 @@ int coap_block1_cache_response(lwm2m_block_data_t *blockData, const char *uri, c
                                size_t tokenLength, uint8_t responseCode, const char *locationPath);
 /* deferred 응답 인계 성공 이후 해당 첫 MID의 완료 교환만 갱신한다.
  * 입력은 borrowed이며 일치하지 않는 새 교환은 보존한다. 할당하지 않는다. */
+char *coap_block1_request_key(coap_packet_t *message);
+/* 비동기 IO 응답은 현재 블록과 첫 MID를 확인한 뒤 캐시를 확정한다. */
+int coap_block1_async_response(lwm2m_block_data_t *,const char *,const uint8_t *,size_t,
+    uint16_t,uint32_t,uint8_t,bool);
 int coap_block1_complete_response(lwm2m_block_data_t *blockData, const char *uri, const uint8_t *token,
     size_t tokenLength, uint16_t exchangeMid, uint8_t responseCode);
 /* message_send 성공 뒤 호출한다. 입력을 보관하지 않으며 상대 수신/영속 저장 ACK를 뜻하지 않는다. */

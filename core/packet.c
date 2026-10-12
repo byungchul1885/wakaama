@@ -894,7 +894,7 @@ static void prv_clear_location_path(coap_packet_t *response)
  * Erbium is Copyright (c) 2013, Institute for Pervasive Computing, ETH Zurich
  * All rights reserved.
  */
-static char *prv_block1_key(coap_packet_t *message)
+char *coap_block1_request_key(coap_packet_t *message)
 {
     char *uri = coap_get_packet_uri_as_string(message);
 #ifndef LWM2M_VERSION_1_0
@@ -1081,7 +1081,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     LOG_ARG_DBG("Blockwise: block1 request NUM %u (SZX %u/ SZX Max%u) MORE %u", block1_num, block1_size,
                                 lwm2m_get_coap_block_size(), block1_more);
 
-                    block1Uri = prv_block1_key(message);
+                    block1Uri = coap_block1_request_key(message);
                     if (block1Uri == NULL){
                         coap_error_code = COAP_500_INTERNAL_SERVER_ERROR;
                     } else {

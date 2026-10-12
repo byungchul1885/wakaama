@@ -133,6 +133,25 @@ static int prv_sendAsyncBytes(lwm2m_context_t *contextP, lwm2m_deferred_request_
     return result;
 }
 
+static void prv_publishAsyncBlock1(lwm2m_context_t *context,lwm2m_deferred_request_t *request,void *session)
+{
+    coap_packet_t input={0};
+    if(coap_parse_message(&input,request->header,(uint16_t)request->headerLength)!=NO_ERROR) return;
+    if(IS_OPTION(&input,COAP_OPTION_BLOCK1)) {
+        lwm2m_server_t *server=utils_findServer(context,session);
+        char *path=coap_block1_request_key(&input);
+        lwm2m_uri_t uri;bool durable=false;
+        if(uri_decode(context->altPath,input.uri_path,input.code,&uri)==LWM2M_REQUEST_TYPE_DM) {
+            lwm2m_object_t *object=(lwm2m_object_t *)LWM2M_LIST_FIND(context->objectList,uri.objectId);
+            durable=object && (object->flags & LWM2M_OBJECT_FLAG_DURABLE_BLOCK1_EXCHANGE)!=0;
+        }
+        if(server && path) (void)coap_block1_async_response(server->blockData,path,input.token,input.token_len,
+            request->exchangeMid,input.block1_num,request->responseCode,durable);
+        lwm2m_free(path);
+    }
+    coap_free_header(&input);
+}
+
 int dm_sendResumedResponse(lwm2m_context_t *contextP, coap_packet_t *response, void *session, uint8_t **payload)
 {
     lwm2m_deferred_request_t *request = prv_findDeferredById(contextP, contextP->dmAsyncResumeId, NULL);
@@ -169,6 +188,7 @@ int dm_sendResumedResponse(lwm2m_context_t *contextP, coap_packet_t *response, v
     }
     int result = prv_sendAsyncBytes(contextP, request, session);
     request = prv_findDeferredById(contextP, contextP->dmAsyncResumeId, NULL);
+    if(request && result==NO_ERROR) prv_publishAsyncBlock1(contextP,request,session);
     const coap_packet_t *input = contextP->dmAsyncResumePacket;
     uint32_t observe = 1;
     if (request && result != NO_ERROR && input && input->code == COAP_GET &&
@@ -237,6 +257,8 @@ int lwm2m_resume_suspended_request(lwm2m_context_t *contextP, lwm2m_deferred_req
                 {
                     void *session = server->sessionH;
                     result = prv_sendAsyncBytes(contextP, request, session);
+                    request=prv_findDeferredById(contextP,id,NULL);
+                    if(request && result==NO_ERROR) prv_publishAsyncBlock1(contextP,request,session);
                     char *location = response.location_path ? coap_get_multi_option_as_path_string(response.location_path) : NULL;
                     dm_notifyResponseSubmitted(contextP, session, &message, &response, location,
                         contextP->dmAsyncExchangeMid, (uint8_t)result);

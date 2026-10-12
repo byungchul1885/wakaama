@@ -574,6 +574,25 @@ int coap_block1_complete_response(lwm2m_block_data_t *blockDataHead, const char 
     return 1;
 }
 
+int coap_block1_async_response(lwm2m_block_data_t *head,const char *uri,
+    const uint8_t *token,size_t tokenLength,uint16_t exchangeMid,uint32_t blockNum,
+    uint8_t code,bool allowTokenReuse)
+{
+    uint16_t currentMid;
+    if(!uri || tokenLength>LWM2M_COAP_TOKEN_MAX_LEN || (tokenLength && !token) ||
+        coap_block1_get_exchange_mid(head,uri,token,tokenLength,&currentMid)!=1 || currentMid!=exchangeMid) return 0;
+    block_data_identifier_t identifier={0};identifier.uri=(char *)uri;
+    identifier.tokenLength=(uint8_t)tokenLength;
+    if(tokenLength) memcpy(identifier.token,token,tokenLength);
+    lwm2m_block_data_t *block=find_block_data(head,identifier,BLOCK_1);
+    if(!block || block->blockNum!=blockNum) return 0;
+    bool separate=block->separateResponse && !block->rawBlock1;
+    if(coap_block1_cache_response(head,uri,token,tokenLength,code,NULL)!=0) return -1;
+    block->separateResponse=separate;
+    coap_block1_mark_response_submitted(head,uri,token,tokenLength,code,allowTokenReuse);
+    return 1;
+}
+
 int coap_block1_get_cached_response(lwm2m_block_data_t *blockDataHead,
                                     const char *uri,
                                     const uint8_t *token,

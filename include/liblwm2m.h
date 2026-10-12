@@ -691,6 +691,8 @@ typedef struct _lwm2m_server_
     void *                  sessionH;
 #ifndef LWM2M_VERSION_1_0
     uint64_t                sessionGeneration; // positive random generation for the active transport session
+    uint16_t                bootstrapFinishResponseMid;
+    bool                    bootstrapFinishResponseValid;
 #endif
     lwm2m_status_t          status;
     char *                  location;

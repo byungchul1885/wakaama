@@ -836,11 +836,21 @@ void bootstrap_step(lwm2m_context_t * contextP,
             break;
 
         case STATE_BS_FINISHING:
+#ifndef LWM2M_VERSION_1_0
+            /* 비동기 Finish는 별도 응답 제출·ACK/timeout까지 같은 연결을 소유한다. */
+            if(dm_bootstrapFinishPending(contextP,targetP)) {
+                if(*timeoutP>1) *timeoutP=1;
+                break;
+            }
+#endif
             if (targetP->sessionH != NULL)
             {
                 lwm2m_close_server_session(contextP, targetP);
             }
             targetP->status = STATE_BS_FINISHED;
+#ifndef LWM2M_VERSION_1_0
+            targetP->bootstrapFinishResponseValid=false;
+#endif
             *timeoutP = 0;
             break;
 

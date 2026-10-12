@@ -49,6 +49,10 @@ size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
                                          uint64_t generation);
 /* suspended request 재개에만 사용하는 protocol owner 경계다. 응답 bytes는 core가 복사한다. */
 int dm_sendResumedResponse(lwm2m_context_t *, coap_packet_t *, void *, uint8_t **);
+#ifdef LWM2M_BOOTSTRAP
+uint8_t dm_handleBootstrapFinish(lwm2m_context_t *,lwm2m_uri_t *,void *,coap_packet_t *,coap_packet_t *,uint16_t);
+bool dm_bootstrapFinishPending(lwm2m_context_t *,lwm2m_server_t *);
+#endif
 void dm_notifyResponseSubmitted(lwm2m_context_t *, void *, const coap_packet_t *, const coap_packet_t *,
     const char *, uint16_t, uint8_t);
 #endif

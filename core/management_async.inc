@@ -145,6 +145,12 @@ int dm_sendResumedResponse(lwm2m_context_t *contextP, coap_packet_t *response, v
         request->responseMid = response->mid;
         request->responseCode = response->code;
         request->responsePrepared = true;
+#ifdef LWM2M_BOOTSTRAP
+        if(request->bootstrap) {
+            lwm2m_server_t *server=utils_findBootstrapServer(contextP,session);
+            if(server) {server->bootstrapFinishResponseMid=response->mid;server->bootstrapFinishResponseValid=true;}
+        }
+#endif
         /* 최종 callback 결과와 이미 할당한 출력은 추가 할당 없이 owner에게 인계한다. */
         if (payload) { request->responsePayload = *payload; *payload = NULL; }
         response->uri_path = response->uri_query = response->location_path = NULL;
@@ -177,10 +183,12 @@ int lwm2m_resume_suspended_request(lwm2m_context_t *contextP, lwm2m_deferred_req
     lwm2m_deferred_request_t *request = prv_findDeferredById(contextP, id, NULL);
     if (!request || !request->resumable) return COAP_404_NOT_FOUND;
     lwm2m_server_t *server;
-    for (server = contextP->serverList; server; server = server->next)
+    for (server = request->bootstrap ? contextP->bootstrapServerList : contextP->serverList; server; server = server->next)
         if (server->shortID == request->serverShortId && server->sessionGeneration == request->sessionGeneration &&
-            server->sessionH && (server->status == STATE_REGISTERED || server->status == STATE_REG_UPDATE_NEEDED ||
-            server->status == STATE_REG_FULL_UPDATE_NEEDED || server->status == STATE_REG_UPDATE_PENDING)) break;
+            server->sessionH && (request->bootstrap ?
+            (server->status==STATE_BS_PENDING || server->status==STATE_BS_FINISHING) :
+            (server->status == STATE_REGISTERED || server->status == STATE_REG_UPDATE_NEEDED ||
+            server->status == STATE_REG_FULL_UPDATE_NEEDED || server->status == STATE_REG_UPDATE_PENDING))) break;
     if (!server) { (void)lwm2m_cancel_deferred_request(contextP, id); return COAP_404_NOT_FOUND; }
     /* transport나 callback의 session close가 원본 entry를 해제해도 현재 순회의 입력은 소유한다. */
     uint8_t *header = lwm2m_malloc(request->headerLength);
@@ -261,3 +269,50 @@ int lwm2m_resume_suspended_request(lwm2m_context_t *contextP, lwm2m_deferred_req
     coap_free_header(&message); lwm2m_free(header); lwm2m_free(payload);
     return result;
 }
+
+#ifdef LWM2M_BOOTSTRAP
+uint8_t dm_handleBootstrapFinish(lwm2m_context_t *context,lwm2m_uri_t *uri,
+    void *session,coap_packet_t *message,coap_packet_t *response,uint16_t exchangeMid)
+{
+    if(!context->dmAsyncCallback) return bootstrap_handleFinish(context,session);
+    lwm2m_server_t *server=utils_findBootstrapServer(context,session);
+    if(!server) return COAP_IGNORE;
+    lwm2m_deferred_request_t *pending=prv_findDeferredByMessage(context,server->shortID,
+        server->sessionGeneration,message->mid,message->token,message->token_len);
+    if(pending && pending->bootstrap && pending->requestId!=context->dmAsyncResumeId)
+        return prv_deferredResponse(message,response);
+    /* 별도 MID의 Finish가 확정 중인 후보를 다시 실행하지 못하게 한다. */
+    for(pending=context->deferredRequestList;pending;pending=pending->next)
+        if(pending->bootstrap && pending->serverShortId==server->shortID &&
+            pending->sessionGeneration==server->sessionGeneration && pending->requestId!=context->dmAsyncResumeId)
+            return COAP_503_SERVICE_UNAVAILABLE;
+    dm_request_scope_t scope;
+    uint8_t result=(uint8_t)prv_beginDmRequestScope(context,server,uri,message,
+        LWM2M_CONTENT_TLV,exchangeMid,&scope);
+    if(result!=NO_ERROR) return result;
+    context->currentDmPacket=message;context->currentDmUri=uri;
+    context->dmAsyncCallback(context,LWM2M_DM_ASYNC_BEGIN,context->dmAsyncResumeId,context->dmAsyncUserData);
+    result=bootstrap_handleFinish(context,session);
+    pending=prv_findDeferredById(context,context->currentDmDeferredRequestId,NULL);
+    if(pending && pending->resumable) {
+        pending->bootstrap=true;
+        if(pending->awaitingIo) result=prv_deferredResponse(message,response);
+    }
+    context->dmAsyncCallback(context,LWM2M_DM_ASYNC_END,
+        context->currentDmDeferredRequestId ? context->currentDmDeferredRequestId : context->dmAsyncResumeId,
+        context->dmAsyncUserData);
+    prv_endDmRequestScope(context,&scope);
+    return result;
+}
+
+bool dm_bootstrapFinishPending(lwm2m_context_t *context,lwm2m_server_t *server)
+{
+    for(lwm2m_deferred_request_t *request=context->deferredRequestList;request;request=request->next)
+        if(request->bootstrap && request->serverShortId==server->shortID &&
+            request->sessionGeneration==server->sessionGeneration) return true;
+    if(server->bootstrapFinishResponseValid)
+        for(lwm2m_transaction_t *transaction=context->transactionList;transaction;transaction=transaction->next)
+            if(transaction->mID==server->bootstrapFinishResponseMid && transaction->peerH==server->sessionH) return true;
+    return false;
+}
+#endif

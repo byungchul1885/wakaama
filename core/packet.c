@@ -391,7 +391,11 @@ static uint8_t handle_request(lwm2m_context_t * contextP,
     case LWM2M_REQUEST_TYPE_BOOTSTRAP:
         if (message->code == COAP_POST)
         {
+#ifndef LWM2M_VERSION_1_0
+            result = dm_handleBootstrapFinish(contextP,&uri,fromSessionH,message,response,exchangeMid);
+#else
             result = bootstrap_handleFinish(contextP, fromSessionH);
+#endif
         }
         break;
 #endif

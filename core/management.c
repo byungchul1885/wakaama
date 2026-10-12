@@ -68,6 +68,7 @@ struct _lwm2m_deferred_request_
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t tokenLength;
     bool resumable, awaitingIo, responseSubmitted, responsePrepared, rebuildObserve;
+    bool bootstrap;
     uint16_t exchangeMid, responseMid;
     uint8_t *header, *payload, *response;
     size_t headerLength, payloadLength, responseLength;

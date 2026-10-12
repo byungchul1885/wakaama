@@ -188,7 +188,7 @@ lwm2m_dm_operation_t dm_getOperation(const coap_packet_t *requestP,
     }
 }
 
-static void prv_notify_dm_response_submitted(lwm2m_context_t *contextP,
+void dm_notifyResponseSubmitted(lwm2m_context_t *contextP,
                                              void *fromSessionH,
                                              const coap_packet_t *requestP,
                                              const coap_packet_t *responseP,
@@ -937,14 +937,25 @@ static uint8_t prv_composite_write_block1_preflight(lwm2m_context_t *contextP, c
 
 void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t length, void *fromSessionH) {
     uint8_t coap_error_code = NO_ERROR;
-    static coap_packet_t message[1];
-    static coap_packet_t response[1];
+    coap_packet_t message[1] = {{0}};
+    coap_packet_t response[1] = {{0}};
+    bool resumed = false;
 
     LOG_DBG("Entering");
     /* The buffer length is uint16_t here, as UDP packet length field is 16 bit.
      * This might change in the future e.g. for supporting TCP or other transport.
      */
-    coap_error_code = coap_parse_message(message, buffer, (uint16_t)length);
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+    resumed = contextP->dmAsyncResumePacket != NULL;
+    if (resumed)
+    {
+        coap_packet_t *input = contextP->dmAsyncResumePacket;
+        *message = *input;
+        input->uri_path = input->uri_query = input->location_path = NULL;
+    }
+    else
+#endif
+        coap_error_code = coap_parse_message(message, buffer, (uint16_t)length);
     if (coap_error_code == NO_ERROR)
     {
         LOG_ARG_DBG("Parsed: ver %u, type %u, tkl %u, code %u.%.2u, mid %u, Content type: %d", message->version,
@@ -964,12 +975,21 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             bool block1Replay = false;
             bool block1ApplicationDispatched = false;
             uint16_t requestExchangeMid = message->mid;
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+            if (resumed) requestExchangeMid = contextP->dmAsyncExchangeMid;
+#endif
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
             bool rawBlock1 = false;
 #endif
 
             /* prepare response */
-            if (message->type == COAP_TYPE_CON)
+            if (resumed)
+            {
+                coap_init_message(response, COAP_TYPE_CON, COAP_205_CONTENT, contextP->nextMID++);
+                if (IS_OPTION(message, COAP_OPTION_BLOCK1))
+                    coap_set_header_block1(response, message->block1_num, message->block1_more, message->block1_size);
+            }
+            else if (message->type == COAP_TYPE_CON)
             {
                 /* Reliable CON requests are answered with an ACK. */
                 coap_init_message(response, COAP_TYPE_ACK, COAP_205_CONTENT, message->mid);
@@ -988,10 +1008,10 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
             /* 큰 입력을 할당하기 전에 고정된 root/형식만 허용한다. peer당 최대 두 iPATCH key다. */
-            if (message->code == COAP_IPATCH && IS_OPTION(message, COAP_OPTION_BLOCK1))
+            if (!resumed && message->code == COAP_IPATCH && IS_OPTION(message, COAP_OPTION_BLOCK1))
                 coap_error_code = prv_composite_write_block1_preflight(contextP, message);
 #endif
-            if (coap_error_code == NO_ERROR && is_message_too_large(message, length)) {
+            if (!resumed && coap_error_code == NO_ERROR && is_message_too_large(message, length)) {
                 coap_error_code = COAP_413_ENTITY_TOO_LARGE;
 
                 if (IS_OPTION(message, COAP_OPTION_BLOCK1)){
@@ -1002,7 +1022,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                 } else {
                     coap_set_header_block1(response, 0, 1, lwm2m_get_coap_block_size());
                 }
-            } else if (coap_error_code == NO_ERROR && IS_OPTION(message, COAP_OPTION_BLOCK1)) {
+            } else if (!resumed && coap_error_code == NO_ERROR && IS_OPTION(message, COAP_OPTION_BLOCK1)) {
 #ifdef LWM2M_CLIENT_MODE
                 // get server
                 lwm2m_server_t * peerP;
@@ -1162,7 +1182,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     }
                 }
             }
-            if (!block1Replay && IS_OPTION(message, COAP_OPTION_BLOCK1)
+            if (!resumed && !block1Replay && IS_OPTION(message, COAP_OPTION_BLOCK1)
 #ifdef LWM2M_RAW_BLOCK1_REQUESTS
                 && (coap_error_code == NO_ERROR || (rawBlock1 && coap_error_code == COAP_231_CONTINUE))
 #else
@@ -1187,7 +1207,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
             if (!block1Replay && coap_error_code == NO_ERROR)
 #endif
             {
-                block1ApplicationDispatched = IS_OPTION(message, COAP_OPTION_BLOCK1) != 0;
+                block1ApplicationDispatched = !resumed && IS_OPTION(message, COAP_OPTION_BLOCK1) != 0;
                 coap_error_code = handle_request(contextP,
                                                  fromSessionH,
                                                  message,
@@ -1268,7 +1288,12 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 #ifdef LWM2M_CLIENT_MODE
                 uint64_t observationId = observe_responsePending(contextP, fromSessionH, message, response);
 #endif
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+                coap_error_code = resumed ? dm_sendResumedResponse(contextP, response, fromSessionH, &payload) :
+                    message_send(contextP, response, fromSessionH);
+#else
                 coap_error_code = message_send(contextP, response, fromSessionH);
+#endif
 #ifdef LWM2M_CLIENT_MODE
                 {
                     lwm2m_server_t *observingServer = utils_findServer(contextP, fromSessionH);
@@ -1295,7 +1320,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     (!IS_OPTION(message, COAP_OPTION_BLOCK1) ||
                      response->code != COAP_231_CONTINUE))
                 {
-                    prv_notify_dm_response_submitted(contextP,
+                    dm_notifyResponseSubmitted(contextP,
                                                      fromSessionH,
                                                      message,
                                                      response,
@@ -1321,7 +1346,12 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
 #ifdef LWM2M_CLIENT_MODE
                     (void)observe_responsePending(contextP, fromSessionH, message, response);
 #endif
+#if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
+                    coap_error_code = resumed ? dm_sendResumedResponse(contextP, response, fromSessionH, NULL) :
+                        message_send(contextP, response, fromSessionH);
+#else
                     coap_error_code = message_send(contextP, response, fromSessionH);
+#endif
                     if (coap_error_code == NO_ERROR && block1Uri != NULL)
                         coap_block1_mark_response_submitted(prv_get_peer_block_data(contextP, fromSessionH),
                             block1Uri, message->token, message->token_len, response->code, prv_durable_block1_exchange(contextP,message));
@@ -1330,7 +1360,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                         (!IS_OPTION(message, COAP_OPTION_BLOCK1) ||
                          response->code != COAP_231_CONTINUE))
                     {
-                        prv_notify_dm_response_submitted(contextP,
+                        dm_notifyResponseSubmitted(contextP,
                                                          fromSessionH,
                                                          message,
                                                          response,
@@ -1460,7 +1490,7 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
         LOG_ARG_DBG("Message parsing failed %u.%02u", coap_error_code >> 5, coap_error_code & 0x1F);
     }
 
-    if (coap_error_code != NO_ERROR && coap_error_code != COAP_IGNORE)
+    if (!resumed && coap_error_code != NO_ERROR && coap_error_code != COAP_IGNORE)
     {
         LOG_ARG_DBG("ERROR %u: %s", coap_error_code, STR_NULL2EMPTY(coap_error_message));
 
@@ -1474,6 +1504,9 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
         coap_set_payload(message, coap_error_message, strlen(coap_error_message));
         message_send(contextP, message, fromSessionH);
     }
+    /* 재개 입력의 parse header는 이 호출이 소유한다. 일반 parse도 같은 경계에서 해제한다. */
+    coap_free_header(message);
+    coap_free_header(response);
 }
 
 uint8_t message_send(lwm2m_context_t * contextP,

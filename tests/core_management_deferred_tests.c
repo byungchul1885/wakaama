@@ -8,6 +8,9 @@
 #include "internals.h"
 #include "tests.h"
 #include "helper/deferred_completion.h"
+#ifdef WAKAAMA_TEST_FAULTS
+#include "helper/faults.h"
+#endif
 
 #include <string.h>
 
@@ -1464,7 +1467,370 @@ static void composite_server_method_format_root_and_owned_payload(void)
 }
 #endif
 
+typedef struct {
+    unsigned calls, applied, released, submitted;
+    bool ready, failPrepare;
+    lwm2m_deferred_request_id_t id;
+    uint16_t expectedMid;
+} async_io_state_t;
+
+static void prv_async_event(lwm2m_context_t *context, lwm2m_dm_async_event_t event,
+    lwm2m_deferred_request_id_t id, void *data)
+{
+    (void)context;
+    async_io_state_t *state = data;
+    if (event == LWM2M_DM_ASYNC_RELEASE) { CU_ASSERT_EQUAL(id, state->id); ++state->released; }
+}
+
+static uint8_t prv_async_write(lwm2m_context_t *context, uint16_t instance, int count,
+    lwm2m_data_t *values, lwm2m_object_t *object, lwm2m_write_type_t type)
+{
+    (void)instance; (void)type;
+    async_io_state_t *state = object->userData;
+    ++state->calls;
+    if (state->expectedMid) {
+        uint16_t sid, mid; uint64_t generation;
+        CU_ASSERT_EQUAL(lwm2m_get_current_request_identity(context, &sid, &generation, &mid), NO_ERROR);
+        CU_ASSERT_EQUAL(mid, state->expectedMid);
+    }
+    CU_ASSERT_EQUAL(count, 1);
+    int64_t value = 0;
+    CU_ASSERT_TRUE(lwm2m_data_decode_int(values, &value));
+    CU_ASSERT_EQUAL(value, 9);
+    if (!state->ready) {
+        CU_ASSERT_EQUAL(lwm2m_suspend_current_request(context, &state->id), NO_ERROR);
+        return COAP_503_SERVICE_UNAVAILABLE;
+    }
+    ++state->applied;
+#ifdef WAKAAMA_TEST_FAULTS
+    if(state->failPrepare) {state->failPrepare=false;test_malloc_fail_once_after(0);}
+#endif
+    return COAP_204_CHANGED;
+}
+
+static uint8_t prv_async_read(lwm2m_context_t *context, uint16_t instance, int *count,
+    lwm2m_data_t **values, lwm2m_object_t *object)
+{
+    (void)instance;
+    async_io_state_t *state = object->userData;
+    ++state->calls;
+    if (!state->ready) {
+        CU_ASSERT_EQUAL(lwm2m_suspend_current_request(context, &state->id), NO_ERROR);
+        return COAP_503_SERVICE_UNAVAILABLE;
+    }
+    if (*count == 0) { *count = 1; *values = lwm2m_data_new(1); (*values)->id = 103; }
+    lwm2m_data_encode_int(9, *values);
+    return COAP_205_CONTENT;
+}
+
+static size_t prv_async_packet(uint8_t *bytes, uint8_t method, uint16_t mid)
+{
+    coap_packet_t message;
+    uint8_t token[] = { 'a' }, value[] = { 0xc1, 0x67, 9 };
+    coap_init_message(&message, COAP_TYPE_CON, method, mid);
+    coap_set_header_uri_path(&message, "/27341/0/103");
+    coap_set_header_token(&message, token, sizeof(token));
+    if (method == COAP_PUT) {
+        coap_set_header_content_type(&message, LWM2M_CONTENT_TLV);
+        coap_set_payload(&message, value, sizeof(value));
+    }
+    return coap_serialize_message(&message, bytes);
+}
+
+static void suspended_write_copies_input_and_transport_retry_does_not_reapply(void)
+{
+    lwm2m_server_t server; lwm2m_object_t object; lwm2m_list_t instance;
+    execute_state_t base = {0}; async_io_state_t state = {0};
+    lwm2m_context_t *context = prv_context(&server, &object, &instance, &base);
+    object.userData = &state; object.writeFunc = prv_async_write;
+    lwm2m_set_dm_async_callback(context, prv_async_event, &state);
+    uint8_t bytes[128]; size_t length = prv_async_packet(bytes, COAP_PUT, 0x9191);
+    test_reset_response_history();
+    lwm2m_handle_packet(context, bytes, length, server.sessionH);
+    CU_ASSERT_NOT_EQUAL(state.id, 0); CU_ASSERT_EQUAL(state.calls, 1); CU_ASSERT_EQUAL(state.applied, 0);
+    size_t size; void *session; const uint8_t *reply = test_response_at(0, &size, &session);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(reply); CU_ASSERT_EQUAL(reply[1], COAP_EMPTY_MESSAGE_CODE);
+    length = prv_async_packet(bytes, COAP_PUT, 0x9191);
+    lwm2m_handle_packet(context, bytes, length, server.sessionH);
+    CU_ASSERT_EQUAL(state.calls, 1);
+    memset(bytes, 0xee, sizeof(bytes)); state.ready = true;
+    test_fail_next_response();
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context, state.id), NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls, 2); CU_ASSERT_EQUAL(state.applied, 1); CU_ASSERT_EQUAL(state.released, 0);
+    CU_ASSERT_PTR_NULL(context->transactionList);
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context, state.id), NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls, 2); CU_ASSERT_EQUAL(state.applied, 1); CU_ASSERT_EQUAL(state.released, 1);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context->transactionList);
+    CU_ASSERT_EQUAL(transaction_send(context, context->transactionList), NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls, 2); CU_ASSERT_EQUAL(state.applied, 1);
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context, state.id), COAP_404_NOT_FOUND);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context->transactionList);
+    CU_ASSERT_EQUAL(((coap_packet_t *)context->transactionList->message)->type, COAP_TYPE_CON);
+    CU_ASSERT_EQUAL(((coap_packet_t *)context->transactionList->message)->code, COAP_204_CHANGED);
+    context->objectList = NULL; context->serverList = NULL; lwm2m_close(context);
+}
+
+static void suspended_block1_keeps_assembled_input_and_first_exchange_mid(void)
+{
+    lwm2m_server_t server; lwm2m_object_t object; lwm2m_list_t instance;
+    execute_state_t base = {0}; async_io_state_t state = {.expectedMid = 0x9595};
+    lwm2m_context_t *context = prv_context(&server, &object, &instance, &base);
+    object.userData = &state; object.writeFunc = prv_async_write;
+    lwm2m_set_dm_async_callback(context, prv_async_event, &state);
+    uint8_t bytes[128], token[] = {'b'}, value[] = "00000000000000009";
+    size_t length = 0;
+    for (unsigned block = 0; block < 2; ++block) {
+        coap_packet_t message;
+        coap_init_message(&message, COAP_TYPE_CON, COAP_PUT, (uint16_t)(0x9595 + block));
+        coap_set_header_uri_path(&message, "/27341/0/103");
+        coap_set_header_token(&message, token, sizeof(token));
+        coap_set_header_content_type(&message, LWM2M_CONTENT_TEXT);
+        coap_set_header_block1(&message, block, block == 0, 16);
+        coap_set_payload(&message, value + block * 16, block == 0 ? 16 : 1);
+        length = coap_serialize_message(&message, bytes);
+        lwm2m_handle_packet(context, bytes, length, server.sessionH);
+        CU_ASSERT_EQUAL(state.calls, block);
+    }
+    CU_ASSERT_NOT_EQUAL(state.id, 0);
+    lwm2m_handle_packet(context, bytes, length, server.sessionH);
+    CU_ASSERT_EQUAL(state.calls, 1);
+    memset(bytes, 0xee, sizeof(bytes)); state.ready = true;
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context, state.id), NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls, 2); CU_ASSERT_EQUAL(state.applied, 1);
+    CU_ASSERT_EQUAL(state.released, 1);
+    while (server.blockData) {
+        lwm2m_block_data_t *block = server.blockData; server.blockData = block->next; free_block_data(block);
+    }
+    context->objectList = NULL; context->serverList = NULL; lwm2m_close(context);
+}
+
+static uint8_t prv_async_composite(lwm2m_context_t *context,lwm2m_media_type_t format,
+    size_t count,const lwm2m_data_t *objects,void *data)
+{
+    async_io_state_t *state=data;(void)objects;
+    CU_ASSERT_EQUAL(format,LWM2M_CONTENT_SENML_JSON);CU_ASSERT_EQUAL(count,1);
+    ++state->calls;
+    if(!state->ready) {
+        CU_ASSERT_EQUAL(lwm2m_suspend_current_request(context,&state->id),NO_ERROR);
+        return COAP_503_SERVICE_UNAVAILABLE;
+    }
+    ++state->applied;return COAP_204_CHANGED;
+}
+static void suspended_composite_keeps_configured_assembled_input_limit(void)
+{
+    lwm2m_server_t server; lwm2m_object_t object; lwm2m_list_t instance;
+    execute_state_t base={0};async_io_state_t state={0};
+    lwm2m_context_t *context=prv_context(&server,&object,&instance,&base);
+    lwm2m_set_dm_async_callback(context,prv_async_event,&state);
+    lwm2m_set_composite_write_callback(context,prv_async_composite,true,&state);
+    const size_t size=8U*1024U*1024U;
+    CU_ASSERT_TRUE(lwm2m_set_composite_write_max_size(context,size));
+    uint8_t *body=lwm2m_malloc(size);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(body);
+    const char prefix[]="[{\"n\":\"/27341/0/103\",\"v\":9}]";
+    memset(body,' ',size);memcpy(body,prefix,sizeof(prefix)-1);
+    coap_packet_t message,response;uint8_t token[]={'c'};
+    coap_init_message(&message,COAP_TYPE_CON,COAP_IPATCH,0x9696);
+    coap_set_header_token(&message,token,sizeof(token));
+    coap_set_header_content_type(&message,LWM2M_CONTENT_SENML_JSON);
+    coap_set_payload(&message,body,size);
+    coap_init_message(&response,COAP_TYPE_ACK,COAP_204_CHANGED,message.mid);
+    lwm2m_uri_t uri;LWM2M_URI_RESET(&uri);
+    /* UDP 조립은 별도 Block1 fixture의 책임이다. 여기서는 조립된 입력의 소유권 한도를 검증한다. */
+    CU_ASSERT_EQUAL(dm_handleRequest(context,&uri,&server,&message,&response),NO_ERROR);
+    CU_ASSERT_NOT_EQUAL(state.id,0);CU_ASSERT_EQUAL(state.calls,1);
+    lwm2m_free(body);coap_free_header(&message);coap_free_header(&response);state.ready=true;
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls,2);CU_ASSERT_EQUAL(state.applied,1);CU_ASSERT_EQUAL(state.released,1);
+    context->objectList=NULL;context->serverList=NULL;lwm2m_close(context);
+}
+
+static void prv_async_submitted(lwm2m_context_t *context,const lwm2m_dm_response_submission_t *submission,void *data)
+{
+    (void)context;
+    if(submission->sendResult==NO_ERROR && submission->responseCode==COAP_205_CONTENT)
+        ++((async_io_state_t *)data)->submitted;
+}
+static void suspended_read_waits_for_actual_transport_submission(void)
+{
+    lwm2m_server_t server;lwm2m_object_t object;lwm2m_list_t instance;
+    execute_state_t base={0};async_io_state_t state={0};
+    lwm2m_context_t *context=prv_context(&server,&object,&instance,&base);
+    object.userData=&state;object.readFunc=prv_async_read;
+    lwm2m_set_dm_async_callback(context,prv_async_event,&state);
+    lwm2m_set_dm_response_submitted_callback(context,prv_async_submitted,&state);
+    uint8_t bytes[128];size_t length=prv_async_packet(bytes,COAP_GET,0x9797);
+    lwm2m_handle_packet(context,bytes,length,server.sessionH);state.ready=true;
+    test_fail_next_response();
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.submitted,0);CU_ASSERT_EQUAL(state.released,0);
+    CU_ASSERT_PTR_NULL(context->transactionList);
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.submitted,1);CU_ASSERT_EQUAL(state.released,1);CU_ASSERT_EQUAL(state.calls,2);
+    context->objectList=NULL;context->serverList=NULL;lwm2m_close(context);
+}
+
+static void suspended_read_nstart_wait_does_not_publish_completion(void)
+{
+    lwm2m_server_t server;lwm2m_object_t object;lwm2m_list_t instance;
+    execute_state_t base={0};async_io_state_t state={0};
+    lwm2m_context_t *context=prv_context(&server,&object,&instance,&base);
+    object.userData=&state;object.readFunc=prv_async_read;
+    lwm2m_set_dm_async_callback(context,prv_async_event,&state);
+    lwm2m_set_dm_response_submitted_callback(context,prv_async_submitted,&state);
+    uint8_t bytes[128];size_t length=prv_async_packet(bytes,COAP_GET,0x9898);
+    lwm2m_handle_packet(context,bytes,length,server.sessionH);state.ready=true;
+    uint8_t token[]={'z'};
+    lwm2m_transaction_t *active=transaction_new(server.sessionH,COAP_205_CONTENT,NULL,NULL,0x1111,1,token);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(active);active->retrans_counter=2;context->transactionList=active;
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.submitted,0);CU_ASSERT_EQUAL(state.released,0);
+    CU_ASSERT_PTR_EQUAL(context->transactionList,active);CU_ASSERT_PTR_NULL(active->next);
+    transaction_remove(context,active);
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.submitted,1);CU_ASSERT_EQUAL(state.released,1);CU_ASSERT_EQUAL(state.calls,2);
+    context->objectList=NULL;context->serverList=NULL;lwm2m_close(context);
+}
+static void suspended_observe_rebuilds_preparation_after_transport_failure(void)
+{
+    lwm2m_server_t server;lwm2m_object_t object;lwm2m_list_t instance;
+    execute_state_t base={0};async_io_state_t state={0};
+    lwm2m_context_t *context=prv_context(&server,&object,&instance,&base);
+    object.userData=&state;object.readFunc=prv_async_read;
+    lwm2m_set_dm_async_callback(context,prv_async_event,&state);
+    coap_packet_t message;uint8_t bytes[128],token[]={'o'};
+    coap_init_message(&message,COAP_TYPE_CON,COAP_GET,0x9999);
+    coap_set_header_uri_path(&message,"/27341/0/103");coap_set_header_token(&message,token,1);
+    coap_set_header_observe(&message,0);
+    size_t length=coap_serialize_message(&message,bytes);
+    lwm2m_handle_packet(context,bytes,length,server.sessionH);state.ready=true;
+    test_fail_next_response();
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.released,0);CU_ASSERT_PTR_NULL(context->observedList);
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.released,1);CU_ASSERT_EQUAL(state.calls,3);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context->observedList);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context->observedList->watcherList);
+    CU_ASSERT_TRUE(context->observedList->watcherList->active);
+    context->objectList=NULL;context->serverList=NULL;lwm2m_close(context);
+}
+
+static void suspended_observe_cancel_retry_keeps_a_new_observer(void)
+{
+    lwm2m_server_t server;lwm2m_object_t object;lwm2m_list_t instance;
+    execute_state_t base={0};async_io_state_t state={.ready=true};
+    lwm2m_context_t *context=prv_context(&server,&object,&instance,&base);
+    object.userData=&state;object.readFunc=prv_async_read;
+    lwm2m_set_dm_async_callback(context,prv_async_event,&state);
+    uint8_t bytes[128],token[]={'c'};coap_packet_t message;
+    for(unsigned step=0;step<3;++step) {
+        state.ready=step!=1;
+        coap_init_message(&message,COAP_TYPE_CON,COAP_GET,(uint16_t)(0x9a00+step));
+        coap_set_header_uri_path(&message,"/27341/0/103");
+        coap_set_header_token(&message,token,1);coap_set_header_observe(&message,step==1 ? 1 : 0);
+        size_t length=coap_serialize_message(&message,bytes);
+        lwm2m_handle_packet(context,bytes,length,server.sessionH);
+        if(step==1) {
+            state.ready=true;test_fail_next_response();
+            CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+            CU_ASSERT_EQUAL(state.released,0);
+        }
+    }
+    CU_ASSERT_EQUAL(state.calls,4);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context->observedList);
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls,4);CU_ASSERT_EQUAL(state.released,1);
+    CU_ASSERT_PTR_NOT_NULL_FATAL(context->observedList);
+    CU_ASSERT_TRUE(context->observedList->watcherList->active);
+    context->objectList=NULL;context->serverList=NULL;lwm2m_close(context);
+}
+
+static void suspended_read_preserves_payload_and_session_generation(void)
+{
+    for (unsigned stale = 0; stale < 2; ++stale) {
+        lwm2m_server_t server; lwm2m_object_t object; lwm2m_list_t instance;
+        execute_state_t base = {0}; async_io_state_t state = {0};
+        lwm2m_context_t *context = prv_context(&server, &object, &instance, &base);
+        object.userData = &state; object.readFunc = prv_async_read;
+        lwm2m_set_dm_async_callback(context, prv_async_event, &state);
+        uint8_t bytes[128]; size_t length = prv_async_packet(bytes, COAP_GET, 0x9292);
+        lwm2m_handle_packet(context, bytes, length, server.sessionH);
+        CU_ASSERT_NOT_EQUAL(state.id, 0); state.ready = true;
+        if (stale) ++server.sessionGeneration;
+        CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context, state.id), stale ? COAP_404_NOT_FOUND : NO_ERROR);
+        CU_ASSERT_EQUAL(state.calls, stale ? 1 : 2); CU_ASSERT_EQUAL(state.released, 1);
+        if (!stale) {
+            CU_ASSERT_PTR_NOT_NULL_FATAL(context->transactionList);
+            CU_ASSERT_EQUAL(((coap_packet_t *)context->transactionList->message)->code, COAP_205_CONTENT);
+            CU_ASSERT_TRUE(((coap_packet_t *)context->transactionList->message)->payload_len > 0);
+        }
+        context->objectList = NULL; context->serverList = NULL; lwm2m_close(context);
+    }
+}
+
+static uint8_t prv_async_execute(lwm2m_context_t *context,uint16_t iid,uint16_t rid,
+    uint8_t *payload,int length,lwm2m_object_t *object)
+{
+    (void)iid;(void)rid;(void)payload;(void)length;
+    async_io_state_t *state=object->userData;++state->calls;
+    if(!state->ready) {
+        CU_ASSERT_EQUAL(lwm2m_suspend_current_request(context,&state->id),NO_ERROR);
+        return COAP_503_SERVICE_UNAVAILABLE;
+    }
+    lwm2m_deferred_request_id_t id=0;
+    CU_ASSERT_EQUAL(lwm2m_defer_current_request(context,&id),NO_ERROR);
+    CU_ASSERT_EQUAL(id,state->id);
+    return COAP_IGNORE;
+}
+static void suspended_execute_hands_id_to_native_deferred_owner(void)
+{
+    lwm2m_server_t server;lwm2m_object_t object;lwm2m_list_t instance;
+    execute_state_t base={0};async_io_state_t state={0};
+    lwm2m_context_t *context=prv_context(&server,&object,&instance,&base);
+    object.userData=&state;object.executeFunc=prv_async_execute;
+    lwm2m_set_dm_async_callback(context,prv_async_event,&state);
+    uint8_t bytes[128];size_t length=prv_async_packet(bytes,COAP_POST,0x9393);
+    lwm2m_handle_packet(context,bytes,length,server.sessionH);
+    CU_ASSERT_NOT_EQUAL(state.id,0);
+    CU_ASSERT_EQUAL(lwm2m_complete_deferred_request(context,state.id,COAP_204_CHANGED),COAP_400_BAD_REQUEST);
+    state.ready=true;
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls,2);CU_ASSERT_EQUAL(state.released,1);
+    CU_ASSERT_EQUAL(lwm2m_complete_deferred_request(context,state.id,COAP_204_CHANGED),NO_ERROR);
+    context->serverList=NULL;context->objectList=NULL;lwm2m_close(context);
+}
+#ifdef WAKAAMA_TEST_FAULTS
+static void suspended_reply_allocation_failure_keeps_final_callback_result(void)
+{
+    lwm2m_server_t server;lwm2m_object_t object;lwm2m_list_t instance;
+    execute_state_t base={0};async_io_state_t state={.failPrepare=true};
+    lwm2m_context_t *context=prv_context(&server,&object,&instance,&base);
+    object.userData=&state;object.writeFunc=prv_async_write;
+    lwm2m_set_dm_async_callback(context,prv_async_event,&state);
+    uint8_t bytes[128];size_t length=prv_async_packet(bytes,COAP_PUT,0x9494);
+    lwm2m_handle_packet(context,bytes,length,server.sessionH);state.ready=true;
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    test_malloc_fault_disable();
+    CU_ASSERT_EQUAL(state.applied,1);CU_ASSERT_EQUAL(state.released,0);
+    CU_ASSERT_EQUAL(lwm2m_resume_suspended_request(context,state.id),NO_ERROR);
+    CU_ASSERT_EQUAL(state.calls,2);CU_ASSERT_EQUAL(state.applied,1);CU_ASSERT_EQUAL(state.released,1);
+    context->serverList=NULL;context->objectList=NULL;lwm2m_close(context);
+}
+#endif
+
 static struct TestTable table[] = {
+    {"suspended Execute native owner handoff", suspended_execute_hands_id_to_native_deferred_owner},
+#ifdef WAKAAMA_TEST_FAULTS
+    {"suspended reply allocation retry", suspended_reply_allocation_failure_keeps_final_callback_result},
+#endif
+    {"suspended Write input ownership and transport retry", suspended_write_copies_input_and_transport_retry_does_not_reapply},
+    {"suspended Block1 assembled input and logical MID", suspended_block1_keeps_assembled_input_and_first_exchange_mid},
+    {"suspended Composite configured input limit", suspended_composite_keeps_configured_assembled_input_limit},
+    {"suspended Read actual transport submission", suspended_read_waits_for_actual_transport_submission},
+    {"suspended Read NSTART submission", suspended_read_nstart_wait_does_not_publish_completion},
+    {"suspended Observe transport retry", suspended_observe_rebuilds_preparation_after_transport_failure},
+    {"suspended Observe cancel preserves newer observer", suspended_observe_cancel_retry_keeps_a_new_observer},
+    {"suspended Read payload and session generation", suspended_read_preserves_payload_and_session_generation},
 #ifdef LWM2M_SUPPORT_SENML_JSON
     {"Write Composite atomic owner dispatch", write_composite_dispatches_one_atomic_owner},
 #endif

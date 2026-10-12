@@ -67,6 +67,13 @@ struct _lwm2m_deferred_request_
     uint16_t messageId;
     uint8_t token[LWM2M_COAP_TOKEN_MAX_LEN];
     size_t tokenLength;
+    bool resumable, awaitingIo, responseSubmitted, responsePrepared, rebuildObserve;
+    uint16_t exchangeMid, responseMid;
+    uint8_t *header, *payload, *response;
+    size_t headerLength, payloadLength, responseLength;
+    uint8_t responseCode;
+    coap_packet_t responsePacket;
+    uint8_t *responsePayload;
 };
 
 static lwm2m_deferred_request_t *prv_findDeferredByMessage(lwm2m_context_t *contextP,
@@ -139,6 +146,18 @@ static lwm2m_deferred_request_t *prv_findDeferredById(lwm2m_context_t *contextP,
     return requestP;
 }
 
+static void prv_freeDeferred(lwm2m_context_t *contextP, lwm2m_deferred_request_t *requestP)
+{
+    if (requestP->resumable && contextP->dmAsyncCallback != NULL)
+        contextP->dmAsyncCallback(contextP, LWM2M_DM_ASYNC_RELEASE, requestP->requestId, contextP->dmAsyncUserData);
+    lwm2m_free(requestP->header);
+    lwm2m_free(requestP->payload);
+    lwm2m_free(requestP->response);
+    coap_free_header(&requestP->responsePacket);
+    lwm2m_free(requestP->responsePayload);
+    lwm2m_free(requestP);
+}
+
 static void prv_removeDeferred(lwm2m_context_t *contextP,
                                lwm2m_deferred_request_t *requestP,
                                lwm2m_deferred_request_t *previousP)
@@ -147,7 +166,7 @@ static void prv_removeDeferred(lwm2m_context_t *contextP,
         contextP->deferredRequestList = requestP->next;
     else
         previousP->next = requestP->next;
-    lwm2m_free(requestP);
+    prv_freeDeferred(contextP, requestP);
 }
 
 int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t *requestIdP)
@@ -158,6 +177,18 @@ int lwm2m_defer_current_request(lwm2m_context_t *contextP, lwm2m_deferred_reques
         || !contextP->currentDmRequestCanDefer
         || contextP->currentDmDeferredRequestId != 0U)
         return COAP_400_BAD_REQUEST;
+    requestP = contextP->dmAsyncResumeId ? prv_findDeferredById(contextP, contextP->dmAsyncResumeId, NULL) : NULL;
+    if (requestP != NULL && requestP->resumable)
+    {
+        /* 준비 IPC가 끝난 Execute는 같은 ID를 기존 비동기 실행 owner에 인계한다. */
+        if (contextP->dmAsyncCallback)
+            contextP->dmAsyncCallback(contextP, LWM2M_DM_ASYNC_RELEASE, requestP->requestId, contextP->dmAsyncUserData);
+        requestP->resumable = false;
+        lwm2m_free(requestP->header); requestP->header = NULL;
+        lwm2m_free(requestP->payload); requestP->payload = NULL;
+        contextP->currentDmDeferredRequestId = *requestIdP = requestP->requestId;
+        return NO_ERROR;
+    }
     if (contextP->currentRequestTokenLen == 0U)
     {
         for (requestP = contextP->deferredRequestList; requestP != NULL; requestP = requestP->next)
@@ -218,6 +249,7 @@ int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
     requestP = prv_findDeferredById(contextP, requestId, &previousP);
     if (requestP == NULL)
         return COAP_404_NOT_FOUND;
+    if (requestP->resumable) return COAP_400_BAD_REQUEST;
     for (serverP = contextP->serverList; serverP != NULL; serverP = serverP->next)
     {
         if (serverP->shortID == requestP->serverShortId
@@ -275,7 +307,7 @@ void dm_clearDeferredRequests(lwm2m_context_t *contextP)
     {
         lwm2m_deferred_request_t *requestP = contextP->deferredRequestList;
         contextP->deferredRequestList = requestP->next;
-        lwm2m_free(requestP);
+        prv_freeDeferred(contextP, requestP);
     }
     contextP->currentDmDeferredRequestId = 0U;
     contextP->currentDmRequestActive = false;
@@ -311,7 +343,7 @@ size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
             *cursorP = requestP->next;
             if (contextP->currentDmDeferredRequestId == requestP->requestId)
                 contextP->currentDmDeferredRequestId = 0U;
-            lwm2m_free(requestP);
+            prv_freeDeferred(contextP, requestP);
             removed++;
         }
         else
@@ -338,6 +370,8 @@ typedef struct
     uint16_t messageId;
     uint16_t transportMessageId;
     lwm2m_deferred_request_id_t deferredRequestId;
+    void *packet;
+    const lwm2m_uri_t *uri;
 } dm_request_scope_t;
 
 static int prv_beginDmRequestScope(lwm2m_context_t *contextP,
@@ -367,6 +401,8 @@ static int prv_beginDmRequestScope(lwm2m_context_t *contextP,
     scopeP->messageId = contextP->currentDmMessageId;
     scopeP->transportMessageId = contextP->currentDmTransportMessageId;
     scopeP->deferredRequestId = contextP->currentDmDeferredRequestId;
+    scopeP->packet = contextP->currentDmPacket;
+    scopeP->uri = contextP->currentDmUri;
 
     memset(contextP->currentRequestToken, 0, sizeof(contextP->currentRequestToken));
     if (message->token_len > 0U)
@@ -383,6 +419,8 @@ static int prv_beginDmRequestScope(lwm2m_context_t *contextP,
     contextP->currentDmMessageId = exchangeMid;
     contextP->currentDmTransportMessageId = message->mid;
     contextP->currentDmDeferredRequestId = 0U;
+    contextP->currentDmPacket = NULL;
+    contextP->currentDmUri = NULL;
     return NO_ERROR;
 }
 
@@ -420,6 +458,8 @@ static void prv_endDmRequestScope(lwm2m_context_t *contextP,
     contextP->currentDmMessageId = scopeP->messageId;
     contextP->currentDmTransportMessageId = scopeP->transportMessageId;
     contextP->currentDmDeferredRequestId = deferredRequestId;
+    contextP->currentDmPacket = scopeP->packet;
+    contextP->currentDmUri = scopeP->uri;
 }
 
 lwm2m_dm_operation_t lwm2m_get_current_operation(const lwm2m_context_t *contextP)
@@ -1138,6 +1178,7 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
 #ifndef LWM2M_VERSION_1_0
     dm_request_scope_t requestScope;
     bool requestScopeActive = false;
+    uint64_t preparationStart = contextP->nextCompositeReadId;
 #else
     (void)exchangeMid;
 #endif
@@ -1173,6 +1214,10 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
     if ((message->code >= COAP_GET && message->code <= COAP_DELETE) || message->code == COAP_IPATCH ||
         message->code == COAP_FETCH)
     {
+        lwm2m_deferred_request_t *pending = prv_findDeferredByMessage(contextP, serverP->shortID,
+            serverP->sessionGeneration, message->mid, message->token, message->token_len);
+        if (pending && pending->resumable && pending->requestId != contextP->dmAsyncResumeId)
+            return prv_deferredResponse(message, response);
         result = (uint8_t)prv_beginDmRequestScope(contextP,
                                                   serverP,
                                                   uriP,
@@ -1183,6 +1228,10 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
         if (result != NO_ERROR)
             return result;
         requestScopeActive = true;
+        contextP->currentDmPacket = message;
+        contextP->currentDmUri = uriP;
+        if (contextP->dmAsyncCallback)
+            contextP->dmAsyncCallback(contextP, LWM2M_DM_ASYNC_BEGIN, contextP->dmAsyncResumeId, contextP->dmAsyncUserData);
     }
 #endif
 
@@ -1405,13 +1454,13 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
 #ifndef LWM2M_VERSION_1_0
                     lwm2m_deferred_request_id_t deferredRequestId;
 
-                    if (prv_findDeferredByMessage(contextP,
+                    lwm2m_deferred_request_t *existing = prv_findDeferredByMessage(contextP,
                                                  serverP->shortID,
                                                  serverP->sessionGeneration,
                                                  message->mid,
                                                  message->token,
-                                                 message->token_len)
-                        != NULL)
+                                                 message->token_len);
+                    if (existing != NULL && existing->requestId != contextP->dmAsyncResumeId)
                     {
                         result = prv_deferredResponse(message, response);
                         break;
@@ -1422,7 +1471,8 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
 #ifndef LWM2M_VERSION_1_0
                     deferredRequestId = contextP->currentDmDeferredRequestId;
                     contextP->currentDmRequestCanDefer = false;
-                    if (deferredRequestId != 0U)
+                    lwm2m_deferred_request_t *deferred = prv_findDeferredById(contextP, deferredRequestId, NULL);
+                    if (deferredRequestId != 0U && deferred != NULL && !deferred->resumable)
                     {
                         if (result == COAP_IGNORE)
                             result = prv_deferredResponse(message, response);
@@ -1520,7 +1570,30 @@ uint8_t dm_handleRequestWithExchangeMid(lwm2m_context_t * contextP,
 
 #ifndef LWM2M_VERSION_1_0
     if (requestScopeActive)
+    {
+        lwm2m_deferred_request_t *pending = prv_findDeferredById(contextP, contextP->currentDmDeferredRequestId, NULL);
+        if (pending && pending->resumable && pending->awaitingIo)
+        {
+            lwm2m_free(response->payload);
+            response->payload = NULL;
+            response->payload_len = 0;
+            coap_free_header(response);
+            lwm2m_composite_snapshot_t **link = &contextP->compositeSnapshots;
+            while (*link != NULL)
+            {
+                lwm2m_composite_snapshot_t *snapshot = *link;
+                if (snapshot->id > preparationStart && !snapshot->allSubmitted)
+                { *link = snapshot->next; prv_freeCompositeSnapshot(contextP, snapshot); }
+                else link = &snapshot->next;
+            }
+            result = prv_deferredResponse(message, response);
+        }
+        if (contextP->dmAsyncCallback)
+            contextP->dmAsyncCallback(contextP, LWM2M_DM_ASYNC_END,
+                contextP->currentDmDeferredRequestId ? contextP->currentDmDeferredRequestId : contextP->dmAsyncResumeId,
+                contextP->dmAsyncUserData);
         prv_endDmRequestScope(contextP, &requestScope);
+    }
 #endif
     return result;
 }
@@ -1538,6 +1611,10 @@ uint8_t dm_handleRequest(lwm2m_context_t * contextP,
                                             response,
                                             message->mid);
 }
+
+#ifndef LWM2M_VERSION_1_0
+#include "management_async.inc"
+#endif
 
 #endif
 

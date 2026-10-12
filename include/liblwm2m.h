@@ -1047,6 +1047,11 @@ typedef uint8_t (*lwm2m_reporting_async_send_callback_t)(
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0)
 typedef uint32_t lwm2m_deferred_request_id_t;
 typedef struct _lwm2m_deferred_request_ lwm2m_deferred_request_t;
+typedef enum { LWM2M_DM_ASYNC_BEGIN, LWM2M_DM_ASYNC_END, LWM2M_DM_ASYNC_RELEASE } lwm2m_dm_async_event_t;
+/* owner thread 전용이다. callback은 worker에 context/object/session pointer를 전달하지 않는다.
+ * BEGIN/END는 외부 DM callback 순회의 범위이며 RELEASE는 복사 요청의 종료/취소다. */
+typedef void (*lwm2m_dm_async_callback_t)(lwm2m_context_t *, lwm2m_dm_async_event_t,
+    lwm2m_deferred_request_id_t, void *);
 typedef struct _lwm2m_composite_snapshot_ lwm2m_composite_snapshot_t;
 /* 동기적인 읽기 전용 검사다. 경로/context는 borrowed이며 callback 안에서 객체,
  * session 또는 snapshot을 삭제/변경하지 않는다. true는 역할/가시성 허용이며
@@ -1060,7 +1065,8 @@ void lwm2m_set_composite_access_callback(lwm2m_context_t *contextP,
  * 타입·쓰기 권한·IID 세대·revision을 검증하고 입력/후속 의도/replay를 원자적으로 확정한다.
  * 실패 반환 때 부분 반영과 장치 실행/외부 공개는 없어야 한다. private 준비 파일의 소유권과
  * commit 여부 대조 복구는 owner 책임이다. core는 객체별 순차 Write나 보상을 하지 않는다.
- * 성공은 2.04이며 비동기 수락/지연 응답은 지원하지 않는다. context/session을 닫지 않는다.
+ * 성공은 2.04다. 기본 owner는 동기이며, opt-in DM async owner는 불변 요청/IO 단계를
+ * 보존하고 suspend/resume 경계로 IO를 지연할 수 있다. context/session을 닫지 않는다.
  * 현재 IID 존재 검사는 owner의 durable replay 판정 뒤 수행한다. 삭제 후 옛 요청 재전송이
  * 새 세대에 적용되지 않도록 할 책임도 owner에 있다. NULL로 해제하면 기존 단일 객체 경로다.
  * durableBlock1은 완료 재전송을 owner가 영속 교환으로 판정할 때만 true다. 기존 객체별
@@ -1169,6 +1175,14 @@ struct _lwm2m_context_
     uint16_t             currentDmTransportMessageId; // deferred 응답 판별에 사용하는 현재 패킷 MID
     lwm2m_deferred_request_id_t currentDmDeferredRequestId;
     lwm2m_deferred_request_t *deferredRequestList;
+    lwm2m_dm_async_callback_t dmAsyncCallback;
+    void *dmAsyncUserData;
+    /* callback 범위에서만 빌리는 packet/URI. scope 종료 전에 복원한다. */
+    void *currentDmPacket;
+    const lwm2m_uri_t *currentDmUri;
+    lwm2m_deferred_request_id_t dmAsyncResumeId;
+    void *dmAsyncResumePacket;
+    uint16_t dmAsyncExchangeMid;
     /* context 소유. 서버/세션은 stable ID만 보관하고 close/만료 때 bytes와 함께 해제한다. */
     lwm2m_composite_snapshot_t *compositeSnapshots;
     lwm2m_composite_access_callback_t compositeAccessCallback;
@@ -1274,6 +1288,17 @@ int lwm2m_complete_deferred_request(lwm2m_context_t *contextP,
                                     lwm2m_deferred_request_id_t requestId,
                                     uint8_t responseCode);
 int lwm2m_cancel_deferred_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t requestId);
+/* 지연 IO가 필요한 DM은 이 opt-in owner 경계를 사용한다. suspend는 현재 packet과
+ * assembled payload를 복사하며 callback이 반환하면 CON에는 빈 ACK만 제출한다.
+ * resume는 같은 protocol owner thread에서 원래 요청의 callback을 다시 실행한다.
+ * owner는 완료한 IO를 같은 요청/단계의 불변 결과로 재사용하여 외부 변경을 재실행하지 않는다.
+ * packet/header/payload는 core 소유이며 worker에 전달하지 않는다. 최종 응답 준비 뒤의
+ * transport 재시도는 callback을 재실행하지 않는다. 세대 교체/close는 복사본을 취소한다.
+ * 기존 Execute 전용 defer API의 제한은 그대로 유지한다. */
+void lwm2m_set_dm_async_callback(lwm2m_context_t *contextP, lwm2m_dm_async_callback_t callback, void *userData);
+int lwm2m_suspend_current_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t *requestId);
+/* NO_ERROR=완료 또는 다음 IO 대기, 404=취소된 요청/세대, 기타 오류=같은 ID 재시도 가능. */
+int lwm2m_resume_suspended_request(lwm2m_context_t *contextP, lwm2m_deferred_request_id_t requestId);
 #endif
 int lwm2m_remove_object(lwm2m_context_t * contextP, uint16_t id);
 void lwm2m_set_registration_object_filter(lwm2m_context_t *contextP,

@@ -49,6 +49,11 @@ set(WAKAAMA_COAP_MAX_MESSAGE_SIZE
     2048
     CACHE STRING "Max. CoAP packet size."
 )
+set(WAKAAMA_COAP_BLOCK1_HISTORY_SIZE 1024 CACHE STRING "Max. durable inbound Block1 MID history entries.")
+if(NOT WAKAAMA_COAP_BLOCK1_HISTORY_SIZE MATCHES "^[1-9][0-9]*$" OR
+   WAKAAMA_COAP_BLOCK1_HISTORY_SIZE GREATER 65536)
+    message(FATAL_ERROR "Block1 MID history capacity must be between 1 and 65536.")
+endif()
 
 set(WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE
     ${WAKAAMA_COAP_MAX_MESSAGE_SIZE}
@@ -232,6 +237,7 @@ function(set_coap_defines)
     target_compile_definitions(${target} PUBLIC LWM2M_COAP_DEFAULT_BLOCK_SIZE=${WAKAAMA_COAP_DEFAULT_BLOCK_SIZE})
 
     target_compile_definitions(${target} PUBLIC LWM2M_COAP_MAX_MESSAGE_SIZE=${WAKAAMA_COAP_MAX_MESSAGE_SIZE})
+    target_compile_definitions(${target} PUBLIC LWM2M_BLOCK1_HISTORY_SIZE=${WAKAAMA_COAP_BLOCK1_HISTORY_SIZE})
 
     target_compile_definitions(
         ${target} PUBLIC LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE=${WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE}

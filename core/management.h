@@ -47,6 +47,10 @@ void dm_compositeResponseSubmitted(lwm2m_context_t *contextP, uint16_t serverId,
 size_t dm_remove_deferred_for_generation(lwm2m_context_t *contextP,
                                          uint16_t shortServerId,
                                          uint64_t generation);
+/* suspended request 재개에만 사용하는 protocol owner 경계다. 응답 bytes는 core가 복사한다. */
+int dm_sendResumedResponse(lwm2m_context_t *, coap_packet_t *, void *, uint8_t **);
+void dm_notifyResponseSubmitted(lwm2m_context_t *, void *, const coap_packet_t *, const coap_packet_t *,
+    const char *, uint16_t, uint8_t);
 #endif
 
 #endif /* WAKAAMA_MANAGEMENT_H */

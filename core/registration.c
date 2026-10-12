@@ -1117,6 +1117,10 @@ void lwm2m_set_registration_object_filter(lwm2m_context_t *contextP,
 
 uint8_t registration_start(lwm2m_context_t * contextP, bool restartFailed)
 {
+    if(contextP->registrationPaused) {
+        contextP->registrationResumeRequired=true;
+        return COAP_NO_ERROR;
+    }
     lwm2m_server_t * targetP;
     uint8_t result = COAP_NO_ERROR;
 #ifndef LWM2M_VERSION_1_0

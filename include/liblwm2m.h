@@ -1138,6 +1138,8 @@ struct _lwm2m_context_
 {
 #ifdef LWM2M_CLIENT_MODE
     lwm2m_client_state_t state;
+    bool registrationPaused;
+    bool registrationResumeRequired;
     char *               endpointName;
     char *               msisdn;
     char *               altPath;
@@ -1263,6 +1265,9 @@ void lwm2m_close(lwm2m_context_t * contextP);
 
 // perform any required pending operation and adjust timeoutP to the maximal time interval to wait in seconds.
 int lwm2m_step(lwm2m_context_t * contextP, time_t * timeoutP);
+/* 기존 Observe/transaction timer만 진행한다. 신규 등록은 다음 일반 step까지
+ * 보류하며 context/list 접근은 일반 step과 같은 owner thread에서 수행한다. */
+int lwm2m_step_timers(lwm2m_context_t *contextP, time_t *timeoutP);
 // dispatch received data to liblwm2m
 void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t length, void *fromSessionH);
 

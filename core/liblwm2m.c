@@ -434,6 +434,12 @@ int lwm2m_step(lwm2m_context_t * contextP,
 #ifndef LWM2M_VERSION_1_0
     dm_expireCompositeSnapshots(contextP, tv_sec);
 #endif
+    contextP->registrationPaused=false;
+    if(contextP->registrationResumeRequired) {
+        contextP->registrationResumeRequired=false;
+        int result=registration_start(contextP,false);
+        if(result!=COAP_NO_ERROR) return result;
+    }
     LOG_ARG_DBG("State: %s", STR_STATE(contextP->state));
     // state can also be modified in bootstrap_handleCommand().
 
@@ -541,4 +547,20 @@ next_step:
     LOG_ARG_DBG("Final state: %s", STR_STATE(contextP->state));
 #endif
     return 0;
+}
+
+int lwm2m_step_timers(lwm2m_context_t *contextP,time_t *timeoutP)
+{
+    if(!contextP || !timeoutP) return COAP_400_BAD_REQUEST;
+    time_t now=lwm2m_gettime();
+    if(now<0) return COAP_500_INTERNAL_SERVER_ERROR;
+#ifdef LWM2M_CLIENT_MODE
+    contextP->registrationPaused=true;
+#ifndef LWM2M_VERSION_1_0
+    dm_expireCompositeSnapshots(contextP,now);
+#endif
+    observe_step(contextP,now,timeoutP);
+#endif
+    transaction_step(contextP,now,timeoutP);
+    return COAP_NO_ERROR;
 }

@@ -359,16 +359,16 @@ static void con_history_failure_expiry_capacity_and_generation(void)
     for (i = 1; i < LWM2M_RESPONSE_HISTORY_SIZE; ++i)
         payload_deliver(&f, (uint16_t)(0x8001 + i), COAP_204_CHANGED);
     payload_send(&f, 2); count = test_response_count();
-    payload_deliver(&f, 0x9001, COAP_204_CHANGED);
+    payload_deliver(&f, 0x1001, COAP_204_CHANGED);
     CU_ASSERT_EQUAL(test_response_count(), count); CU_ASSERT_EQUAL(payloadCallbacks, 1);
     payload_deliver(&f, 0x8001, COAP_204_CHANGED);
     CU_ASSERT_EQUAL(test_response_count(), count + 1); CU_ASSERT_EQUAL(payloadCallbacks, 1);
     test_clock_set(100 + (time_t)COAP_EXCHANGE_LIFETIME + 1);
-    payload_deliver(&f, 0x9001, COAP_204_CHANGED);
+    payload_deliver(&f, 0x1001, COAP_204_CHANGED);
     CU_ASSERT_EQUAL(payloadCallbacks, 2);
     /* 같은 주소라도 새 transport generation의 MID는 독립적이다. */
     ++f.context.serverList->sessionGeneration;
-    payload_send(&f, 2); payload_deliver(&f, 0x9001, COAP_204_CHANGED);
+    payload_send(&f, 2); payload_deliver(&f, 0x1001, COAP_204_CHANGED);
     CU_ASSERT_EQUAL(payloadCallbacks, 3);
     cleanup(&f);
 }

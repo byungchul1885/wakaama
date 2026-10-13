@@ -175,6 +175,8 @@ int main(int argc, char **argv) {
        goto exit;
    if (CUE_SUCCESS != create_transaction_test_suit())
        goto exit;
+   if (CUE_SUCCESS != create_response_history_test_suit())
+       goto exit;
 
    CU_basic_set_mode(CU_BRM_VERBOSE);
    if (argc == 3) {

@@ -87,6 +87,7 @@ Contains code snippets which are:
 
 
 #include "internals.h"
+#include "response_history.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -470,10 +471,7 @@ static lwm2m_transaction_t *prv_response_transaction(lwm2m_context_t *contextP, 
 static lwm2m_response_history_t *prv_response_history(lwm2m_context_t *contextP,
     void *sessionH, uint16_t mid, bool *duplicate)
 {
-    time_t now = lwm2m_gettime();
     uint64_t generation = 0;
-    size_t i;
-    lwm2m_response_history_t *available = NULL;
 #ifndef LWM2M_VERSION_1_0
 #ifdef LWM2M_CLIENT_MODE
     lwm2m_server_t *server = utils_findServer(contextP, sessionH);
@@ -484,39 +482,7 @@ static lwm2m_response_history_t *prv_response_history(lwm2m_context_t *contextP,
     if (client != NULL) generation = client->sessionGeneration;
 #endif
 #endif
-    *duplicate = false;
-    if (now < 0) {
-        if (contextP->responseHistoryFailure != 1)
-            LOG_WARN("CON response deferred reason=clock_unavailable");
-        contextP->responseHistoryFailure = 1;
-        return NULL;
-    }
-    for (i = 0; i < LWM2M_RESPONSE_HISTORY_SIZE; ++i) {
-        lwm2m_response_history_t *entry = &contextP->responseHistory[i];
-        if (entry->used && !entry->processing && now >= entry->receivedAt &&
-            now - entry->receivedAt >= COAP_EXCHANGE_LIFETIME) entry->used = false;
-        if (!entry->used) {
-            if (available == NULL) available = entry;
-        } else if (entry->sessionIdentity == (uintptr_t)sessionH &&
-                   entry->sessionGeneration == generation && entry->mid == mid) {
-            *duplicate = true;
-            return entry;
-        }
-    }
-    if (available != NULL) {
-        contextP->responseHistoryFailure = 0;
-        available->sessionIdentity = (uintptr_t)sessionH;
-        available->sessionGeneration = generation;
-        available->receivedAt = now;
-        available->mid = mid;
-        available->used = true;
-        available->processing = true;
-    } else {
-        if (contextP->responseHistoryFailure != 2)
-            LOG_ARG_WARN("CON response deferred reason=history_full capacity=%u", (unsigned)LWM2M_RESPONSE_HISTORY_SIZE);
-        contextP->responseHistoryFailure = 2;
-    }
-    return available;
+    return response_history_acquire(contextP, (uintptr_t)sessionH, generation, mid, duplicate);
 }
 
 static lwm2m_block1_history_t *prv_block1_history(lwm2m_context_t *contextP,
@@ -1396,15 +1362,18 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     if (history == NULL) break;
                     if (duplicate) {
                         if (!history->processing) {
+                            history->processing = true;
                             coap_init_message(response, COAP_TYPE_ACK, COAP_EMPTY_MESSAGE_CODE, message->mid);
                             (void)message_send(contextP, response, fromSessionH);
+                            history->processing = false;
                         }
                         break;
                     }
                     if (transaction == NULL) {
                         coap_init_message(response, COAP_TYPE_ACK, COAP_EMPTY_MESSAGE_CODE, message->mid);
-                        history->used = message_send(contextP, response, fromSessionH) == NO_ERROR;
-                        history->processing = false;
+                        if (message_send(contextP, response, fromSessionH) == NO_ERROR)
+                            history->processing = false;
+                        else response_history_release(contextP, history);
                         /* ACK transport 재진입에서 생긴 새 요청에도 이 응답을 넘기지 않는다. */
                         break;
                     }
@@ -1415,11 +1384,11 @@ void lwm2m_handle_packet(lwm2m_context_t *contextP, uint8_t *buffer, size_t leng
                     bool duplicate = message->type != COAP_TYPE_ACK && transaction->hasPreviousResponseMid &&
                         transaction->previousResponseMid == message->mid;
                     if (transaction->acknowledgingResponse) {
-                        if (history != NULL) { history->used = false; history->processing = false; }
+                        if (history != NULL) response_history_release(contextP, history);
                         break;
                     }
                     if (message->type == COAP_TYPE_CON && !transaction_ack_response(contextP, transaction, message)) {
-                        if (history != NULL) { history->used = false; history->processing = false; }
+                        if (history != NULL) response_history_release(contextP, history);
                         break;
                     }
                     if (history != NULL) history->processing = false;

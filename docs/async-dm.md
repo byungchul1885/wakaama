@@ -1,5 +1,14 @@
 # DM 지연 IO의 소유권과 재개
 
+완료한 별도 CON 응답 MID는 context가 peer 주소값/세대별 lazy 해시와 만료 순서 목록으로
+소유한다. 응답 하나당 필요한 항목만 할당하고 exchange lifetime 이전에는 덮어쓰지 않는다.
+`WAKAAMA_COAP_RESPONSE_HISTORY_SIZE`는 peer/세대별 1~65,536개(기본 256),
+`WAKAAMA_COAP_RESPONSE_HISTORY_TOTAL_SIZE`는 context 전체 peer 상한~1,048,576개(기본 4,096)이다.
+PUBLIC 정의로 모든 consumer에 전파하며 두 상한을 함께 적용한다. ACK 송신 중에는 중복 ACK도
+processing 예약을 고정하여 재진입·만료에서 항목을 해제하지 않는다. ACK 송신 실패의 새 예약은
+회수하고, 이미 처리한 중복 응답의 기록은 보존한다. context close에서 모든 항목을 해제한다.
+시험용 stack context도 `response_history_clear`로 context 소유 할당을 회수해야 한다.
+
 조립된 iPATCH 입력의 suspended 사본은 context의 Composite Write 입력 한도를 사용한다. 기타 입력은 1MiB를 넘기지 않는다. CMake의 `WAKAAMA_COAP_BLOCK1_HISTORY_SIZE`는 1~65,536개 범위에서 모든 consumer에 같은 context layout을 전파한다. 기본값은 1,024개이며 제품은 입력 크기·동시 교환과 고정 메모리 비용을 함께 고려해 설정한다.
 
 `lwm2m_set_dm_async_callback`은 Linux 제품의 protocol owner가 선택적으로 연결하는 경계다. 기존 Execute 전용 deferred API와 동기 Object callback은 그대로 동작한다.

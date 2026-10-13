@@ -50,6 +50,15 @@ set(WAKAAMA_COAP_MAX_MESSAGE_SIZE
     CACHE STRING "Max. CoAP packet size."
 )
 set(WAKAAMA_COAP_BLOCK1_HISTORY_SIZE 1024 CACHE STRING "Max. durable inbound Block1 MID history entries.")
+set(WAKAAMA_COAP_RESPONSE_HISTORY_SIZE 256 CACHE STRING "Max. CON response MID history entries per peer generation.")
+set(WAKAAMA_COAP_RESPONSE_HISTORY_TOTAL_SIZE 4096 CACHE STRING "Max. CON response MID history entries per context.")
+if(NOT WAKAAMA_COAP_RESPONSE_HISTORY_SIZE MATCHES "^[1-9][0-9]*$" OR
+   WAKAAMA_COAP_RESPONSE_HISTORY_SIZE GREATER 65536 OR
+   NOT WAKAAMA_COAP_RESPONSE_HISTORY_TOTAL_SIZE MATCHES "^[1-9][0-9]*$" OR
+   WAKAAMA_COAP_RESPONSE_HISTORY_TOTAL_SIZE GREATER 1048576 OR
+   WAKAAMA_COAP_RESPONSE_HISTORY_TOTAL_SIZE LESS WAKAAMA_COAP_RESPONSE_HISTORY_SIZE)
+    message(FATAL_ERROR "Response history needs peer capacity 1..65536 and context capacity peer..1048576.")
+endif()
 if(NOT WAKAAMA_COAP_BLOCK1_HISTORY_SIZE MATCHES "^[1-9][0-9]*$" OR
    WAKAAMA_COAP_BLOCK1_HISTORY_SIZE GREATER 65536)
     message(FATAL_ERROR "Block1 MID history capacity must be between 1 and 65536.")
@@ -238,6 +247,8 @@ function(set_coap_defines)
 
     target_compile_definitions(${target} PUBLIC LWM2M_COAP_MAX_MESSAGE_SIZE=${WAKAAMA_COAP_MAX_MESSAGE_SIZE})
     target_compile_definitions(${target} PUBLIC LWM2M_BLOCK1_HISTORY_SIZE=${WAKAAMA_COAP_BLOCK1_HISTORY_SIZE})
+    target_compile_definitions(${target} PUBLIC LWM2M_RESPONSE_HISTORY_SIZE=${WAKAAMA_COAP_RESPONSE_HISTORY_SIZE})
+    target_compile_definitions(${target} PUBLIC LWM2M_RESPONSE_HISTORY_TOTAL_SIZE=${WAKAAMA_COAP_RESPONSE_HISTORY_TOTAL_SIZE})
 
     target_compile_definitions(
         ${target} PUBLIC LWM2M_COAP_MAX_BLOCK_TRANSFER_SIZE=${WAKAAMA_COAP_MAX_BLOCK_TRANSFER_SIZE}
@@ -333,6 +344,7 @@ function(target_sources_wakaama target)
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/notification_block.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/notification_leaf.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/packet.c
+                ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/response_history.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/registration.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/uri.c
                 ${WAKAAMA_TOP_LEVEL_DIRECTORY}/core/utils.c

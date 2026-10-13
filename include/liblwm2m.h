@@ -1105,20 +1105,16 @@ void lwm2m_set_composite_read_event_callback(lwm2m_context_t *contextP,
 uint64_t lwm2m_get_current_composite_read_id(const lwm2m_context_t *contextP);
 #endif
 
-/* 완료한 CON 응답의 MID는 다음 동일 Token 요청과 독립적으로 보관한다.
- * sessionIdentity는 비교만 하는 주소값이며 dereference하지 않는다. context가 소유하며
- * exchange lifetime 이전에는 덮어쓰지 않는다. 상한 도달 시 새 CON 처리를 보류한다. */
+/* 완료한 CON MID는 peer/세대별로 context가 소유한다. 저장 공간은 필요할 때
+ * 할당하며 exchange lifetime 이전에 덮어쓰지 않는다. 두 상한을 함께 적용한다. */
 #ifndef LWM2M_RESPONSE_HISTORY_SIZE
 #define LWM2M_RESPONSE_HISTORY_SIZE 256
 #endif
-typedef struct {
-    uintptr_t sessionIdentity;
-    uint64_t sessionGeneration;
-    time_t receivedAt;
-    uint16_t mid;
-    bool used;
-    bool processing;
-} lwm2m_response_history_t;
+#ifndef LWM2M_RESPONSE_HISTORY_TOTAL_SIZE
+#define LWM2M_RESPONSE_HISTORY_TOTAL_SIZE 4096
+#endif
+typedef struct _lwm2m_response_history_ lwm2m_response_history_t;
+typedef struct _lwm2m_response_peer_ lwm2m_response_peer_t;
 
 /* 영속 Block1 교환의 수신 MID를 조립 버퍼와 독립적으로 보관한다.
  * 폐기된 교환의 재전송은 새 조립에 넣지 않고 무응답으로 버린다.
@@ -1256,7 +1252,9 @@ struct _lwm2m_context_
     uint16_t                nextMID;
     lwm2m_transaction_t *   transactionList;
     bool                   transactionStepActive;
-    lwm2m_response_history_t responseHistory[LWM2M_RESPONSE_HISTORY_SIZE];
+    lwm2m_response_peer_t *responseHistory;
+    lwm2m_response_history_t *responseHistoryOldest, *responseHistoryNewest;
+    size_t                 responseHistoryCount;
     uint8_t                responseHistoryFailure; /* 같은 보류 원인의 경고는 한 번만 남긴다. */
     lwm2m_block1_history_t  block1History[LWM2M_BLOCK1_HISTORY_SIZE];
     uint8_t                block1HistoryFailure;

@@ -4,6 +4,7 @@
 #include "connection.h"
 #include "CUnit/Basic.h"
 #include "helper/faults.h"
+#include "response_history.h"
 #include <string.h>
 
 #if defined(LWM2M_CLIENT_MODE) && !defined(LWM2M_VERSION_1_0) && defined(WAKAAMA_TEST_FAULTS)
@@ -95,6 +96,7 @@ static void setup(send_fixture_t *f)
 
 static void cleanup(send_fixture_t *f)
 {
+    response_history_clear(&f->context);
     while (f->context.transactionList != NULL) transaction_remove(&f->context, f->context.transactionList);
     while (f->context.serverList != NULL) {
         lwm2m_server_t *server = f->context.serverList;
@@ -306,6 +308,39 @@ static void completed_con_cannot_complete_next_same_token_send(void)
     CU_ASSERT_TRUE(lwm2m_set_coap_block_size(previousSize));
 }
 
+static send_fixture_t *reentryFixture;
+static bool responseReentered;
+static void duplicate_ack_reentry(void)
+{
+    size_t length;
+    uint8_t *wire = test_get_response_buffer(&length);
+    if (!responseReentered && length >= 4 && wire[1] == 0) {
+        responseReentered = true;
+        test_clock_set(100 + (time_t)COAP_EXCHANGE_LIFETIME);
+        payload_deliver(reentryFixture, 0x8001, COAP_204_CHANGED);
+    }
+}
+
+static void duplicate_ack_pins_history_during_expiry_reentry(void)
+{
+    send_fixture_t f;
+    size_t count;
+    setup(&f); payloadCallbacks = 0;
+    payload_send(&f, 2); payload_deliver(&f, 0x8001, COAP_204_CHANGED);
+    payload_send(&f, 2);
+    count = test_response_count(); reentryFixture = &f; responseReentered = false;
+    test_set_send_callback(duplicate_ack_reentry);
+    payload_deliver(&f, 0x8001, COAP_204_CHANGED);
+    test_set_send_callback(NULL);
+    CU_ASSERT_TRUE(responseReentered);
+    CU_ASSERT_EQUAL(test_response_count(), count + 1);
+    CU_ASSERT_EQUAL(payloadCallbacks, 1);
+    CU_ASSERT_PTR_NOT_NULL(f.context.transactionList);
+    payload_deliver(&f, 0x8002, COAP_204_CHANGED);
+    CU_ASSERT_EQUAL(payloadCallbacks, 2);
+    cleanup(&f);
+}
+
 static void con_history_failure_expiry_capacity_and_generation(void)
 {
     send_fixture_t f;
@@ -466,6 +501,7 @@ static struct TestTable table[] = {
     {"Send scope all allocation failure ownership", every_allocation_failure_preserves_scope_and_ownership},
     {"completed CON versus next same Token payload Send", completed_con_cannot_complete_next_same_token_send},
     {"CON history ACK failure expiry capacity generation", con_history_failure_expiry_capacity_and_generation},
+    {"duplicate ACK expiry transport reentry", duplicate_ack_pins_history_during_expiry_reentry},
     {"payload Send single allocation failure and retry", payload_send_single_allocation_failure_never_sends_root},
     {"packet URI single allocation failure cleanup", packet_uri_single_allocation_failure_releases_partial_strings},
     {"payload Send absent or unregistered target rejection", payload_send_absent_or_unregistered_is_not_success},

@@ -51,6 +51,7 @@
 */
 
 #include "internals.h"
+#include "response_history.h"
 #include "management.h"
 
 #include <stdlib.h>
@@ -262,6 +263,7 @@ void lwm2m_close(lwm2m_context_t * contextP)
 #endif
 
     prv_deleteTransactionList(contextP);
+    response_history_clear(contextP);
     lwm2m_free(contextP);
 }
 

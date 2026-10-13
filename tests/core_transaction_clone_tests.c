@@ -1,6 +1,7 @@
 #include "tests.h"
 #include "connection.h"
 #include "helper/faults.h"
+#include "response_history.h"
 #include "CUnit/Basic.h"
 #include <string.h>
 
@@ -63,6 +64,7 @@ static void start(lwm2m_context_t *context)
 
 static void finish(lwm2m_context_t *context)
 {
+    response_history_clear(context);
     while (context->transactionList != NULL) transaction_remove(context, context->transactionList);
     if (context->serverList != NULL) {
         while (context->serverList->blockData != NULL) {
